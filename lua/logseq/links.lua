@@ -170,6 +170,46 @@ function M.follow()
   end
 end
 
+--- Wrap the visual selection in [[...]].
+function M.wrap_link()
+  -- Get selection range (works in visual mode callback)
+  local start_pos = vim.fn.getpos("v")
+  local end_pos = vim.fn.getpos(".")
+
+  -- Ensure start is before end
+  if start_pos[2] > end_pos[2] or (start_pos[2] == end_pos[2] and start_pos[3] > end_pos[3]) then
+    start_pos, end_pos = end_pos, start_pos
+  end
+
+  -- Only single-line selections
+  if start_pos[2] ~= end_pos[2] then
+    vim.notify("Link wrapping only works on single-line selections", vim.log.levels.WARN)
+    return
+  end
+
+  local lnum = start_pos[2]
+  local line = vim.api.nvim_buf_get_lines(0, lnum - 1, lnum, false)[1]
+  local col_start = start_pos[3] - 1  -- 0-indexed
+  local col_end = end_pos[3] - 1      -- 0-indexed, inclusive
+
+  local before = line:sub(1, col_start)
+  local selected = line:sub(col_start + 1, col_end + 1)
+  local after = line:sub(col_end + 2)
+
+  -- Exit visual mode
+  local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+  vim.api.nvim_feedkeys(esc, "x", false)
+
+  -- Check if already wrapped — toggle off
+  if before:sub(-2) == "[[" and after:sub(1, 2) == "]]" then
+    local new_line = before:sub(1, -3) .. selected .. after:sub(3)
+    vim.api.nvim_buf_set_lines(0, lnum - 1, lnum, false, { new_line })
+  else
+    local new_line = before .. "[[" .. selected .. "]]" .. after
+    vim.api.nvim_buf_set_lines(0, lnum - 1, lnum, false, { new_line })
+  end
+end
+
 --- Bind link following for the current buffer.
 function M.setup_buf()
   local km = config.current.keymaps
@@ -177,6 +217,11 @@ function M.setup_buf()
     buffer = true,
     silent = true,
     desc = "Logseq: follow link",
+  })
+  vim.keymap.set("v", km.follow_link, M.wrap_link, {
+    buffer = true,
+    silent = true,
+    desc = "Logseq: wrap selection in [[link]]",
   })
 end
 
