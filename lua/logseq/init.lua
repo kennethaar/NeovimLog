@@ -51,6 +51,17 @@ local function activate(bufnr)
     end
   end)
 
+  -- =========================================================
+  -- NYTT: Skjul Logseq UID (Conceal)
+  -- =========================================================
+  -- Setter conceal-nivå til 2 (som betyr "skjul teksten helt")
+  vim.opt_local.conceallevel = 2
+  -- Kjører en syntax-regel som finner "id::" og skjuler hele linjen
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd([[syntax match LogseqUID /^\s*id::.*$/ conceal]])
+  end)
+  -- =========================================================
+
   -- UI: Winbar og Statusline
   vim.opt_local.winbar = "%!v:lua._logseq_winbar()"
   local stl = vim.o.statusline

@@ -1,15 +1,8 @@
--- =========================================================================
--- calendar.lua — Kalender-sync for Neovim journal
--- Ren Lua iCal-parser, bruker curl for henting.
--- Plasseres i: ~/.config/nvim/lua/calendar.lua (eller tilsvarende)
--- =========================================================================
 local M = {}
-
 local config_json_path = vim.fn.stdpath("config") .. "/config.json"
+-- Pass på at denne stien stemmer overens med der du la python-filen:
+local py_script_path = vim.fn.stdpath("config") .. "/lua/logseq/ical_parser.py"
 
--- =========================================================================
--- Config: Les eller opprett config.json med kalender-URLer
--- =========================================================================
 local function get_calendar_config()
   if vim.fn.filereadable(config_json_path) == 1 then
     local f = io.open(config_json_path, "r")
@@ -27,8 +20,6 @@ end
 
 function M.setup()
   vim.api.nvim_echo({{ "\nKalender-oppsett: Legg til iCal/ICS-URLer.\n", "WarningMsg" }}, false, {})
-  vim.api.nvim_echo({{ "Trykk Enter uten tekst når du er ferdig.\n", "Normal" }}, false, {})
-
   local urls = {}
   local i = 1
   while true do
@@ -38,212 +29,145 @@ function M.setup()
     i = i + 1
   end
 
-  if #urls == 0 then
-    vim.api.nvim_echo({{ "\nIngen URLer lagt til. Kalender-sync deaktivert.\n", "WarningMsg" }}, false, {})
-    return nil
-  end
-
+  if #urls == 0 then return nil end
   local data = { calendars = urls }
   local f = io.open(config_json_path, "w")
   if f then
     f:write(vim.json.encode(data))
     f:close()
   end
-  vim.api.nvim_echo({{ string.format("\n%d kalender(e) lagret i config.json!\n", #urls), "Normal" }}, false, {})
   return data
 end
 
--- =========================================================================
--- iCal-parser: hent VEVENT-blokker for en gitt dato
--- =========================================================================
-local function parse_ical_events(ical_text, target_date)
-  local found = {}
-  local target_ymd = target_date -- "YYYYMMDD"
-
-  for vevent in ical_text:gmatch("BEGIN:VEVENT(.-)END:VEVENT") do
-    local summary = vevent:match("SUMMARY[^:]*:([^\r\n]+)") or "(Uten tittel)"
-    local dtstart_raw = vevent:match("DTSTART[^:]*:([^\r\n]+)") or ""
-    local dtend_raw = vevent:match("DTEND[^:]*:([^\r\n]+)") or ""
-    local description = vevent:match("DESCRIPTION[^:]*:([^\r\n]+)") or ""
-    local location = vevent:match("LOCATION[^:]*:([^\r\n]+)") or ""
-    local uid = vevent:match("UID[^:]*:([^\r\n]+)") or ""
-
-    -- Rens escaped tegn i iCal
-    summary = summary:gsub("\\,", ","):gsub("\\;", ";"):gsub("\\n", " ")
-    description = description:gsub("\\,", ","):gsub("\\;", ";"):gsub("\\n", "\n")
-    location = location:gsub("\\,", ","):gsub("\\;", ";")
-
-    -- Parse dato fra DTSTART
-    local start_date = dtstart_raw:match("^(%d%d%d%d%d%d%d%d)")
-    if not start_date then
-      start_date = dtstart_raw:match("(%d%d%d%d%d%d%d%d)")
-    end
-
-    if start_date == target_ymd then
-      local start_time = dtstart_raw:match("%d%d%d%d%d%d%d%dT(%d%d%d%d%d%d)")
-      local end_time = dtend_raw:match("%d%d%d%d%d%d%d%dT(%d%d%d%d%d%d)")
-      local is_allday = (start_time == nil)
-
-      local time_str = ""
-      if start_time then
-        local sh, sm = start_time:sub(1,2), start_time:sub(3,4)
-        local eh, em = "", ""
-        if end_time then
-          eh, em = end_time:sub(1,2), end_time:sub(3,4)
-        end
-
-        local utc_offset = tonumber(os.date("%z"):sub(1,3)) or 0
-        local start_h = (tonumber(sh) + utc_offset) % 24
-        if eh ~= "" then
-          local end_h = (tonumber(eh) + utc_offset) % 24
-          time_str = string.format("%02d:%s-%02d:%s", start_h, sm, end_h, em)
-        else
-          time_str = string.format("%02d:%s", start_h, sm)
-        end
-      end
-
-      table.insert(found, {
-        summary = summary,
-        time_str = time_str,
-        is_allday = is_allday,
-        description = description,
-        location = location,
-        uid = uid,
-      })
-    end
-  end
-
-  table.sort(found, function(a, b)
-    if a.is_allday ~= b.is_allday then return a.is_allday end
-    return a.time_str < b.time_str
-  end)
-
-  return found
-end
-
--- =========================================================================
--- Hent iCal-data via curl (asynkront)
--- =========================================================================
-local function fetch_ical(url, callback)
-  vim.fn.jobstart({ "curl", "-s", "-L", "-A", "Mozilla/5.0", url }, {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      if data then
-        callback(table.concat(data, "\n"))
-      end
-    end,
-    on_stderr = function(_, data)
-      if data and data[1] ~= "" then
-        vim.schedule(function()
-          vim.api.nvim_echo({{ "Kalender-feil: " .. table.concat(data, " "), "ErrorMsg" }}, false, {})
-        end)
-      end
-    end,
-  })
-end
-
--- =========================================================================
--- Skriv hendelser under # Calendar i gjeldende buffer
--- =========================================================================
-local function write_events_to_buffer(all_events)
-  if #all_events == 0 then
-    vim.api.nvim_echo({{ "Ingen kalenderhendelser i dag.", "Normal" }}, false, {})
-    return
-  end
-
-  local buf = vim.api.nvim_get_current_buf()
+local function apply_events_to_buffer(buf, events)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local cal_start_idx = nil
 
-  -- Finn "# Calendar"-linjen
-  local calendar_line = nil
+  -- 1. Finn "- # Calendar"-blokken
   for i, line in ipairs(lines) do
-    if line:match("^# Calendar") then
-      calendar_line = i
+    if line:match("^%- # Calendar") then
+      cal_start_idx = i
       break
     end
   end
 
-  if not calendar_line then
-    vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "# Calendar", "" })
+  -- Opprett blokken hvis den ikke finnes
+  if not cal_start_idx then
+    vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "- # Calendar" })
+    cal_start_idx = #lines + 2
     lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    for i, line in ipairs(lines) do
-      if line:match("^# Calendar") then
-        calendar_line = i
-        break
+  end
+
+  -- 2. Kartlegg eksisterende hendelser basert på UID
+  local existing_uids = {}
+  local i = cal_start_idx + 1
+  while i <= #lines do
+    local line = lines[i]
+    -- Hvis vi treffer en linje uten innrykk (og det ikke er Calendar-linjen), har vi forlatt blokken
+    if line:match("^[^%s]") and not line:match("^%- # Calendar") then break end
+    
+    -- Se etter dobbelkolon id:: egenskap
+    local uid = line:match("^%s+id::%s*(.+)$")
+    if uid then
+      -- Møtetittelen ligger normalt på linjen over UID-en
+      existing_uids[uid] = { title_idx = i - 1, prop_idx = i }
+    end
+    i = i + 1
+  end
+
+  -- 3. Behandle innkommende hendelser
+  local new_lines_to_append = {}
+  local active_uids_today = {}
+
+  for _, ev in ipairs(events) do
+    active_uids_today[ev.uid] = true
+    local formatted_title = ev.is_allday and string.format("  - (Heldags) %s", ev.summary) 
+                                          or string.format("  - %s %s", ev.time_str, ev.summary)
+
+    if existing_uids[ev.uid] then
+      -- Smart Update av eksisterende møte
+      local title_line_idx = existing_uids[ev.uid].title_idx
+      local current_title = lines[title_line_idx]
+      -- Kun oppdater hvis tittelen er endret og den ikke har strikethrough (er kansellert tidligere)
+      if not current_title:match("~~.*~~") and current_title ~= formatted_title then
+        vim.api.nvim_buf_set_lines(buf, title_line_idx - 1, title_line_idx, false, { formatted_title })
+      end
+    else
+      -- Legg til nytt møte
+      table.insert(new_lines_to_append, formatted_title)
+      table.insert(new_lines_to_append, string.format("    id:: %s", ev.uid))
+    end
+  end
+
+  -- 4. Merk kansellerte/fjernede møter med Strikethrough
+  for uid, loc in pairs(existing_uids) do
+    if not active_uids_today[uid] then
+      local title_line_idx = loc.title_idx
+      local current_title = lines[title_line_idx]
+      -- Legg til strikethrough hvis det ikke allerede er der
+      if current_title:match("^%s*%- ") and not current_title:match("~~.*~~") then
+        local indent, content = current_title:match("^(%s*%- )(.*)$")
+        local struck_title = string.format("%s~~%s~~", indent, content)
+        vim.api.nvim_buf_set_lines(buf, title_line_idx - 1, title_line_idx, false, { struck_title })
       end
     end
   end
 
-  -- Sjekk hva som allerede finnes under # Calendar (unngå duplikater)
-  local existing_text = table.concat(
-    vim.api.nvim_buf_get_lines(buf, calendar_line, -1, false), "\n"
-  )
-
-  local new_lines = {}
-  local added = 0
-  for _, ev in ipairs(all_events) do
-    if not existing_text:find(ev.summary, 1, true) then
-      local entry
-      if ev.is_allday then
-        entry = "- (Heldags) " .. ev.summary
-      else
-        entry = "- " .. ev.time_str .. " " .. ev.summary
-      end
-      table.insert(new_lines, entry)
-
-      if ev.location ~= "" then
-        table.insert(new_lines, "  - Sted: " .. ev.location)
-      end
-
-      added = added + 1
+  -- 5. Skriv de nye møtene til bunnen av Calendar-blokken
+  if #new_lines_to_append > 0 then
+    local insert_idx = cal_start_idx
+    while insert_idx < #lines do
+      if lines[insert_idx + 1] and lines[insert_idx + 1]:match("^[^%s]") then break end
+      insert_idx = insert_idx + 1
     end
+    vim.api.nvim_buf_set_lines(buf, insert_idx, insert_idx, false, new_lines_to_append)
   end
 
-  if added > 0 then
-    vim.api.nvim_buf_set_lines(buf, calendar_line, calendar_line, false, new_lines)
-    vim.api.nvim_echo({{ string.format("Kalender: %d hendelse(r) lagt til.", added), "Normal" }}, false, {})
-  else
-    vim.api.nvim_echo({{ "Kalender: Ingen nye hendelser.", "Normal" }}, false, {})
-  end
+  print("Kalender syncet!")
 end
 
--- =========================================================================
--- Hovedfunksjon: sync kalender for i dag
--- =========================================================================
 function M.sync()
+  -- Streng sjekk: Bare sync hvis vi er i dagens journal
+  local current_file = vim.api.nvim_buf_get_name(0)
+  -- Juster denne stringen til å matche formatet du har på journalfilene dine!
+  local today_str = os.date("%Y_%m_%d") 
+  if not current_file:match(today_str) then
+    return
+  end
+
   local conf = get_calendar_config()
   if not conf then
-    -- Første gang: spør om URLer
     conf = M.setup()
     if not conf then return end
   end
 
-  local target_date = os.date("%Y%m%d")
-  local all_events = {}
-  local pending = #conf.calendars
-
-  if pending == 0 then return end
-
-  vim.api.nvim_echo({{ "Syncer kalender...", "Normal" }}, false, {})
-
-  for _, url in ipairs(conf.calendars) do
-    fetch_ical(url, function(ical_text)
-      local events = parse_ical_events(ical_text, target_date)
-      for _, ev in ipairs(events) do
-        table.insert(all_events, ev)
-      end
-      pending = pending - 1
-      if pending == 0 then
-        vim.schedule(function()
-          table.sort(all_events, function(a, b)
-            if a.is_allday ~= b.is_allday then return a.is_allday end
-            return a.time_str < b.time_str
+  print("Syncer kalender...")
+  local urls_json = vim.json.encode(conf.calendars)
+  
+  -- "python" (i stedet for "python3") siden du er på Windows
+  vim.fn.jobstart({ "python", py_script_path, urls_json }, {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, data)
+      if data and data[1] and data[1] ~= "" then
+        local ok, events = pcall(vim.json.decode, table.concat(data, ""))
+        if ok and events then
+          vim.schedule(function()
+            apply_events_to_buffer(vim.api.nvim_get_current_buf(), events)
           end)
-          write_events_to_buffer(all_events)
+        else
+          vim.schedule(function() print("Feil ved lesing av kalenderdata fra Python.") end)
+        end
+      end
+    end,
+    on_stderr = function(_, data)
+      if data and data[1] and data[1] ~= "" then
+        vim.schedule(function()
+          print("Python-feil: " .. table.concat(data, " "))
         end)
       end
-    end)
-  end
+    end,
+  })
 end
 
 return M
