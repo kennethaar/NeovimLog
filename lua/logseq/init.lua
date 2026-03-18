@@ -46,6 +46,9 @@ local function activate(bufnr)
     require("logseq.fold").setup_buf()
     require("logseq.motions").setup_buf()
     require("logseq.links").setup_buf()
+    if config.current.enable_link_search then
+      require("logseq.page_search").setup_buf(bufnr)
+    end
   end)
 
   -- UI: Winbar og Statusline
