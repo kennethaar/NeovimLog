@@ -73,13 +73,122 @@ local function activate(bufnr)
   -- Hurtigtaster og innstillinger
   vim.keymap.set("n", "hh", _G._logseq_open_help, { buffer = bufnr, desc = "Logseq Hjelp" })
   
-  -- Autolagring (skjer kun når du går ut av Insert-modus eller endrer tekst)
-  vim.api.nvim_create_autocmd({ "InsertLeave", "TextChanged" }, {
-    buffer = bufnr,
-    callback = function()
-      if vim.bo.modified then vim.cmd("silent! write") end
-    end,
-  })
+-- =========================================================
+  -- OPPDATERT: Logseq Smart Insert (Håndterer skjulte properties)
+  -- =========================================================
+  -- Smart Bullet: Enter
+  vim.keymap.set("i", "<CR>", function()
+    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+    local line = vim.api.nvim_get_current_line()
+    local indent = line:match("^(%s*)") or ""
+    local is_at_end = (col >= #line)
+    
+    -- 1. Hvis markøren er PÅ id:: linjen
+    if line:match("id::") then
+      local parent_indent = indent:sub(1, -3) 
+      return "<CR>" .. parent_indent .. "- "
+    end
+    
+    -- 2. Hvis vi står på slutten av møtetittelen og id:: ligger usynlig rett under
+    local buf = vim.api.nvim_get_current_buf()
+    local next_line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+    if is_at_end and next_line:match("^%s+id::") then
+      return "<Down><End><CR>" .. indent .. "- "
+    end
+    
+    -- 3. Standard oppførsel
+    return "<CR>" .. indent .. "- "
+  end, { buffer = bufnr, expr = true, desc = "Logseq Smart Bullet" })
+
+  -- Smart Property: Shift+Enter
+  vim.keymap.set("i", "<S-CR>", function()
+    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+    local line = vim.api.nvim_get_current_line()
+    local indent = line:match("^(%s*)") or ""
+    local is_at_end = (col >= #line)
+    
+    -- 1. Hvis vi er PÅ id:: linjen
+    if line:match("id::") then
+      return "<CR>" .. indent
+    end
+    
+    -- 2. Hvis vi står på møtetittelen og vil ha notater UNDER id-en
+    local buf = vim.api.nvim_get_current_buf()
+    local next_line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+    if is_at_end and line:match("^%s*%- ") and next_line:match("^%s+id::") then
+      return "<Down><End><CR>" .. indent .. "  "
+    end
+    
+    -- 3. Standard oppførsel
+    if line:match("^%s*%- ") then indent = indent .. "  " end
+    return "<CR>" .. indent
+  end, { buffer = bufnr, expr = true, desc = "Logseq Smart Property" })
+
+  -- Logseq Indentering med Tab
+  vim.keymap.set("i", "<Tab>", "<C-t>", { buffer = bufnr, desc = "Logseq Indent" })
+  vim.keymap.set("i", "<S-Tab>", "<C-d>", { buffer = bufnr, desc = "Logseq Outdent" })
+  vim.keymap.set("n", "<Tab>", ">>", { buffer = bufnr, desc = "Logseq Indent Normal" })
+  vim.keymap.set("n", "<S-Tab>", "<<", { buffer = bufnr, desc = "Logseq Outdent Normal" })
+ 
+-- =========================================================
+  -- TODO State Cycling: Ctrl+T (Normal + Insert)
+  -- =========================================================
+  local todo_states = { "TODO", "WAITING", "DOING", "DONE", "CANCELLED" }
+
+  local function cycle_todo()
+    local parser = require("logseq.parser")
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local parsed = parser.parse(lines)
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    local block = parser.block_at_line(parsed.blocks, lnum)
+    if not block then return end
+
+    local line = lines[block.line_start]
+    local indent, rest = line:match("^(%s*)%- (.*)$")
+    if not indent then return end
+
+    -- Find current state
+    local current_state = nil
+    local content_after = rest
+    for _, state in ipairs(todo_states) do
+      local after = rest:match("^" .. state .. "%s*(.*)")
+      if after then
+        current_state = state
+        content_after = after
+        break
+      end
+    end
+
+    -- Determine next state
+    local next_state = nil
+    if current_state then
+      for i, state in ipairs(todo_states) do
+        if state == current_state then
+          next_state = todo_states[i + 1] -- nil if last → removes state
+          break
+        end
+      end
+    else
+      next_state = todo_states[1] -- no state → TODO
+    end
+
+    -- Build new line
+    local new_line
+    if next_state then
+      new_line = indent .. "- " .. next_state .. " " .. content_after
+    else
+      new_line = indent .. "- " .. content_after
+    end
+
+    vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_start, false, { new_line })
+  end
+
+  vim.keymap.set("n", "<C-t>", cycle_todo, { buffer = bufnr, desc = "Logseq: cycle TODO state" })
+  vim.keymap.set("i", "<C-t>", function()
+    cycle_todo()
+    vim.cmd("startinsert!")
+  end, { buffer = bufnr, desc = "Logseq: cycle TODO state (insert)" })
+  -- =========================================================
 
   -- Logseq-vennlige tabulator-innstillinger
   vim.opt_local.shiftwidth = 2
@@ -95,6 +204,13 @@ function M.setup(opts)
 
   local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
   
+  -- =========================================================
+  -- NYTT: Manuell kalenderkommando
+  -- =========================================================
+  vim.api.nvim_create_user_command("Calsync", function()
+    require("calendar").sync() -- Pass på at modulen heter "calendar" (ev. "logseq.calendar")
+  end, {})
+
   -- Automatisk aktivering når du åpner en .md-fil i vaulten
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile", "BufEnter" }, {
     group = group,
@@ -102,6 +218,10 @@ function M.setup(opts)
     callback = function(ev)
       if is_vault_file(vim.api.nvim_buf_get_name(ev.buf)) then 
         activate(ev.buf) 
+        -- =========================================================
+        -- NYTT: Auto-sync kalender når filen åpnes
+        -- =========================================================
+        pcall(function() require("calendar").sync() end) 
       end
     end,
   })
