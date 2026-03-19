@@ -119,17 +119,32 @@ end
 
 function M.sync(force)
   local current_file = vim.api.nvim_buf_get_name(0)
-  local today_str = os.date(require("logseq.config").current.journal_format) 
+  local config = require("logseq.config").current
   
-  if not current_file:match(today_str) then
+  -- 1. Build the exact, expected path for today's journal
+  local today_filename = os.date(config.journal_format) .. ".md"
+  local today_filepath = config.vault_path .. "/journals/" .. today_filename
+  
+  -- 2. Normalize both paths so backslashes/forward slashes don't break the comparison
+  local norm_current = vim.fn.resolve(current_file):gsub("\\", "/")
+  local norm_today = vim.fn.resolve(today_filepath):gsub("\\", "/")
+  if vim.fn.has("win32") == 1 then
+    norm_current = norm_current:lower()
+    norm_today = norm_today:lower()
+  end
+  
+  -- 3. Strict check
+  if norm_current ~= norm_today then
     if force then
+      -- Manual trigger (:Calsync) -> Warn but allow bypass
       vim.notify("[logseq.nvim] Warning: Syncing calendar into a non-today journal.", vim.log.levels.WARN)
     else
+      -- Automatic trigger (BufEnter) -> Abort silently
       return
     end
   end
 
-  local urls = require("logseq.config").current.calendar_urls
+  local urls = config.calendar_urls
   
   if not urls or #urls == 0 then 
     vim.schedule(function()

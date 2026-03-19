@@ -137,24 +137,27 @@ local function bootstrap(opts)
     vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
   end, {})
 
-  -- Auto-activate on markdown files inside the vault
+  -- Auto-activate on markdown files inside the vault (Refactored for flatter logic)
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile", "BufEnter" }, {
     group = group,
     pattern = "*.md",
     callback = function(ev)
-      if is_vault_file(vim.api.nvim_buf_get_name(ev.buf)) then 
-        activate(ev.buf)
-        
-        -- NEW: Template Injection for new files
-        if ev.event == "BufNewFile" then
-          vim.schedule(function()
-            local ok, templates = pcall(require, "logseq.templates")
-            if ok then templates.apply_template(ev.buf) end
-          end)
-        end
-        
-        pcall(function() require("logseq.calendar").sync() end) 
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      
+      -- Guard clause: exit early if not in vault
+      if not is_vault_file(bufpath) then return end 
+
+      activate(ev.buf)
+      
+      -- Template Injection for new files
+      if ev.event == "BufNewFile" then
+        vim.schedule(function()
+          local ok, templates = pcall(require, "logseq.templates")
+          if ok then templates.apply_template(ev.buf) end
+        end)
       end
+
+      pcall(function() require("logseq.calendar").sync() end) 
     end,
   })
 
