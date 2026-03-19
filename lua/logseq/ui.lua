@@ -62,10 +62,13 @@ function M.open_help()
 end
 
 function M.setup_buf(bufnr)
-  vim.opt_local.conceallevel = 2
+vim.opt_local.conceallevel = 2
   vim.api.nvim_buf_call(bufnr, function()
     vim.cmd([[syntax match LogseqUID /^\s*id::.*$/ conceal]])
+    vim.fn.matchadd("LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
+    vim.fn.matchadd("LogseqTime", [[(Heldags)]])
   end)
+  vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60" })
 
   -- Setup dynamic Winbar
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
