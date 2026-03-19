@@ -14,7 +14,7 @@ def fetch_and_parse(urls):
     for url in urls:
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=10) as response:
                 ical_string = response.read()
             
             calendar = icalendar.Calendar.from_ical(ical_string)
