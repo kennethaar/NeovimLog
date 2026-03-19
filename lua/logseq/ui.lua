@@ -13,10 +13,12 @@ function M.winbar()
   if name == "" then return "" end
   
   local title = name:gsub("%.md$", ""):gsub("---", "/")
+
+  local close_btn = "%=%@v:lua.require('logseq.ui').close_win@(:q) ✕ %X"
   
   -- If this buffer just saved, append the checkmark
   if M._saved_buffers[bufnr] then
-    return " " .. title .. "  ✓ Saved"
+    return " " .. title .. "  ✓ Saved" .. close_btn
   end
 
   -- Show current/next calendar event (powered by reminders module)
@@ -24,11 +26,11 @@ function M.winbar()
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title .. "  │  " .. event_text
+      return " " .. title .. "  │  " .. event_text .. close_btn
     end
   end
   
-  return " " .. title
+  return " " .. title .. close_btn
 end
 
 -- This is called by the autocommand to trigger the UI flash
@@ -46,6 +48,10 @@ function M.trigger_save_indicator(bufnr)
        end
     end)
   end, 1500)
+end
+
+function M.close_win()
+  vim.cmd("q")
 end
 
 function M.open_help()
