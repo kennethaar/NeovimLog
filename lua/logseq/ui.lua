@@ -14,7 +14,7 @@ function M.winbar()
   
   local title = name:gsub("%.md$", ""):gsub("---", "/")
 
-  local close_btn = "%=%@v:lua.require('logseq.ui').close_win@(:q) ✕ %X"
+  local close_btn = "%=%#Comment#(:q) %@v:lua.require('logseq.ui').close_win@%#Normal#✕%X "
   
   -- If this buffer just saved, append the checkmark
   if M._saved_buffers[bufnr] then
@@ -22,11 +22,12 @@ function M.winbar()
   end
 
   -- Show current/next calendar event (powered by reminders module)
+  -- %< tells Neovim: "if the winbar overflows, truncate HERE" — so ✕ always stays visible
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title .. "  │  " .. event_text .. close_btn
+      return " " .. title .. "%<  │  " .. event_text .. close_btn
     end
   end
   
@@ -105,6 +106,10 @@ function M.setup_buf(bufnr)
       -- Hide id:: property lines entirely
       vim.cmd([[syntax match LogseqUID /^\s*id::.*$/ conceal]])
 
+      -- Warm red on calendar time slots (matchadd wins over markdown syntax)
+      vim.fn.matchadd("LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
+      vim.fn.matchadd("LogseqTime", [[(Heldags)]])
+
       -- Conceal [[wikilinks]]: hide [[ ]], trim namespace prefix, underline visible name
       vim.cmd([[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
       -- NOTE: Cannot use [[ ]] Lua string here — Vim's \] creates ]] which terminates Lua long strings
@@ -116,6 +121,9 @@ function M.setup_buf(bufnr)
       -- Conceal #tags: hide the # prefix
       vim.cmd([[syntax match LogseqTagHash /#\ze[[:alnum:]_\-\/]/ conceal]])
       vim.cmd([[syntax match LogseqTag /#[[:alnum:]_\-\/]\+/ contains=LogseqTagHash]])
+
+      -- Strikethrough for ~~cancelled~~ text (used by calendar for removed events)
+      vim.cmd([[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
     end)
   end)
 
@@ -123,12 +131,23 @@ function M.setup_buf(bufnr)
     vim.notify("[logseq.nvim] Syntax conceal error: " .. tostring(err), vim.log.levels.WARN)
   end
 
-  -- Highlights: underline links, refs, and tags so they're visually distinct
-  vim.cmd([[highlight default LogseqLink gui=underline cterm=underline]])
-  vim.cmd([[highlight default LogseqBlockRef gui=underline,italic cterm=underline]])
-  vim.cmd([[highlight default LogseqTag gui=underline cterm=underline]])
-  vim.cmd([[highlight default link LogseqLinkDelim Conceal]])
-  vim.cmd([[highlight default link LogseqBlockRefDelim Conceal]])
+  -- Highlights: colored links, tags, strikethrough, and time slots
+  vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60", ctermfg = 167 })
+  vim.api.nvim_set_hl(0, "LogseqLink", { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqBlockRef", { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqTag", { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrike", { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrikeDelim", { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqLinkDelim", { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim", { link = "Conceal" })
+
+  -- Trigger active-event highlight on buffer enter (reminders module handles the extmarks)
+  vim.api.nvim_create_autocmd("BufEnter", {
+    buffer = bufnr,
+    callback = function()
+      pcall(function() require("logseq.reminders").update_highlight() end)
+    end
+  })
 end
 
 return M

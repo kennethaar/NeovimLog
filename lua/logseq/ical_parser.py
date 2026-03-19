@@ -28,7 +28,7 @@ def fetch_and_parse(urls):
                 
                 summary = str(event.get("SUMMARY", "(Uten tittel)"))
                 start = event.get("DTSTART").dt
-                end = event.get("DTEND").dt if event.get("DTEND") else None
+                end_dt = event.get("DTEND").dt if event.get("DTEND") else None
                 
                 # Sjekk om det er en heldagshendelse (datetime.date i stedet for datetime.datetime)
                 is_allday = not isinstance(start, datetime)
@@ -39,8 +39,8 @@ def fetch_and_parse(urls):
                     # Konverter til lokal tidssone
                     local_tz = datetime.now(pytz.utc).astimezone().tzinfo
                     start_local = start.astimezone(local_tz)
-                    if end and isinstance(end, datetime):
-                        end_local = end.astimezone(local_tz)
+                    if end_dt and isinstance(end_dt, datetime):
+                        end_local = end_dt.astimezone(local_tz)
                         time_str = f"{start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')}"
                     else:
                         time_str = start_local.strftime('%H:%M')
