@@ -53,26 +53,34 @@ local function show_reminder_float(summary, time_str)
   end
 
   local lead = require("logseq.config").current.reminder_minutes or 3
+
+  -- Build content lines — ✖ sits in top-right of line 0
+  local body_text = "  ☕ " .. lead .. " minutes until " .. summary .. " (" .. time_str .. ")"
+  local width = math.max(#body_text + 6, 44)
+
+  -- Pad the close button to the far right of line 0
+  local close_line = string.rep(" ", width - 4) .. "(:q) ✖"
+  width = math.max(width, #close_line + 2)
+
+  local ok_padding = string.rep(" ", math.floor((width - 4) / 2))
+
   local lines = {
+    close_line,
     "",
     "  ☕ " .. lead .. " minutes until",
     "     " .. summary .. " (" .. time_str .. ")",
     "",
-    "              [OK]",
+    ok_padding .. "[OK]",
     "",
   }
 
-  local width = 0
-  for _, line in ipairs(lines) do
-    if #line > width then width = #line end
-  end
-  width = math.max(width + 4, 40)
   local height = #lines
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].buftype = "nofile"
 
   local ui_width = vim.o.columns
   local ui_height = vim.o.lines
@@ -94,23 +102,43 @@ local function show_reminder_float(summary, time_str)
   M._float_win = win
   M._float_buf = buf
 
-  -- Highlight the [OK] button
-  vim.api.nvim_buf_add_highlight(buf, -1, "WarningMsg", 1, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, -1, "Bold", 2, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, -1, "Special", 4, 0, -1)
+  -- Force normal mode (in case we were in insert mode when the timer fired)
+  vim.cmd("stopinsert")
 
-  -- Dismiss keymaps
+  -- Highlights
+  local hl_close_col = #close_line - #"(:q) ✖"
+  vim.api.nvim_buf_add_highlight(buf, -1, "Comment", 0, hl_close_col, hl_close_col + #"(:q)")
+  vim.api.nvim_buf_add_highlight(buf, -1, "DiagnosticError", 0, #close_line - #"✖", -1)
+  vim.api.nvim_buf_add_highlight(buf, -1, "WarningMsg", 2, 0, -1)
+  vim.api.nvim_buf_add_highlight(buf, -1, "Bold", 3, 0, -1)
+  vim.api.nvim_buf_add_highlight(buf, -1, "Special", 5, 0, -1)
+
+  -- Dismiss function
   local function dismiss()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
+    if M._float_win and vim.api.nvim_win_is_valid(M._float_win) then
+      vim.api.nvim_win_close(M._float_win, true)
     end
     M._float_win = nil
     M._float_buf = nil
   end
 
-  vim.keymap.set("n", "<CR>", dismiss, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "q", dismiss, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "<Esc>", dismiss, { buffer = buf, nowait = true })
+  -- Keyboard dismiss — map generously so nothing gets stuck
+  local dismiss_keys = { "<CR>", "q", "<Esc>", "<Space>", "<BS>" }
+  for _, key in ipairs(dismiss_keys) do
+    vim.keymap.set("n", key, dismiss, { buffer = buf, nowait = true, silent = true })
+  end
+
+  -- Mouse dismiss — clicking anywhere in the float closes it
+  vim.keymap.set("n", "<LeftRelease>", dismiss, { buffer = buf, nowait = true, silent = true })
+
+  -- Also close if the user leaves the float window
+  vim.api.nvim_create_autocmd("WinLeave", {
+    buffer = buf,
+    once = true,
+    callback = function()
+      vim.schedule(dismiss)
+    end,
+  })
 end
 
 -- ── Winbar Countdown ─────────────────────────────────────────────────

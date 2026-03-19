@@ -1,13 +1,35 @@
 local M = {}
 local todo_states = { "TODO", "WAITING", "DOING", "DONE", "CANCELLED" }
 
+-- ── Cursor Snapping ──────────────────────────────────────────────────
+-- After vertical movement, snap cursor to just after "- " on bullet lines.
+-- Horizontal movement (h/l/arrows) is unrestricted.
+
+local _snapping = false
+
+local function snap_to_bullet()
+  if _snapping then return end
+  local line = vim.api.nvim_get_current_line()
+  local prefix = line:match("^(%s*%- )")
+  if not prefix then return end
+
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  if col < #prefix then
+    _snapping = true
+    vim.api.nvim_win_set_cursor(0, { row, #prefix })
+    _snapping = false
+  end
+end
+
+-- ── TODO Cycling ─────────────────────────────────────────────────────
+
 function M.cycle_todo()
   local parser = require("logseq.parser")
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
   local parsed = parser.parse(lines)
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local block = parser.block_at_line(parsed.blocks, lnum)
-  
+
   if not block then return end
   local line = lines[block.line_start]
   local indent, rest = line:match("^(%s*)%- (.*)$")
@@ -35,60 +57,172 @@ function M.cycle_todo()
     next_state = todo_states[1]
   end
 
-  local new_line = next_state and (indent .. "- " .. next_state .. " " .. content_after) 
+  local new_line = next_state and (indent .. "- " .. next_state .. " " .. content_after)
                                or (indent .. "- " .. content_after)
   vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_start, false, { new_line })
 end
 
+-- ── Buffer Setup ─────────────────────────────────────────────────────
+
 function M.setup_buf(bufnr)
-  local opts = { buffer = bufnr, expr = true }
-
-  -- Smart Bullet: Enter
-  vim.keymap.set("i", "<CR>", function()
-    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-    local line = vim.api.nvim_get_current_line()
-    local indent = line:match("^(%s*)") or ""
-    local is_at_end = (col >= #line)
-    
-    if line:match("id::") then
-      return "<CR>" .. indent:sub(1, -3) .. "- "
-    end
-    
-    local next_line = vim.api.nvim_buf_get_lines(0, row, row + 1, false)[1] or ""
-    if is_at_end and next_line:match("^%s+id::") then
-      return "<Down><End><CR>" .. indent .. "- "
-    end
-    
-    return "<CR>" .. indent .. "- "
-  end, vim.tbl_extend("force", opts, { desc = "Logseq Smart Bullet" }))
-
-  -- Smart Property: Shift+Enter
-  vim.keymap.set("i", "<S-CR>", function()
-    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-    local line = vim.api.nvim_get_current_line()
-    local indent = line:match("^(%s*)") or ""
-    local is_at_end = (col >= #line)
-    
-    if line:match("id::") then return "<CR>" .. indent end
-    
-    local next_line = vim.api.nvim_buf_get_lines(0, row, row + 1, false)[1] or ""
-    if is_at_end and line:match("^%s*%- ") and next_line:match("^%s+id::") then
-      return "<Down><End><CR>" .. indent .. "  "
-    end
-    
-    if line:match("^%s*%- ") then indent = indent .. "  " end
-    return "<CR>" .. indent
-  end, vim.tbl_extend("force", opts, { desc = "Logseq Smart Property" }))
-
+  local parser = require("logseq.parser")
   local map = vim.keymap.set
+
+  -- ── Smart Enter (Insert Mode) ────────────────────────────────────
+  -- Works like 'o': uses the parser to find block.line_end and inserts
+  -- a new sibling AFTER all children. Handles text splitting mid-line
+  -- and completion popup confirmation.
+  map("i", "<CR>", function()
+    -- 1. Completion popup open → confirm selection, done
+    if vim.fn.pumvisible() == 1 then
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes("<C-y>", true, false, true), "n", true)
+      return
+    end
+
+    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+    local line = vim.api.nvim_get_current_line()
+
+    -- 2. Parse buffer to locate the current block
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local parsed = parser.parse(lines)
+    local block = parser.block_at_line(parsed.blocks, row)
+
+    local indent = 0
+    local insert_after = row
+
+    if block then
+      indent = block.indent
+      insert_after = block.line_end
+    end
+
+    local indent_str = string.rep(" ", indent)
+
+    -- 3. Text splitting: if cursor is mid-content, move trailing text to new block
+    local text_after = ""
+    local bullet_prefix = line:match("^(%s*%- )")
+    if bullet_prefix and col > #bullet_prefix - 1 and col < #line then
+      text_after = line:sub(col + 1)
+      vim.api.nvim_set_current_line(line:sub(1, col))
+      -- Buffer changed — re-parse to get correct line_end
+      lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+      parsed = parser.parse(lines)
+      block = parser.block_at_line(parsed.blocks, row)
+      if block then insert_after = block.line_end end
+    end
+
+    -- 4. Insert the new sibling line
+    local new_line = indent_str .. "- " .. text_after
+    vim.api.nvim_buf_set_lines(0, insert_after, insert_after, false, { new_line })
+
+    -- 5. Place cursor right after "- "
+    vim.api.nvim_win_set_cursor(0, { insert_after + 1, #indent_str + 2 })
+  end, { buffer = bufnr, desc = "Logseq: new sibling (insert)" })
+
+  -- ── Smart Property: Shift+Enter ──────────────────────────────────
+  -- Drops to a continuation/property line (no bullet), indented under the block.
+  map("i", "<S-CR>", function()
+    local row = vim.api.nvim_win_get_cursor(0)[1]
+
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local parsed = parser.parse(lines)
+    local block = parser.block_at_line(parsed.blocks, row)
+
+    local indent = 0
+    local insert_after = row
+
+    if block then
+      indent = block.indent + 2  -- property indent = parent + 2
+      -- Insert right after the bullet + its properties, but before children
+      -- Walk from block.line_start + 1 to find first child or end
+      insert_after = block.line_start
+      for i = block.line_start + 1, block.line_end do
+        local l = lines[i]
+        -- If it's a child bullet, stop before it
+        if l:match("^%s*%- ") then break end
+        insert_after = i
+      end
+    end
+
+    local indent_str = string.rep(" ", indent)
+    vim.api.nvim_buf_set_lines(0, insert_after, insert_after, false, { indent_str })
+    vim.api.nvim_win_set_cursor(0, { insert_after + 1, #indent_str })
+  end, { buffer = bufnr, desc = "Logseq: new property line" })
+
+  -- ── O: New Sibling Above (Normal Mode) ───────────────────────────
+  map("n", "O", function()
+    local row = vim.api.nvim_win_get_cursor(0)[1]
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local parsed = parser.parse(lines)
+    local block = parser.block_at_line(parsed.blocks, row)
+
+    local indent = 0
+    local insert_before = row
+
+    if block then
+      indent = block.indent
+      insert_before = block.line_start
+    end
+
+    local new_line = string.rep(" ", indent) .. "- "
+    vim.api.nvim_buf_set_lines(0, insert_before - 1, insert_before - 1, false, { new_line })
+    vim.api.nvim_win_set_cursor(0, { insert_before, #new_line })
+    vim.cmd("startinsert!")
+  end, { buffer = bufnr, desc = "Logseq: new sibling above" })
+
+  -- ── Vertical Movement Snapping (Normal Mode) ─────────────────────
+  -- j/k and Up/Down place cursor after "- " on bullet lines.
+  -- Respects counts (e.g. 5j).
+  for _, key in ipairs({ "j", "<Down>" }) do
+    map("n", key, function()
+      vim.cmd("normal! " .. vim.v.count1 .. "j")
+      snap_to_bullet()
+    end, { buffer = bufnr, silent = true, desc = "Logseq: down + snap" })
+  end
+
+  for _, key in ipairs({ "k", "<Up>" }) do
+    map("n", key, function()
+      vim.cmd("normal! " .. vim.v.count1 .. "k")
+      snap_to_bullet()
+    end, { buffer = bufnr, silent = true, desc = "Logseq: up + snap" })
+  end
+
+  -- ── Vertical Movement Snapping (Insert Mode) ─────────────────────
+  -- Fires on any line change in insert mode (Up/Down arrows, mouse, etc.)
+  local last_insert_row = nil
+  local group = vim.api.nvim_create_augroup("LogseqSnap_" .. bufnr, { clear = true })
+
+  vim.api.nvim_create_autocmd("CursorMovedI", {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      local row = vim.api.nvim_win_get_cursor(0)[1]
+      if last_insert_row and row ~= last_insert_row then
+        vim.schedule(snap_to_bullet)
+      end
+      last_insert_row = row
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("InsertEnter", {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      last_insert_row = vim.api.nvim_win_get_cursor(0)[1]
+    end,
+  })
+
+  -- ── TODO Cycling ─────────────────────────────────────────────────
   map("n", "<C-t>", M.cycle_todo, { buffer = bufnr, desc = "Logseq: cycle TODO" })
   map("i", "<C-t>", function() M.cycle_todo(); vim.cmd("startinsert!") end, { buffer = bufnr })
-  
+
+  -- ── Tab Indent/Outdent ───────────────────────────────────────────
   map("i", "<Tab>", "<C-t>", { buffer = bufnr })
   map("i", "<S-Tab>", "<C-d>", { buffer = bufnr })
   map("n", "<Tab>", ">>", { buffer = bufnr })
   map("n", "<S-Tab>", "<<", { buffer = bufnr })
 
+  -- ── Buffer Options ───────────────────────────────────────────────
   vim.bo[bufnr].shiftwidth = 2
   vim.bo[bufnr].tabstop = 2
   vim.bo[bufnr].expandtab = true

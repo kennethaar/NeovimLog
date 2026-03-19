@@ -144,14 +144,8 @@ function M.setup_buf(bufnr)
     end
   })
 
-  -- Make 'Enter' confirm the selection smoothly
-  vim.keymap.set("i", "<CR>", function()
-    if vim.fn.pumvisible() == 1 then
-      return vim.api.nvim_replace_termcodes("<C-y>", true, false, true)
-    else
-      return vim.api.nvim_replace_termcodes("<CR>", true, false, true)
-    end
-  end, { expr = true, buffer = bufnr, desc = "Confirm Logseq link selection" })
+  -- NOTE: <CR> for popup confirmation is handled by editing.lua's unified
+  -- <CR> mapping (checks pumvisible before creating a new sibling).
 end
 
 return M
