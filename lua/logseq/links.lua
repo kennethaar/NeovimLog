@@ -102,6 +102,12 @@ function M.follow()
     if backlinks.navigate() then return end
   end
 
+  -- Delegate to queries navigation if cursor is in the queries region
+  local q_ok, queries = pcall(require, "logseq.queries")
+  if q_ok and queries.in_region(vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_cursor(0)[1]) then
+    if queries.navigate() then return end
+  end
+
   local link_type, value = M.link_under_cursor()
 
   if not link_type then

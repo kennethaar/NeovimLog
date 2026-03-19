@@ -21,6 +21,27 @@ local function snap_to_bullet()
   end
 end
 
+-- ── Region Guards ────────────────────────────────────────────────────
+-- Shared check for backlinks (read-only) and queries (non-task lines).
+-- Returns true if the cursor is in a protected region and the caller
+-- should abort its action.
+
+local function in_protected_region(bufnr)
+  local lnum = vim.api.nvim_win_get_cursor(0)[1]
+
+  local bl_ok, backlinks = pcall(require, "logseq.backlinks")
+  if bl_ok and backlinks.in_region(bufnr, lnum) then
+    return true
+  end
+
+  local q_ok, queries = pcall(require, "logseq.queries")
+  if q_ok and queries.in_region(bufnr, lnum) then
+    return true
+  end
+
+  return false
+end
+
 -- ── TODO Cycling ─────────────────────────────────────────────────────
 
 function M.cycle_todo()
@@ -73,14 +94,12 @@ function M.setup_buf(bufnr)
   -- a new sibling AFTER all children. Handles text splitting mid-line
   -- and completion popup confirmation.
   map("i", "<CR>", function()
-    -- 0. Backlinks region guard
-    local bl_ok, backlinks = pcall(require, "logseq.backlinks")
-    if bl_ok and backlinks.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then
+    if in_protected_region(bufnr) then
       vim.cmd("stopinsert")
       return
     end
 
-    -- 1. Completion popup open → confirm selection, done
+    -- Completion popup open → confirm selection, done
     if vim.fn.pumvisible() == 1 then
       vim.api.nvim_feedkeys(
         vim.api.nvim_replace_termcodes("<C-y>", true, false, true), "n", true)
@@ -90,7 +109,7 @@ function M.setup_buf(bufnr)
     local row, col = unpack(vim.api.nvim_win_get_cursor(0))
     local line = vim.api.nvim_get_current_line()
 
-    -- 2. Parse buffer to locate the current block
+    -- Parse buffer to locate the current block
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     local parsed = parser.parse(lines)
     local block = parser.block_at_line(parsed.blocks, row)
@@ -105,7 +124,7 @@ function M.setup_buf(bufnr)
 
     local indent_str = string.rep(" ", indent)
 
-    -- 3. Text splitting: if cursor is mid-content, move trailing text to new block
+    -- Text splitting: if cursor is mid-content, move trailing text to new block
     local text_after = ""
     local bullet_prefix = line:match("^(%s*%- )")
     if bullet_prefix and col > #bullet_prefix - 1 and col < #line then
@@ -118,20 +137,18 @@ function M.setup_buf(bufnr)
       if block then insert_after = block.line_end end
     end
 
-    -- 4. Insert the new sibling line
+    -- Insert the new sibling line
     local new_line = indent_str .. "- " .. text_after
     vim.api.nvim_buf_set_lines(0, insert_after, insert_after, false, { new_line })
 
-    -- 5. Place cursor right after "- "
+    -- Place cursor right after "- "
     vim.api.nvim_win_set_cursor(0, { insert_after + 1, #indent_str + 2 })
   end, { buffer = bufnr, desc = "Logseq: new sibling (insert)" })
 
   -- ── Smart Property: Shift+Enter ──────────────────────────────────
   -- Drops to a continuation/property line (no bullet), indented under the block.
   map("i", "<S-CR>", function()
-    -- Backlinks region guard
-    local bl_ok, backlinks = pcall(require, "logseq.backlinks")
-    if bl_ok and backlinks.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then
+    if in_protected_region(bufnr) then
       vim.cmd("stopinsert")
       return
     end
@@ -165,11 +182,7 @@ function M.setup_buf(bufnr)
 
   -- ── O: New Sibling Above (Normal Mode) ───────────────────────────
   map("n", "O", function()
-    -- Backlinks region guard
-    local bl_ok, backlinks = pcall(require, "logseq.backlinks")
-    if bl_ok and backlinks.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then
-      return
-    end
+    if in_protected_region(bufnr) then return end
 
     local row = vim.api.nvim_win_get_cursor(0)[1]
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
@@ -189,6 +202,17 @@ function M.setup_buf(bufnr)
     vim.api.nvim_win_set_cursor(0, { insert_before, #new_line })
     vim.cmd("startinsert!")
   end, { buffer = bufnr, desc = "Logseq: new sibling above" })
+
+  -- ── o: Guard for motions.new_sibling ─────────────────────────────
+  -- motions.lua maps o → new_sibling before us, so we override with a
+  -- guarded wrapper that delegates to motions when outside regions.
+  local motions_ok, motions = pcall(require, "logseq.motions")
+  if motions_ok and motions.new_sibling then
+    map("n", require("logseq.config").current.keymaps.new_sibling, function()
+      if in_protected_region(bufnr) then return end
+      motions.new_sibling()
+    end, { buffer = bufnr, silent = true, desc = "Logseq: new sibling (guarded)" })
+  end
 
   -- ── Vertical Movement Snapping (Normal Mode) ─────────────────────
   -- j/k and Up/Down place cursor after "- " on bullet lines.
