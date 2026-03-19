@@ -184,6 +184,9 @@ function M.sync(force)
         if ok and events then
           vim.schedule(function() 
             apply_events_to_buffer(vim.api.nvim_get_current_buf(), events) 
+            -- Feed parsed events to reminders for winbar countdown + popup timers
+            local rok, reminders = pcall(require, "logseq.reminders")
+            if rok then reminders.schedule(events) end
             vim.notify("[logseq.nvim] Calendar synced successfully!", vim.log.levels.INFO)
           end)
         else

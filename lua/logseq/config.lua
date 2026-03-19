@@ -3,6 +3,7 @@ local M = {}
 M.defaults = {
   vault_path = nil,
   calendar_urls = {},
+  reminder_minutes = 3,
   journal_format = "%Y_%m_%d",
   indent_size = 2,
   fold_on_open = false,

@@ -93,7 +93,37 @@ local function bootstrap(opts)
     ask_for_url(0) 
   end, {})
 
-  -- Command 3: Jump to Today's Journal
+  -- Command 3: Change reminder lead time
+  vim.api.nvim_create_user_command("Calremind", function()
+    local current = config.current.reminder_minutes
+    local prompt_msg = current
+      and string.format("Reminder lead time (currently %d min, 0 to disable): ", current)
+      or "How many minutes before a meeting should I remind you? (default: 3): "
+
+    vim.ui.input({ prompt = prompt_msg }, function(input)
+      if not input or input == "" then
+        if not current then
+          config.set_reminder_minutes(3)
+          vim.notify("[logseq.nvim] Reminders set to 3 minutes.", vim.log.levels.INFO)
+        end
+        return
+      end
+      local mins = tonumber(input)
+      if not mins or mins < 0 then
+        vim.notify("[logseq.nvim] Invalid number.", vim.log.levels.WARN)
+        return
+      end
+      config.set_reminder_minutes(mins)
+      if mins == 0 then
+        vim.notify("[logseq.nvim] Reminders disabled.", vim.log.levels.INFO)
+        pcall(function() require("logseq.reminders").cancel_all() end)
+      else
+        vim.notify(string.format("[logseq.nvim] Reminders set to %d minutes.", mins), vim.log.levels.INFO)
+      end
+    end)
+  end, {})
+
+  -- Command 4: Jump to Today's Journal
   vim.api.nvim_create_user_command("LogseqToday", function()
     local dir = config.current.vault_path .. "/journals"
     if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
@@ -117,6 +147,26 @@ local function bootstrap(opts)
       end
     end,
   })
+
+  -- First-run: ask for reminder lead time if never configured
+  if config.current.reminder_minutes == nil then
+    vim.defer_fn(function()
+      vim.ui.input({
+        prompt = "How many minutes before a meeting should I remind you? (default: 3): ",
+      }, function(input)
+        local mins = 3
+        if input and input ~= "" then
+          mins = tonumber(input) or 3
+        end
+        config.set_reminder_minutes(mins)
+        if mins > 0 then
+          vim.notify(string.format("[logseq.nvim] Reminders set to %d minutes. Change with :Calremind", mins), vim.log.levels.INFO)
+        else
+          vim.notify("[logseq.nvim] Reminders disabled. Enable with :Calremind", vim.log.levels.INFO)
+        end
+      end)
+    end, 500)  -- Small delay so it doesn't collide with other startup prompts
+  end
 end
 
 function M.setup(opts)

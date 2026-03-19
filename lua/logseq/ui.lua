@@ -18,6 +18,15 @@ function M.winbar()
   if M._saved_buffers[bufnr] then
     return " " .. title .. "  ✓ Saved"
   end
+
+  -- Show current/next calendar event (powered by reminders module)
+  local ok, reminders = pcall(require, "logseq.reminders")
+  if ok then
+    local event_text = reminders.next_meeting_str()
+    if event_text ~= "" then
+      return " " .. title .. "  │  " .. event_text
+    end
+  end
   
   return " " .. title
 end
@@ -62,17 +71,9 @@ function M.open_help()
 end
 
 function M.setup_buf(bufnr)
-vim.opt_local.conceallevel = 2
-  vim.api.nvim_buf_call(bufnr, function()
-    vim.cmd([[syntax match LogseqUID /^\s*id::.*$/ conceal]])
-    vim.fn.matchadd("LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
-    vim.fn.matchadd("LogseqTime", [[(Heldags)]])
-  end)
-  vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60" })
-
-  -- Setup dynamic Winbar
+  -- Setup dynamic Winbar (first — must not be blocked by syntax errors)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
-  
+
   -- Setup Statusline
   local stl = vim.o.statusline
   if stl == "" then stl = "%<%f %h%m%r%=%-14.(%l,%c%V%) %P" end
@@ -82,13 +83,46 @@ vim.opt_local.conceallevel = 2
 
   vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
 
-  -- NEW: Listen for ANY file save (autosave or manual) and trigger the indicator
+  -- Listen for ANY file save (autosave or manual) and trigger the indicator
   vim.api.nvim_create_autocmd("BufWritePost", {
     buffer = bufnr,
     callback = function(ev)
       M.trigger_save_indicator(ev.buf)
     end
   })
+
+  -- Syntax concealment (wrapped in pcall so a bad rule can't break the rest of setup)
+  vim.opt_local.conceallevel = 2
+
+  local ok, err = pcall(function()
+    vim.api.nvim_buf_call(bufnr, function()
+      -- Hide id:: property lines entirely
+      vim.cmd([[syntax match LogseqUID /^\s*id::.*$/ conceal]])
+
+      -- Conceal [[wikilinks]]: hide [[ ]], trim namespace prefix, underline visible name
+      vim.cmd([[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
+      -- NOTE: Cannot use [[ ]] Lua string here — Vim's \] creates ]] which terminates Lua long strings
+      vim.cmd("syntax match LogseqLinkNS /.*\\// contained conceal")
+
+      -- Conceal ((block-refs)): hide (( ))
+      vim.cmd([[syntax region LogseqBlockRef matchgroup=LogseqBlockRefDelim start=/((\ze[^(]/ end=/))/ concealends oneline]])
+
+      -- Conceal #tags: hide the # prefix
+      vim.cmd([[syntax match LogseqTagHash /#\ze[[:alnum:]_\-\/]/ conceal]])
+      vim.cmd([[syntax match LogseqTag /#[[:alnum:]_\-\/]\+/ contains=LogseqTagHash]])
+    end)
+  end)
+
+  if not ok then
+    vim.notify("[logseq.nvim] Syntax conceal error: " .. tostring(err), vim.log.levels.WARN)
+  end
+
+  -- Highlights: underline links, refs, and tags so they're visually distinct
+  vim.cmd([[highlight default LogseqLink gui=underline cterm=underline]])
+  vim.cmd([[highlight default LogseqBlockRef gui=underline,italic cterm=underline]])
+  vim.cmd([[highlight default LogseqTag gui=underline cterm=underline]])
+  vim.cmd([[highlight default link LogseqLinkDelim Conceal]])
+  vim.cmd([[highlight default link LogseqBlockRefDelim Conceal]])
 end
 
 return M
