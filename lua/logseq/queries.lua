@@ -204,13 +204,15 @@ local function build_section(tasks, heading_title)
     table.insert(lines, "  (No tasks found)")
   else
     for _, t in ipairs(tasks) do
-      table.insert(lines, "  - " .. t.task)
+      local source_suffix = "  ← [[" .. t.source .. "]]"
+      table.insert(lines, "  - " .. t.task .. source_suffix)
       smap[#lines] = {
         filepath = t.filepath,
         lnum = t.lnum,
         indent_prefix = t.indent_prefix,
         original_task = t.task,
         source = t.source,
+        source_suffix = source_suffix,
       }
     end
   end
@@ -257,7 +259,10 @@ local function sync_edits(bufnr)
     if abs_line > #buf_lines then goto next_line end
 
     local current_text = buf_lines[abs_line]
+    -- Strip bullet prefix, then strip the appended source suffix (← [[Page]])
     local displayed_task = vim.trim(current_text:gsub("^%s*%- ", ""))
+    displayed_task = displayed_task:gsub("%s*←%s*%[%[.-%]%]$", "")
+
     if displayed_task == info.original_task then goto next_line end
 
     local file_edits = edits_by_file[info.filepath] or {}
@@ -418,21 +423,14 @@ function M.render_section(bufnr)
   }
   M._visible[bufnr] = true
 
-  -- Build absolute source map + add extmark decorations
+  -- Build absolute source map
   M._source_map[bufnr] = {}
   local ns = vim.api.nvim_create_namespace("logseq_queries")
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
-  -- Mapping: display_lines[rel] → inject[rel + 1] → buffer 1-indexed (section_start + rel)
   for rel_line, info in pairs(all_smap) do
-    local abs_line = section_start + rel_line -- 1-indexed buffer line
+    local abs_line = section_start + rel_line
     M._source_map[bufnr][abs_line] = info
-
-    -- Virtual text showing source page
-    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, abs_line - 1, 0, {
-      virt_text = { { "  ← " .. info.source, "Comment" } },
-      virt_text_pos = "eol",
-    })
   end
 
   -- Highlights — all nvim_buf_add_highlight calls use 0-indexed lines

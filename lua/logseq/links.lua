@@ -102,9 +102,12 @@ function M.follow()
     if backlinks.navigate() then return end
   end
 
-  -- Delegate to queries navigation if cursor is in the queries region
+  -- In queries region: if cursor is on a [[link]], follow it normally.
+  -- Otherwise, navigate to the source line of the task.
   local q_ok, queries = pcall(require, "logseq.queries")
-  if q_ok and queries.in_region(vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_cursor(0)[1]) then
+  local in_queries = q_ok and queries.in_region(vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_cursor(0)[1])
+
+  if in_queries and not M.link_under_cursor() then
     if queries.navigate() then return end
   end
 
@@ -127,13 +130,43 @@ function M.follow()
     local filename = M.page_to_filename(value)
     local filepath = vault .. "/pages/" .. filename
 
-    -- Also try journals (users sometimes link dates)
-    if vim.fn.filereadable(filepath) == 0 then
-      local journal_name = value:gsub("%-", "_") .. ".md"
-      local journal_path = vault .. "/journals/" .. journal_name
-      if vim.fn.filereadable(journal_path) == 1 then
-        vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
-        return
+    -- Try pages/ first
+    if vim.fn.filereadable(filepath) == 1 then
+      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+      return
+    end
+
+    -- Try journals/ with multiple filename strategies
+    local journal_dir = vault .. "/journals"
+    if vim.fn.isdirectory(journal_dir) == 1 then
+      local candidates = {
+        value .. ".md",                         -- exact match
+        value:gsub("%-", "_") .. ".md",         -- hyphens → underscores
+        value:gsub("_", "-") .. ".md",          -- underscores → hyphens
+      }
+
+      -- Deduplicate (e.g. if value has no hyphens, first two are identical)
+      local tried = {}
+      for _, name in ipairs(candidates) do
+        if not tried[name] then
+          tried[name] = true
+          local journal_path = journal_dir .. "/" .. name
+          if vim.fn.filereadable(journal_path) == 1 then
+            vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
+            return
+          end
+        end
+      end
+
+      -- Last resort: glob scan for any file containing the core date digits
+      local digits = value:gsub("[^%d]", "")
+      if #digits >= 8 then
+        local matches = vim.fn.glob(journal_dir .. "/*" .. digits:sub(1, 4)
+          .. "*" .. digits:sub(5, 6) .. "*" .. digits:sub(7, 8) .. "*.md", true, true)
+        if #matches == 1 then
+          vim.cmd("edit " .. vim.fn.fnameescape(matches[1]))
+          return
+        end
       end
     end
 
