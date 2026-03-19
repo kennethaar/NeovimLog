@@ -20,6 +20,7 @@ M.defaults = {
     new_sibling  = "o",
     fold_toggle  = "za",
     follow_link  = "<CR>",
+    toggle_backlinks = "<leader>b",
   },
 }
 

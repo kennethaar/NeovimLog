@@ -96,6 +96,12 @@ end
 
 --- Follow the link under the cursor.
 function M.follow()
+  -- Delegate to backlinks navigation if cursor is in the backlinks region
+  local bl_ok, backlinks = pcall(require, "logseq.backlinks")
+  if bl_ok and backlinks.in_region(vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_cursor(0)[1]) then
+    if backlinks.navigate() then return end
+  end
+
   local link_type, value = M.link_under_cursor()
 
   if not link_type then

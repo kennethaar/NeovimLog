@@ -73,6 +73,13 @@ function M.setup_buf(bufnr)
   -- a new sibling AFTER all children. Handles text splitting mid-line
   -- and completion popup confirmation.
   map("i", "<CR>", function()
+    -- 0. Backlinks region guard
+    local bl_ok, backlinks = pcall(require, "logseq.backlinks")
+    if bl_ok and backlinks.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then
+      vim.cmd("stopinsert")
+      return
+    end
+
     -- 1. Completion popup open → confirm selection, done
     if vim.fn.pumvisible() == 1 then
       vim.api.nvim_feedkeys(
@@ -122,6 +129,13 @@ function M.setup_buf(bufnr)
   -- ── Smart Property: Shift+Enter ──────────────────────────────────
   -- Drops to a continuation/property line (no bullet), indented under the block.
   map("i", "<S-CR>", function()
+    -- Backlinks region guard
+    local bl_ok, backlinks = pcall(require, "logseq.backlinks")
+    if bl_ok and backlinks.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then
+      vim.cmd("stopinsert")
+      return
+    end
+
     local row = vim.api.nvim_win_get_cursor(0)[1]
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
@@ -151,6 +165,12 @@ function M.setup_buf(bufnr)
 
   -- ── O: New Sibling Above (Normal Mode) ───────────────────────────
   map("n", "O", function()
+    -- Backlinks region guard
+    local bl_ok, backlinks = pcall(require, "logseq.backlinks")
+    if bl_ok and backlinks.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then
+      return
+    end
+
     local row = vim.api.nvim_win_get_cursor(0)[1]
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     local parsed = parser.parse(lines)
