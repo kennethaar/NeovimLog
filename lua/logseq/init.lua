@@ -144,6 +144,15 @@ local function bootstrap(opts)
     callback = function(ev)
       if is_vault_file(vim.api.nvim_buf_get_name(ev.buf)) then 
         activate(ev.buf)
+        
+        -- NEW: Template Injection for new files
+        if ev.event == "BufNewFile" then
+          vim.schedule(function()
+            local ok, templates = pcall(require, "logseq.templates")
+            if ok then templates.apply_template(ev.buf) end
+          end)
+        end
+        
         pcall(function() require("logseq.calendar").sync() end) 
       end
     end,
