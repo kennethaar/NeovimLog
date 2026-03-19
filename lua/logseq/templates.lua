@@ -125,4 +125,8 @@ function M.apply_template(bufnr)
   end
 end
 
+function M.setup_buf(bufnr)
+  vim.keymap.set("n", "<Leader>t", function() M.apply_template(bufnr) end, { buffer = bufnr, desc = "Logseq: Apply Template" })
+end
+
 return M
