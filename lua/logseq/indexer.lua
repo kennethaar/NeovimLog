@@ -38,7 +38,7 @@ function M.page_name_from_file(filepath)
   if journal_name then return journal_name end
 
   local page_name = rel:match("^pages/(.+)%.md$")
-  if page_name then return util.decode_filename(page_name .. ".md") end
+  if page_name then return util.decode_filename(page_name) end
 
   return nil
 end
@@ -133,13 +133,66 @@ local function list_md_files(dirs)
   return files
 end
 
-local function is_dominated(block, ancestor_lines)
+--- Return true if any ancestor of block was already recorded as a match.
+--- Marks the ancestor set once, so repeated queries on the same block are O(1).
+local function is_dominated(block, matched_set)
   local cur = block.parent
   while cur do
-    if ancestor_lines[cur.line_start] then return true end
+    if matched_set[cur.line_start] then return true end
     cur = cur.parent
   end
   return false
+end
+
+--- Load or return cached parse data for one file.
+--- Returns file_lines, parsed — or nil if unreadable / not matching.
+local function load_file(filepath, norm, needles, uv)
+  local stat  = uv.fs_stat(filepath)
+  local mtime = stat and stat.mtime.sec or 0
+  local cached = M._cache[norm]
+
+  if cached and cached.mtime == mtime then
+    if not content_matches(cached.content, needles) then return nil end
+    return cached.lines, cached.parsed
+  end
+
+  local f = io.open(filepath, "r")
+  if not f then return nil end
+  local content = f:read("*a")
+  f:close()
+
+  if not content_matches(content, needles) then return nil end
+
+  local lines = vim.split(content, "\n", { plain = true })
+  if #lines > 0 and lines[#lines] == "" then table.remove(lines) end
+  local parsed = parser.parse(lines)
+  M._cache[norm] = { mtime = mtime, parsed = parsed, lines = lines, content = content }
+  return lines, parsed
+end
+
+--- Scan one file for blocks that reference page_name; append results.
+local function process_file(filepath, norm, page_name, needles, uv, results)
+  local file_lines, parsed = load_file(filepath, norm, needles, uv)
+  if not file_lines then return end
+
+  local source_page = M.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
+  if source_page == page_name then return end
+
+  local flat      = parser.flatten(parsed.blocks)
+  local all_refs  = compute_all_refs(flat, source_page)
+  local matched   = {}  -- line_start → true for already-added blocks
+
+  for _, block in ipairs(flat) do
+    local refs = all_refs[block]
+    if refs and refs[page_name] and not is_dominated(block, matched) then
+      matched[block.line_start] = true
+      table.insert(results, {
+        source_page    = source_page,
+        source_file    = filepath,
+        context_blocks = extract_context(block, file_lines),
+      })
+    end
+  end
 end
 
 -- ── Main finder (Async) ───────────────────────────────────────────────
@@ -153,88 +206,32 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
   if not vault then return on_complete({}) end
 
   local search_dirs = {}
-  local pages_dir = vault .. "/pages"
-  local journals_dir = vault .. "/journals"
-  if vim.fn.isdirectory(pages_dir) == 1 then table.insert(search_dirs, pages_dir) end
-  if vim.fn.isdirectory(journals_dir) == 1 then table.insert(search_dirs, journals_dir) end
+  if vim.fn.isdirectory(vault .. "/pages")   == 1 then table.insert(search_dirs, vault .. "/pages")   end
+  if vim.fn.isdirectory(vault .. "/journals") == 1 then table.insert(search_dirs, vault .. "/journals") end
   if #search_dirs == 0 then return on_complete({}) end
 
   local norm_exclude = exclude_file and util.normalize(exclude_file) or nil
-  local needles = build_needles(page_name)
+  local needles   = build_needles(page_name)
   local all_files = list_md_files(search_dirs)
-  local results = {}
+  local results   = {}
 
   if #all_files == 0 then return on_complete({}) end
 
-  local i = 1
+  local i  = 1
   local uv = vim.uv or vim.loop
 
   local function process_chunk()
-    local chunk_size = 50
-    local chunk_end = math.min(i + chunk_size - 1, #all_files)
+    local chunk_end = math.min(i + 49, #all_files)
 
     for j = i, chunk_end do
       local filepath = all_files[j]
-      local norm = util.normalize(filepath)
-      if norm == norm_exclude then goto next_file end
-
-      local stat = uv.fs_stat(filepath)
-      local mtime = stat and stat.mtime.sec or 0
-      local cached = M._cache[norm]
-      local file_content, file_lines, parsed
-
-      if cached and cached.mtime == mtime then
-        if not content_matches(cached.content, needles) then goto next_file end
-        file_lines = cached.lines
-        parsed = cached.parsed
-      else
-        local f = io.open(filepath, "r")
-        if not f then goto next_file end
-        file_content = f:read("*a")
-        f:close()
-
-        if not content_matches(file_content, needles) then goto next_file end
-
-        file_lines = vim.split(file_content, "\n", { plain = true })
-        if #file_lines > 0 and file_lines[#file_lines] == "" then table.remove(file_lines) end
-
-        parsed = parser.parse(file_lines)
-        -- Cache: store parsed data for reuse. Parent refs create cycles but
-        -- Lua's GC handles them. Cache is cleared on invalidate/invalidate_all.
-        M._cache[norm] = { mtime = mtime, parsed = parsed, lines = file_lines, content = file_content }
+      local norm     = util.normalize(filepath)
+      if norm ~= norm_exclude then
+        process_file(filepath, norm, page_name, needles, uv, results)
       end
-
-      local source_page = M.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
-      if source_page == page_name then goto next_file end
-
-      local flat = parser.flatten(parsed.blocks)
-      local all_refs = compute_all_refs(flat, source_page)
-      local matching_blocks = {}
-      local matched_lines = {}
-
-      for _, block in ipairs(flat) do
-        local refs = all_refs[block]
-        if not refs or not refs[page_name] then goto next_block end
-        if is_dominated(block, matched_lines) then goto next_block end
-
-        table.insert(matching_blocks, block)
-        matched_lines[block.line_start] = true
-        ::next_block::
-      end
-
-      for _, block in ipairs(matching_blocks) do
-        table.insert(results, {
-          source_page = source_page,
-          source_file = filepath,
-          context_blocks = extract_context(block, file_lines),
-        })
-      end
-      ::next_file::
     end
 
-    if on_progress then
-      on_progress(chunk_end, #all_files)
-    end
+    if on_progress then on_progress(chunk_end, #all_files) end
 
     if chunk_end < #all_files then
       i = chunk_end + 1

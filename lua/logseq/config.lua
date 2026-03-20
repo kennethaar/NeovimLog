@@ -3,6 +3,8 @@
 
 local M = {}
 
+M.current = {} -- populated by M.setup(); exists here so require-time reads don't error
+
 M.defaults = {
   vault_path = nil,
   calendar_urls = {},
@@ -26,8 +28,6 @@ M.defaults = {
     toggle_backlinks = "<leader>b",
   },
 }
-
-M.current = {}
 
 -- ── Vault-local persistence ───────────────────────────────────────────
 

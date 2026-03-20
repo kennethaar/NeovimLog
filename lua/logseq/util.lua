@@ -48,10 +48,15 @@ end
 
 --- Encode a page name to its on-disk filename.
 --- "BJJ/Techniques/Triangle" → "BJJ___Techniques___Triangle.md"
+--- Special characters (spaces, colons, etc.) are percent-encoded to match
+--- what decode_filename expects and to produce valid filenames on all platforms.
 ---@param page_name string
 ---@return string
 function M.encode_filename(page_name)
-  return page_name:gsub("/", "___") .. ".md"
+  return page_name
+    :gsub("/", "___")
+    :gsub("([^%w_%-])", function(c) return string.format("%%%02X", c:byte()) end)
+    .. ".md"
 end
 
 return M

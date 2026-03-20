@@ -80,6 +80,34 @@ end
 
 --- Rename the current page and update all [[OldName]] links in the vault.
 --- Triggered by clicking the title in the winbar.
+--- Replace all [[old_name]] → [[new_name]] in every .md file under vault.
+--- Returns the count of files changed.
+local function rewrite_links(vault, old_name, new_name)
+  local old_pat  = "%[%[" .. vim.pesc(old_name) .. "%]%]"
+  local new_link = "[[" .. new_name .. "]]"
+  local updated  = 0
+
+  for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
+    if vim.fn.isdirectory(dir) == 0 then goto next_dir end
+    for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
+      local f = io.open(file, "r")
+      if not f then goto next_file end
+      local ok, content = pcall(function() return f:read("*a") end)
+      f:close()
+      if not ok then goto next_file end
+      local new_content = content:gsub(old_pat, new_link)
+      if new_content ~= content then
+        local fw = io.open(file, "w")
+        if fw then fw:write(new_content); fw:close(); updated = updated + 1 end
+      end
+      ::next_file::
+    end
+    ::next_dir::
+  end
+
+  return updated
+end
+
 function M.rename_page(_minwid, _clicks, _button, _mods)
   local bufnr = vim.api.nvim_get_current_buf()
   local filepath = vim.api.nvim_buf_get_name(bufnr)
@@ -88,47 +116,21 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
   local config = require("logseq.config")
   local util   = require("logseq.util")
   local vault  = config.current.vault_path
-
-  -- Only pages can be renamed (journals are date-keyed)
   local pages_dir = util.normalize(vault .. "/pages")
+
   if not util.normalize(filepath):find(pages_dir, 1, true) then
     vim.notify("Only pages can be renamed (not journals)", vim.log.levels.WARN)
     return
   end
 
-  local filename = vim.fn.fnamemodify(filepath, ":t")
-  local old_name = util.decode_filename(filename)
+  local old_name = util.decode_filename(vim.fn.fnamemodify(filepath, ":t"))
 
   vim.ui.input({ prompt = "Rename page: ", default = old_name }, function(new_name)
     if not new_name or new_name == "" or new_name == old_name then return end
 
-    local new_filename = util.encode_filename(new_name)
-    local new_filepath = pages_dir .. "/" .. new_filename
+    local new_filepath = pages_dir .. "/" .. util.encode_filename(new_name)
+    local updated = rewrite_links(vault, old_name, new_name)
 
-    -- Replace [[OldName]] → [[NewName]] across the entire vault
-    local search_dirs = { vault .. "/pages", vault .. "/journals" }
-    local updated = 0
-    local old_pat  = "%[%[" .. vim.pesc(old_name) .. "%]%]"
-    local new_link = "[[" .. new_name .. "]]"
-
-    for _, dir in ipairs(search_dirs) do
-      if vim.fn.isdirectory(dir) == 1 then
-        for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
-          local f = io.open(file, "r")
-          if f then
-            local content = f:read("*a")
-            f:close()
-            local new_content = content:gsub(old_pat, new_link)
-            if new_content ~= content then
-              local fw = io.open(file, "w")
-              if fw then fw:write(new_content); fw:close(); updated = updated + 1 end
-            end
-          end
-        end
-      end
-    end
-
-    -- Save if dirty, rename on disk, re-open
     if vim.bo[bufnr].modified then
       vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
     end
@@ -141,10 +143,7 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
 
     vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
     vim.api.nvim_buf_delete(bufnr, { force = true })
-    vim.notify(
-      string.format("Renamed to '%s'. %d file(s) updated.", new_name, updated),
-      vim.log.levels.INFO
-    )
+    vim.notify(string.format("Renamed to '%s'. %d file(s) updated.", new_name, updated), vim.log.levels.INFO)
   end)
 end
 

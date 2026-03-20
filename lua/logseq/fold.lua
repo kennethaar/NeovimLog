@@ -28,11 +28,8 @@ end
 
 function M.foldtext()
   local line = vim.fn.getline(vim.v.foldstart)
-  local folded_count = vim.v.foldend - vim.v.foldstart
-  if folded_count > 0 then
-    return line .. "  ⋯ " .. folded_count .. " lines"
-  end
-  return line
+  local n    = vim.v.foldend - vim.v.foldstart
+  return n > 0 and (line .. "  ⋯ " .. n .. " lines") or line
 end
 
 function M.setup_buf(bufnr)

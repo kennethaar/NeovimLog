@@ -5,13 +5,14 @@
 
 local M = {}
 
--- State
-M._timers = {}        -- Active timer IDs (for cleanup on re-sync)
-M._events = {}        -- Parsed events: { summary, start_epoch, end_epoch, time_str }[]
-M._float_win = nil    -- Current reminder float window (if open)
-M._float_buf = nil    -- Current reminder float buffer
-M._tick_timer = nil   -- 30-second winbar refresh timer
-M._hl_ns = vim.api.nvim_create_namespace("logseq_active_event")
+M._state = {
+  timers    = {},   -- Active timer IDs (for cleanup on re-sync)
+  events    = {},   -- Parsed events: { summary, start_epoch, end_epoch, time_str }[]
+  float_win = nil,  -- Current reminder float window (if open)
+  float_buf = nil,  -- Current reminder float buffer
+  tick_timer = nil, -- 30-second winbar refresh timer
+  hl_ns     = vim.api.nvim_create_namespace("logseq_active_event"),
+}
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 
@@ -48,8 +49,8 @@ end
 ---@param time_str string  e.g. "09:45"
 local function show_reminder_float(summary, time_str)
   -- Close any existing reminder float first
-  if M._float_win and vim.api.nvim_win_is_valid(M._float_win) then
-    vim.api.nvim_win_close(M._float_win, true)
+  if M._state.float_win and vim.api.nvim_win_is_valid(M._state.float_win) then
+    vim.api.nvim_win_close(M._state.float_win, true)
   end
 
   local lead = require("logseq.config").current.reminder_minutes or 3
@@ -99,8 +100,8 @@ local function show_reminder_float(summary, time_str)
     title_pos = "center",
   })
 
-  M._float_win = win
-  M._float_buf = buf
+  M._state.float_win = win
+  M._state.float_buf = buf
 
   -- Force normal mode (in case we were in insert mode when the timer fired)
   vim.cmd("stopinsert")
@@ -115,11 +116,11 @@ local function show_reminder_float(summary, time_str)
 
   -- Dismiss function
   local function dismiss()
-    if M._float_win and vim.api.nvim_win_is_valid(M._float_win) then
-      vim.api.nvim_win_close(M._float_win, true)
+    if M._state.float_win and vim.api.nvim_win_is_valid(M._state.float_win) then
+      vim.api.nvim_win_close(M._state.float_win, true)
     end
-    M._float_win = nil
-    M._float_buf = nil
+    M._state.float_win = nil
+    M._state.float_buf = nil
   end
 
   -- Keyboard dismiss — map generously so nothing gets stuck
@@ -152,7 +153,7 @@ function M.next_meeting_str()
   local next_event = nil
   local next_diff = math.huge
 
-  for _, ev in ipairs(M._events) do
+  for _, ev in ipairs(M._state.events) do
     -- Currently active: started and not ended
     if ev.end_epoch and ev.start_epoch <= now and ev.end_epoch > now then
       current_event = ev
@@ -191,13 +192,13 @@ function M.update_highlight()
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
 
   -- Clear previous highlights
-  vim.api.nvim_buf_clear_namespace(bufnr, M._hl_ns, 0, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, M._state.hl_ns, 0, -1)
 
   local now = os.time()
   local active_summary = nil
 
   -- Find the currently-active event
-  for _, ev in ipairs(M._events) do
+  for _, ev in ipairs(M._state.events) do
     if ev.start_epoch <= now and ev.end_epoch and ev.end_epoch > now then
       active_summary = ev.summary
       break
@@ -211,7 +212,7 @@ function M.update_highlight()
   for i, line in ipairs(lines) do
     -- Match calendar event lines like "  - 09:45-11:00 Meps Nordic PM"
     if line:match("^%s*%- ") and line:find(active_summary, 1, true) then
-      vim.api.nvim_buf_set_extmark(bufnr, M._hl_ns, i - 1, 0, {
+      vim.api.nvim_buf_set_extmark(bufnr, M._state.hl_ns, i - 1, 0, {
         end_row = i - 1,
         end_col = #line,
         hl_group = "CurSearch",
@@ -224,12 +225,12 @@ end
 
 --- Start the 30-second tick timer that forces winbar redraws.
 local function start_tick_timer()
-  if M._tick_timer then
-    vim.fn.timer_stop(M._tick_timer)
-    M._tick_timer = nil
+  if M._state.tick_timer then
+    vim.fn.timer_stop(M._state.tick_timer)
+    M._state.tick_timer = nil
   end
 
-  M._tick_timer = vim.fn.timer_start(30000, function()
+  M._state.tick_timer = vim.fn.timer_start(30000, function()
     vim.schedule(function()
       -- Refresh active event highlight
       pcall(M.update_highlight)
@@ -240,14 +241,14 @@ local function start_tick_timer()
         -- Check if any event is still active (for highlights)
         local now = os.time()
         local any_active = false
-        for _, ev in ipairs(M._events) do
+        for _, ev in ipairs(M._state.events) do
           if ev.end_epoch and ev.end_epoch > now then any_active = true; break end
         end
         if not any_active then
           -- No more meetings and nothing active — stop ticking
-          if M._tick_timer then
-            vim.fn.timer_stop(M._tick_timer)
-            M._tick_timer = nil
+          if M._state.tick_timer then
+            vim.fn.timer_stop(M._state.tick_timer)
+            M._state.tick_timer = nil
           end
         end
         pcall(vim.cmd, "redraw!")
@@ -260,10 +261,10 @@ end
 
 --- Cancel all pending reminder timers.
 function M.cancel_all()
-  for _, tid in ipairs(M._timers) do
+  for _, tid in ipairs(M._state.timers) do
     vim.fn.timer_stop(tid)
   end
-  M._timers = {}
+  M._state.timers = {}
 end
 
 --- Schedule reminders for a list of calendar events.
@@ -273,45 +274,38 @@ end
 function M.schedule(events)
   -- Cancel any previous timers (prevents duplicates on re-sync)
   M.cancel_all()
-  M._events = {}
+  M._state.events = {}
 
   local now = os.time()
 
   -- 1. Always parse events for winbar countdown (regardless of reminder_minutes)
   for _, ev in ipairs(events) do
-    if not ev.is_allday and ev.time_str then
-      local start_hhmm, end_hhmm = ev.time_str:match("^(%d%d:%d%d)%-(%d%d:%d%d)$")
-      -- Fallback: time_str might be just "09:45" with no end time
-      if not start_hhmm then
-        start_hhmm = ev.time_str:match("^(%d%d:%d%d)$")
-      end
-      if start_hhmm then
-        local start_epoch = hhmm_to_epoch(start_hhmm)
-        local end_epoch = end_hhmm and hhmm_to_epoch(end_hhmm) or nil
-        if start_epoch then
-          table.insert(M._events, {
-            summary = ev.summary,
-            start_epoch = start_epoch,
-            end_epoch = end_epoch,
-            time_str = start_hhmm,
-          })
-        end
-      end
-    end
+    if ev.is_allday or not ev.time_str then goto next_ev end
+    local start_hhmm, end_hhmm = ev.time_str:match("^(%d%d:%d%d)%-(%d%d:%d%d)$")
+    start_hhmm = start_hhmm or ev.time_str:match("^(%d%d:%d%d)$")
+    if not start_hhmm then goto next_ev end
+    local start_epoch = hhmm_to_epoch(start_hhmm)
+    if not start_epoch then goto next_ev end
+    table.insert(M._state.events, {
+      summary     = ev.summary,
+      start_epoch = start_epoch,
+      end_epoch   = end_hhmm and hhmm_to_epoch(end_hhmm) or nil,
+      time_str    = start_hhmm,
+    })
+    ::next_ev::
   end
 
-  -- Sort events by start time (earliest first)
-  table.sort(M._events, function(a, b) return a.start_epoch < b.start_epoch end)
+  table.sort(M._state.events, function(a, b) return a.start_epoch < b.start_epoch end)
 
   -- 2. Start winbar tick timer if we have any future or currently-active events
   local needs_timer = false
-  for _, ev in ipairs(M._events) do
-    if ev.start_epoch > now then needs_timer = true; break end
-    if ev.end_epoch and ev.end_epoch > now then needs_timer = true; break end
+  for _, ev in ipairs(M._state.events) do
+    if ev.start_epoch > now or (ev.end_epoch and ev.end_epoch > now) then
+      needs_timer = true
+      break
+    end
   end
-  if needs_timer then
-    start_tick_timer()
-  end
+  if needs_timer then start_tick_timer() end
   -- Highlight the currently-active event and force redraw
   M.update_highlight()
   pcall(vim.cmd, "redraw!")
@@ -321,7 +315,7 @@ function M.schedule(events)
   local lead_minutes = config.reminder_minutes
   if not lead_minutes or lead_minutes <= 0 then return end
 
-  for _, ev in ipairs(M._events) do
+  for _, ev in ipairs(M._state.events) do
     local remind_at = ev.start_epoch - (lead_minutes * 60)
     local delay_sec = remind_at - now
 
@@ -334,7 +328,7 @@ function M.schedule(events)
           show_reminder_float(summary, time_str)
         end)
       end)
-      table.insert(M._timers, tid)
+      table.insert(M._state.timers, tid)
     end
   end
 end
