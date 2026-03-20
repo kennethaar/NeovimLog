@@ -13,6 +13,7 @@ local SEPARATOR = ""
 -- ── State (audit #21: single table per buffer) ────────────────────────
 
 M._state = {} -- bufnr → { visible, region, source_map, page_name, had_backlinks }
+M._global_watcher_setup = false
 
 local function get_state(bufnr)
   if not M._state[bufnr] then
@@ -343,6 +344,34 @@ function M.setup_buf(bufnr)
       M._state[ev.buf] = nil
     end,
   })
+
+  -- One-time global watcher: when ANY vault .md file is written, refresh
+  -- all OTHER open buffers whose backlinks section is currently visible.
+  -- This ensures journal edits immediately appear in page backlinks (and vice-versa).
+  if not M._global_watcher_setup then
+    M._global_watcher_setup = true
+    local util = require("logseq.util")
+    vim.api.nvim_create_autocmd("BufWritePost", {
+      group = vim.api.nvim_create_augroup("LogseqBacklinksGlobal", { clear = true }),
+      pattern = "*.md",
+      callback = function(ev)
+        local written = ev.file
+        local vault = config.current.vault_path
+        if not vault or not util.is_vault_file(written, vault) then return end
+        -- Refresh every OTHER open buffer with visible backlinks
+        for other_bufnr, state in pairs(M._state) do
+          if other_bufnr ~= ev.buf and state.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
+            vim.schedule(function()
+              if vim.api.nvim_buf_is_valid(other_bufnr) and M._state[other_bufnr] and M._state[other_bufnr].visible then
+                M.remove_section(other_bufnr)
+                M.render_section(other_bufnr)
+              end
+            end)
+          end
+        end
+      end,
+    })
+  end
 end
 
 return M
