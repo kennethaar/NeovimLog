@@ -47,7 +47,7 @@ function M.trigger_save_indicator(bufnr)
   end, 1500)
 end
 
-function M.close_win()
+function M.close_win(_minwid, _clicks, _button, _mods)
   vim.cmd("q")
 end
 
@@ -122,12 +122,8 @@ function M.setup_buf(bufnr)
   -- Winbar (audit #15: v:lua.require pattern is safe in opt_local)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
 
-  -- Statusline
-  local stl = vim.o.statusline
-  if stl == "" then stl = "%<%f %h%m%r%=%-14.(%l,%c%V%) %P" end
-  if not stl:match("logseq.ui") then
-    vim.opt_local.statusline = stl .. " %=%@v:lua.require('logseq.ui').open_help@ hh %X"
-  end
+  -- Statusline: hints strip instead of filename
+  vim.opt_local.statusline = "🖇️ ,b  ❔ ,q  🔗↩️  🗓️ ,c"
 
   vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
 
