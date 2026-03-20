@@ -9,8 +9,16 @@ M._saved_buffers = {}
 
 -- Global shims so %@v:lua.X@ works without complex require() expressions
 -- (statusline %@ function names must be simple Lua global references)
-_G.logseq_rename_page = function(...) M.rename_page(...) end
-_G.logseq_close_win   = function(...) M.close_win(...) end
+_G.logseq_rename_page  = function(...) M.rename_page(...) end
+_G.logseq_close_win    = function(...) M.close_win(...) end
+_G.logseq_sl_backlinks = function() require("logseq.backlinks").toggle() end
+_G.logseq_sl_quit      = function() vim.cmd("q") end
+_G.logseq_sl_follow    = function() require("logseq.links").follow() end
+_G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
+_G.logseq_sl_fold      = function() vim.cmd("normal! za") end
+_G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
+_G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
+_G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
 
 function M.winbar()
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
@@ -204,10 +212,17 @@ function M.setup_buf(bufnr)
   -- Winbar (audit #15: v:lua.require pattern is safe in opt_local)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
 
-  -- Statusline: dark background via winhl so colorscheme can't override it,
-  -- then show dim hint strip (max ~40 visible chars)
-  -- 🖇️,b=backlinks  ❔,q=quit  🔗↩=follow  🗓️,c=calsync  📝za=fold  ✅^t=todo  ↕A↕=move
-  vim.opt_local.statusline = "🖇️,b  ❔,q  🔗↩️  🗓️,c  📝za  ✅^t  ↕A↕"
+  -- Statusline: clickable hint strip. Each item is a %@...@ click target.
+  vim.opt_local.statusline = table.concat({
+    "%@v:lua.logseq_sl_backlinks@🖇️,b%X",
+    "%@v:lua.logseq_sl_quit@❔,q%X",
+    "%@v:lua.logseq_sl_follow@🔗↩️%X",
+    "%@v:lua.logseq_sl_calsync@🗓️,c%X",
+    "%@v:lua.logseq_sl_fold@📝za%X",
+    "%@v:lua.logseq_sl_todo@✅^t%X",
+    "%@v:lua.logseq_sl_moveup@a⬆️%X",
+    "%@v:lua.logseq_sl_movedown@a⬇️%X",
+  }, "  ")
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
   vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
