@@ -7,6 +7,11 @@ M._saved_buffers = {}
 
 -- ── Winbar ────────────────────────────────────────────────────────────
 
+-- Global shims so %@v:lua.X@ works without complex require() expressions
+-- (statusline %@ function names must be simple Lua global references)
+_G.logseq_rename_page = function(...) M.rename_page(...) end
+_G.logseq_close_win   = function(...) M.close_win(...) end
+
 function M.winbar()
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
   local bufnr = vim.api.nvim_win_get_buf(winid)
@@ -18,8 +23,10 @@ function M.winbar()
   local title = name:gsub("%.md$", ""):gsub("---", "/")
   -- Escape any literal % in the title so statusline doesn't mis-interpret them
   local safe_title = title:gsub("%%", "%%%%")
-  local title_btn = "%@v:lua.require('logseq.ui').rename_page@" .. safe_title .. "%X"
-  local close_btn = "%=%#Comment#(:q) %@v:lua.require('logseq.ui').close_win@%#Normal#✕%X "
+  -- Hint clarifies that clicking renames AND rewrites all [[refs]] in the vault
+  local title_btn = "%@v:lua.logseq_rename_page@" .. safe_title
+                    .. " %#Comment#(tap→rename, updates all refs)%#Normal#%X"
+  local close_btn = "%=%#Comment#:q %@v:lua.logseq_close_win@%#Normal# ✕ %X"
 
   if M._saved_buffers[bufnr] then
     return " " .. title_btn .. "  ✓ Saved" .. close_btn
