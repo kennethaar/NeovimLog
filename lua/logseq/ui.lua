@@ -187,9 +187,8 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqStrikeDelim",  { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqLinkDelim",    { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqBlockRefDelim",{ link = "Conceal" })
-  -- Dim statusline so emojis are visible against the background
-  vim.api.nvim_set_hl(0, "StatusLine",   { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
-  vim.api.nvim_set_hl(0, "StatusLineNC", { fg = "#7c6f64", bg = "#282828", ctermfg = 243, ctermbg = 235 })
+  -- Custom dark statusline group used via winhl (survives colorscheme reloads)
+  vim.api.nvim_set_hl(0, "LogseqStatusLine", { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
 end
 
 -- ── Buffer Setup ─────────────────────────────────────────────────────
@@ -198,9 +197,11 @@ function M.setup_buf(bufnr)
   -- Winbar (audit #15: v:lua.require pattern is safe in opt_local)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
 
-  -- Statusline: dim hint strip (max ~40 visible chars)
+  -- Statusline: dark background via winhl so colorscheme can't override it,
+  -- then show dim hint strip (max ~40 visible chars)
   -- 🖇️,b=backlinks  ❔,q=quit  🔗↩=follow  🗓️,c=calsync  📝za=fold  ✅^t=todo  ↕A↕=move
-  vim.opt_local.statusline = "%#Comment#🖇️,b  ❔,q  🔗↩️  🗓️,c  📝za  ✅^t  ↕A↕%*"
+  vim.opt_local.statusline = "🖇️,b  ❔,q  🔗↩️  🗓️,c  📝za  ✅^t  ↕A↕"
+  vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
   vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
 

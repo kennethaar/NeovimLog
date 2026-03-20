@@ -1,4 +1,5 @@
 vim.g.mapleader = ","
+vim.o.mouse = "a"  -- enable mouse/touch so winbar click targets work
 
 -- Finn vault-sti: les fra lagret fil (satt av termux_setup.sh), ellers Windows-sti
 local vault = nil
