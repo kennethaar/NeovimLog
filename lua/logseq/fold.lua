@@ -65,7 +65,11 @@ function M.setup_buf(bufnr)
   vim.api.nvim_create_autocmd("InsertLeave", {
     group = group,
     buffer = bufnr,
-    callback = function() vim.opt_local.foldmethod = "expr" end,
+    callback = function()
+      -- When zoomed, keep manual folds intact instead of restoring expr
+      if vim.b[bufnr].logseq_zoomed then return end
+      vim.opt_local.foldmethod = "expr"
+    end,
   })
 end
 
