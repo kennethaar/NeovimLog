@@ -86,20 +86,85 @@ local function open_or_create(filepath, display_name)
   end)
 end
 
---- Follow the link under the cursor.
-function M.follow()
-  -- Delegate to backlinks navigation if cursor is in the backlinks region
-  local bl_ok, backlinks = pcall(require, "logseq.backlinks")
-  if bl_ok and backlinks.in_region(vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_cursor(0)[1]) then
-    if backlinks.navigate() then return end
+--- Follow a [[wikilink]] — tries pages/ then journals/, creates if missing.
+local function follow_wikilink(vault, value)
+  local filepath = vault .. "/pages/" .. M.page_to_filename(value)
+  if vim.fn.filereadable(filepath) == 1 then
+    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+    return
   end
 
-  -- In queries region: if cursor is on a [[link]], follow it normally.
-  -- Otherwise, navigate to the source line of the task.
-  local q_ok, queries = pcall(require, "logseq.queries")
-  local in_queries = q_ok and queries.in_region(vim.api.nvim_get_current_buf(), vim.api.nvim_win_get_cursor(0)[1])
+  local journal_dir = vault .. "/journals"
+  if vim.fn.isdirectory(journal_dir) == 1 then
+    local tried = {}
+    for _, name in ipairs({ value .. ".md", value:gsub("%-", "_") .. ".md", value:gsub("_", "-") .. ".md" }) do
+      if not tried[name] then
+        tried[name] = true
+        local p = journal_dir .. "/" .. name
+        if vim.fn.filereadable(p) == 1 then
+          vim.cmd("edit " .. vim.fn.fnameescape(p))
+          return
+        end
+      end
+    end
 
-  if in_queries and not M.link_under_cursor() then
+    local digits = value:gsub("[^%d]", "")
+    if #digits >= 8 then
+      local matches = vim.fn.glob(journal_dir
+        .. "/*" .. digits:sub(1,4) .. "*" .. digits:sub(5,6) .. "*" .. digits:sub(7,8) .. "*.md", true, true)
+      if #matches == 1 then
+        vim.cmd("edit " .. vim.fn.fnameescape(matches[1]))
+        return
+      end
+    end
+  end
+
+  open_or_create(filepath, value)
+end
+
+--- Follow a ((block-ref)) by grepping the vault for `id:: <uuid>`.
+local function follow_block_ref(vault, value)
+  local search_dirs = {}
+  if vim.fn.isdirectory(vault .. "/pages")   == 1 then search_dirs[#search_dirs+1] = vault .. "/pages"   end
+  if vim.fn.isdirectory(vault .. "/journals") == 1 then search_dirs[#search_dirs+1] = vault .. "/journals" end
+
+  if #search_dirs == 0 then
+    vim.notify("No pages/ or journals/ found in vault", vim.log.levels.WARN)
+    return
+  end
+
+  local cmd = { "grep", "-rn", "--include=*.md", "id:: " .. value }
+  vim.list_extend(cmd, search_dirs)
+  local results = vim.fn.systemlist(cmd)
+
+  if vim.v.shell_error ~= 0 or #results == 0 then
+    vim.notify("Block ref not found: " .. value, vim.log.levels.WARN)
+    return
+  end
+
+  local fp, lnum_str = results[1]:match("^(.+):(%d+):")
+  if not fp then return end
+  local lnum = tonumber(lnum_str) or 1
+  vim.cmd("edit " .. vim.fn.fnameescape(fp))
+  pcall(vim.api.nvim_win_set_cursor, 0, { lnum, 0 })
+end
+
+--- Follow a #tag by opening its page file.
+local function follow_tag(vault, value)
+  local filepath = vault .. "/pages/" .. M.page_to_filename(value)
+  open_or_create(filepath, value)
+end
+
+--- Follow the link under the cursor.
+function M.follow()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local row   = vim.api.nvim_win_get_cursor(0)[1]
+
+  local bl_ok, backlinks = pcall(require, "logseq.backlinks")
+  if bl_ok and backlinks.in_region(bufnr, row) and backlinks.navigate() then return end
+
+  local q_ok, queries = pcall(require, "logseq.queries")
+  if q_ok and queries.in_region(bufnr, row) and not M.link_under_cursor() then
     if queries.navigate() then return end
   end
 
@@ -107,98 +172,14 @@ function M.follow()
 
   if not link_type then
     local key = config.current.keymaps.follow_link
-    if key == "<CR>" then
-      vim.cmd("normal! j")
-    else
-      pcall(vim.cmd, "normal! " .. key)
-    end
+    pcall(vim.cmd, "normal! " .. (key == "<CR>" and "j" or key))
     return
   end
 
   local vault = config.current.vault_path
-
-  if link_type == "link" then
-    local filename = M.page_to_filename(value)
-    local filepath = vault .. "/pages/" .. filename
-
-    -- Try pages/ first
-    if vim.fn.filereadable(filepath) == 1 then
-      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
-      return
-    end
-
-    -- Try journals/ with multiple filename strategies
-    local journal_dir = vault .. "/journals"
-    if vim.fn.isdirectory(journal_dir) == 1 then
-      local candidates = {
-        value .. ".md",
-        value:gsub("%-", "_") .. ".md",
-        value:gsub("_", "-") .. ".md",
-      }
-
-      local tried = {}
-      for _, name in ipairs(candidates) do
-        if not tried[name] then
-          tried[name] = true
-          local journal_path = journal_dir .. "/" .. name
-          if vim.fn.filereadable(journal_path) == 1 then
-            vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
-            return
-          end
-        end
-      end
-
-      -- Last resort: glob scan for date digits
-      local digits = value:gsub("[^%d]", "")
-      if #digits >= 8 then
-        local matches = vim.fn.glob(journal_dir .. "/*" .. digits:sub(1, 4)
-          .. "*" .. digits:sub(5, 6) .. "*" .. digits:sub(7, 8) .. "*.md", true, true)
-        if #matches == 1 then
-          vim.cmd("edit " .. vim.fn.fnameescape(matches[1]))
-          return
-        end
-      end
-    end
-
-    open_or_create(filepath, value)
-
-  elseif link_type == "block_ref" then
-    local pattern = "id:: " .. value
-    local search_dirs = {}
-    local pages_dir = vault .. "/pages"
-    local journals_dir = vault .. "/journals"
-    if vim.fn.isdirectory(pages_dir) == 1 then search_dirs[#search_dirs + 1] = pages_dir end
-    if vim.fn.isdirectory(journals_dir) == 1 then search_dirs[#search_dirs + 1] = journals_dir end
-
-    if #search_dirs == 0 then
-      vim.notify("No pages/ or journals/ found in vault", vim.log.levels.WARN)
-      return
-    end
-
-    local cmd = { "grep", "-rn", "--include=*.md", pattern }
-    vim.list_extend(cmd, search_dirs)
-    local results = vim.fn.systemlist(cmd)
-
-    if #results == 0 then
-      vim.notify("Block ref not found: " .. value, vim.log.levels.WARN)
-      return
-    end
-
-    local fp, lnum_str = results[1]:match("^(.+):(%d+):")
-    if fp and lnum_str then
-      local lnum = tonumber(lnum_str)
-      vim.cmd("edit " .. vim.fn.fnameescape(fp))
-      if lnum and lnum > 1 then
-        vim.api.nvim_win_set_cursor(0, { lnum - 1, 0 })
-      elseif lnum then
-        vim.api.nvim_win_set_cursor(0, { lnum, 0 })
-      end
-    end
-
-  elseif link_type == "tag" then
-    local filename = M.page_to_filename(value)
-    local filepath = vault .. "/pages/" .. filename
-    open_or_create(filepath, value)
+  if     link_type == "link"      then follow_wikilink(vault, value)
+  elseif link_type == "block_ref" then follow_block_ref(vault, value)
+  elseif link_type == "tag"       then follow_tag(vault, value)
   end
 end
 

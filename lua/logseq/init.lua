@@ -54,6 +54,9 @@ end
 local function bootstrap(opts)
   if not config.setup(opts) then return end
 
+  -- One-time global autocmd: refresh backlinks panels when any vault file is written
+  pcall(function() require("logseq.backlinks").setup_global() end)
+
   local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
 
   -- ── Commands ──────────────────────────────────────────────────────

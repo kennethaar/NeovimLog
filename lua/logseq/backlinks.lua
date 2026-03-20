@@ -345,4 +345,29 @@ function M.setup_buf(bufnr)
   })
 end
 
+--- One-time global setup: when ANY vault .md file is written, refresh all
+--- other open buffers whose backlinks section is visible. Called once by init.lua.
+function M.setup_global()
+  local util = require("logseq.util")
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group   = vim.api.nvim_create_augroup("LogseqBacklinksGlobal", { clear = true }),
+    pattern = "*.md",
+    callback = function(ev)
+      local vault = config.current.vault_path
+      if not vault or not util.is_vault_file(ev.file, vault) then return end
+      for other_bufnr, state in pairs(M._state) do
+        if other_bufnr ~= ev.buf and state.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
+          vim.schedule(function()
+            local s = M._state[other_bufnr]
+            if s and s.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
+              M.remove_section(other_bufnr)
+              M.render_section(other_bufnr)
+            end
+          end)
+        end
+      end
+    end,
+  })
+end
+
 return M

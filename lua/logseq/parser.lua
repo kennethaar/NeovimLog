@@ -122,12 +122,8 @@ function M.parse(lines)
       break
     else
       local pi, key, value = match_property(line)
-      if key and pi == 0 then
-        page_props[key] = value
-        i = i + 1
-      else
-        i = i + 1
-      end
+      if key and pi == 0 then page_props[key] = value end
+      i = i + 1
     end
   end
 

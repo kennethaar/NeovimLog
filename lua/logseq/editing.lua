@@ -136,7 +136,7 @@ function M.smart_enter(bufnr)
   -- Text splitting: if cursor is mid-content, move trailing text to new block
   local text_after = ""
   local bullet_prefix = line:match("^(%s*%- )")
-  if bullet_prefix and col > #bullet_prefix - 1 and col < #line then
+  if bullet_prefix and col >= #bullet_prefix and col < #line then
     text_after = line:sub(col + 1)
     vim.api.nvim_set_current_line(line:sub(1, col))
     -- Buffer changed — re-parse to get correct line_end

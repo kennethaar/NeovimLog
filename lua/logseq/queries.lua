@@ -94,70 +94,57 @@ end
 
 -- ── File Scanner ──────────────────────────────────────────────────────
 
-local function process_single_file(filepath, page_link, all_todos, very_next_todos)
-  local f = io.open(filepath, "r")
-  if not f then return end
-
-  local content = f:read("*all")
-  if not content or not content:find(page_link, 1, true) then
-    f:close()
-    return
+local function has_task_ancestor(indent_stack)
+  for _, parent in ipairs(indent_stack) do
+    if parent.is_task then return true end
   end
+  return false
+end
 
-  f:seek("set", 0)
+local function read_file_content(filepath)
+  local f = io.open(filepath, "r")
+  if not f then return nil end
+  local content = f:read("*all")
+  f:close()
+  return content
+end
+
+local function process_single_file(filepath, page_link, all_todos, very_next_todos)
+  local content = read_file_content(filepath)
+  if not content or not content:find(page_link, 1, true) then return end
 
   local source_page = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", ""):gsub("___", "/")
   local indent_stack = {}
   local line_num = 0
 
-  for line in f:lines() do
+  for line in (content .. "\n"):gmatch("([^\n]*)\n") do
     line_num = line_num + 1
     local indent_str = line:match("^(%s*)%- ")
     if not indent_str then goto continue end
 
     local indent = #indent_str
-
     while #indent_stack > 0 and indent_stack[#indent_stack].indent >= indent do
       table.remove(indent_stack)
     end
 
     local current_is_task = is_active_task(line)
-    local parent_is_task = false
-    for _, parent in ipairs(indent_stack) do
-      if parent.is_task then
-        parent_is_task = true
-        break
-      end
-    end
-
+    local parent_is_task  = has_task_ancestor(indent_stack)
     table.insert(indent_stack, { indent = indent, is_task = current_is_task })
 
     if not current_is_task or not line:find(page_link, 1, true) then goto continue end
 
-    local clean_task = vim.trim(line:gsub("^%s*%- ", ""))
     local entry = {
-      task = clean_task,
-      source = source_page,
-      filepath = filepath,
-      lnum = line_num,
+      task          = vim.trim(line:gsub("^%s*%- ", "")),
+      source        = source_page,
+      filepath      = filepath,
+      lnum          = line_num,
       indent_prefix = indent_str,
     }
-
     table.insert(all_todos, entry)
-    if not parent_is_task then
-      table.insert(very_next_todos, {
-        task = clean_task,
-        source = source_page,
-        filepath = filepath,
-        lnum = line_num,
-        indent_prefix = indent_str,
-      })
-    end
+    if not parent_is_task then table.insert(very_next_todos, entry) end
 
     ::continue::
   end
-
-  f:close()
 end
 
 local function gather_tasks(page_name)
@@ -368,23 +355,17 @@ function M.render_section(bufnr)
   local display_lines = { "── Queries ──" }
   local all_smap = {}
 
+  local function append_section(tasks, heading)
+    local section_lines, section_smap = build_section(tasks, heading)
+    local offset = #display_lines
+    vim.list_extend(display_lines, section_lines)
+    for rel, info in pairs(section_smap) do all_smap[rel + offset] = info end
+  end
+
   for line in query_content:gmatch("([^\n]*)\n?") do
-    if line == "%QueryTodos%" then
-      local section_lines, section_smap = build_section(all_todos, "Actions")
-      local offset = #display_lines
-      vim.list_extend(display_lines, section_lines)
-      for rel, info in pairs(section_smap) do
-        all_smap[rel + offset] = info
-      end
-    elseif line == "%QueryVeryNextTodos%" then
-      local section_lines, section_smap = build_section(very_next_todos, "Very next actions")
-      local offset = #display_lines
-      vim.list_extend(display_lines, section_lines)
-      for rel, info in pairs(section_smap) do
-        all_smap[rel + offset] = info
-      end
-    elseif line ~= "" then
-      table.insert(display_lines, line)
+    if     line == "%QueryTodos%"         then append_section(all_todos,       "Actions")
+    elseif line == "%QueryVeryNextTodos%" then append_section(very_next_todos, "Very next actions")
+    elseif line ~= ""                     then table.insert(display_lines, line)
     end
   end
 
