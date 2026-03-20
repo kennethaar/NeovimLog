@@ -21,6 +21,8 @@ _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
 _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
 _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
+_G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
+_G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
 
 function M.winbar()
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
@@ -35,7 +37,7 @@ function M.winbar()
   local safe_title = title:gsub("%%", "%%%%")
   -- Hint clarifies that clicking renames AND rewrites all [[refs]] in the vault
   local title_btn = "%@v:lua.logseq_rename_page@" .. safe_title
-                    .. " %#Comment#(tap→rename, updates all refs)%#Normal#%X"
+                    .. " %#Comment#📝(rn)%#Normal#%X"
   local nav_btns = "%=%#Comment#"
     .. "%@v:lua.logseq_sl_backlinks@🖇️b%X "
     .. "%@v:lua.logseq_sl_queries@❔q%X "
@@ -226,6 +228,8 @@ function M.setup_buf(bufnr)
     "%@v:lua.logseq_sl_todo@✅^t%X",
     "%@v:lua.logseq_sl_indent@>>%X",
     "%@v:lua.logseq_sl_unindent@<<%X",
+    "%@v:lua.logseq_sl_moveup@a⬆️%X",
+    "%@v:lua.logseq_sl_movedown@a⬇️%X",
   }, "  ")
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
