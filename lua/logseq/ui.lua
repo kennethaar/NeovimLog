@@ -43,7 +43,7 @@ function M.winbar()
     .. "%@v:lua.logseq_sl_queries@❔q%X "
     .. "%@v:lua.logseq_sl_calsync@🗓️c%X"
     .. "%#Normal#"
-  local close_btn = "  %#Comment#%@v:lua.logseq_close_win@✕%X%#Normal#"
+  local close_btn = "  %#Comment#%@v:lua.logseq_close_win@(:q)✕%X%#Normal#"
 
   if M._saved_buffers[bufnr] then
     return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
@@ -224,12 +224,12 @@ function M.setup_buf(bufnr)
   -- Statusline row 2: editing/cursor actions (file/nav buttons are in winbar row 1)
   vim.opt_local.statusline = table.concat({
     "%@v:lua.logseq_sl_follow@🔗↩️%X",
-    "%@v:lua.logseq_sl_fold@📝za%X",
+    "%@v:lua.logseq_sl_fold@⚡za%X",
     "%@v:lua.logseq_sl_todo@✅^t%X",
     "%@v:lua.logseq_sl_indent@>>%X",
     "%@v:lua.logseq_sl_unindent@<<%X",
-    "%@v:lua.logseq_sl_moveup@a⬆️%X",
-    "%@v:lua.logseq_sl_movedown@a⬇️%X",
+    "%@v:lua.logseq_sl_moveup@alt⬆️%X",
+    "%@v:lua.logseq_sl_movedown@alt⬇️%X",
   }, "  ")
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
