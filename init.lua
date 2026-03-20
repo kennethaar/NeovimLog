@@ -1,15 +1,20 @@
 vim.g.mapleader = ","
 
--- Finn riktig sti (Windows vs Termux)
-local vault = ""
+-- Finn vault-sti: les fra lagret fil (satt av termux_setup.sh), ellers Windows-sti
+local vault = nil
 if vim.fn.has("win32") == 1 then
   vault = "C:/Users/kennetha/Documents/nvim/QAIA-Clean"
 else
-  vault = vim.fn.expand("~/storage/shared/Documents/Logseq/QAIA-Clean")
+  local vault_file = vim.fn.stdpath("data") .. "/logseq_vault"
+  local f = io.open(vault_file, "r")
+  if f then
+    vault = f:read("*l")
+    f:close()
+  end
 end
 
 require("logseq").setup({
-  vault_path = vault,
+  vault_path = vault,  -- nil triggers interactive setup in Neovim if file not found
 })
 
 -- Start Logseq og kalender automatisk når du åpner nvim
