@@ -16,21 +16,24 @@ function M.winbar()
   if name == "" then return "" end
 
   local title = name:gsub("%.md$", ""):gsub("---", "/")
+  -- Escape any literal % in the title so statusline doesn't mis-interpret them
+  local safe_title = title:gsub("%%", "%%%%")
+  local title_btn = "%@v:lua.require('logseq.ui').rename_page@" .. safe_title .. "%X"
   local close_btn = "%=%#Comment#(:q) %@v:lua.require('logseq.ui').close_win@%#Normal#✕%X "
 
   if M._saved_buffers[bufnr] then
-    return " " .. title .. "  ✓ Saved" .. close_btn
+    return " " .. title_btn .. "  ✓ Saved" .. close_btn
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title .. "%<  │  " .. event_text .. close_btn
+      return " " .. title_btn .. "%<  │  " .. event_text .. close_btn
     end
   end
 
-  return " " .. title .. close_btn
+  return " " .. title_btn .. close_btn
 end
 
 function M.trigger_save_indicator(bufnr)
@@ -49,6 +52,76 @@ end
 
 function M.close_win(_minwid, _clicks, _button, _mods)
   vim.cmd("q")
+end
+
+--- Rename the current page and update all [[OldName]] links in the vault.
+--- Triggered by clicking the title in the winbar.
+function M.rename_page(_minwid, _clicks, _button, _mods)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then return end
+
+  local config = require("logseq.config")
+  local util   = require("logseq.util")
+  local vault  = config.current.vault_path
+
+  -- Only pages can be renamed (journals are date-keyed)
+  local pages_dir = util.normalize(vault .. "/pages")
+  if not util.normalize(filepath):find(pages_dir, 1, true) then
+    vim.notify("Only pages can be renamed (not journals)", vim.log.levels.WARN)
+    return
+  end
+
+  local filename = vim.fn.fnamemodify(filepath, ":t")
+  local old_name = util.decode_filename(filename)
+
+  vim.ui.input({ prompt = "Rename page: ", default = old_name }, function(new_name)
+    if not new_name or new_name == "" or new_name == old_name then return end
+
+    local new_filename = util.encode_filename(new_name)
+    local new_filepath = pages_dir .. "/" .. new_filename
+
+    -- Replace [[OldName]] → [[NewName]] across the entire vault
+    local search_dirs = { vault .. "/pages", vault .. "/journals" }
+    local updated = 0
+    local old_pat  = "%[%[" .. vim.pesc(old_name) .. "%]%]"
+    local new_link = "[[" .. new_name .. "]]"
+
+    for _, dir in ipairs(search_dirs) do
+      if vim.fn.isdirectory(dir) == 1 then
+        for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
+          local f = io.open(file, "r")
+          if f then
+            local content = f:read("*a")
+            f:close()
+            local new_content = content:gsub(old_pat, new_link)
+            if new_content ~= content then
+              local fw = io.open(file, "w")
+              if fw then fw:write(new_content); fw:close(); updated = updated + 1 end
+            end
+          end
+        end
+      end
+    end
+
+    -- Save if dirty, rename on disk, re-open
+    if vim.bo[bufnr].modified then
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
+    end
+
+    local ok, err = os.rename(filepath, new_filepath)
+    if not ok then
+      vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+      return
+    end
+
+    vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    vim.notify(
+      string.format("Renamed to '%s'. %d file(s) updated.", new_name, updated),
+      vim.log.levels.INFO
+    )
+  end)
 end
 
 function M.open_help()
@@ -106,14 +179,17 @@ local function setup_syntax(bufnr)
 end
 
 local function setup_highlights()
-  vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60", ctermfg = 167 })
-  vim.api.nvim_set_hl(0, "LogseqLink", { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqBlockRef", { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqTag", { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrike", { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrikeDelim", { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqLinkDelim", { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim", { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqTime",         { fg = "#e06c60", ctermfg = 167 })
+  vim.api.nvim_set_hl(0, "LogseqLink",         { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqBlockRef",     { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqTag",          { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrike",       { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrikeDelim",  { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqLinkDelim",    { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim",{ link = "Conceal" })
+  -- Dim statusline so emojis are visible against the background
+  vim.api.nvim_set_hl(0, "StatusLine",   { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
+  vim.api.nvim_set_hl(0, "StatusLineNC", { fg = "#7c6f64", bg = "#282828", ctermfg = 243, ctermbg = 235 })
 end
 
 -- ── Buffer Setup ─────────────────────────────────────────────────────
@@ -122,8 +198,9 @@ function M.setup_buf(bufnr)
   -- Winbar (audit #15: v:lua.require pattern is safe in opt_local)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
 
-  -- Statusline: hints strip instead of filename
-  vim.opt_local.statusline = "🖇️ ,b  ❔ ,q  🔗↩️  🗓️ ,c"
+  -- Statusline: dim hint strip (max ~40 visible chars)
+  -- 🖇️,b=backlinks  ❔,q=quit  🔗↩=follow  🗓️,c=calsync  📝za=fold  ✅^t=todo  ↕A↕=move
+  vim.opt_local.statusline = "%#Comment#🖇️,b  ❔,q  🔗↩️  🗓️,c  📝za  ✅^t  ↕A↕%*"
 
   vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
 
