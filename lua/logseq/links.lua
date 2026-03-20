@@ -1,25 +1,26 @@
 --- logseq.nvim link following
 --- Resolves [[wikilinks]], ((block-refs)), and #tags under the cursor.
---- Only activates when cursor is inside the link delimiters (not between links).
+--- Only activates when cursor is inside the link delimiters.
 
 local config = require("logseq.config")
+local util = require("logseq.util")
 
 local M = {}
 
 --- Encode a page name to its on-disk filename.
---- "BJJ/Techniques/Triangle" → "BJJ___Techniques___Triangle.md"
+--- Delegates to shared util (audit #29).
 ---@param page_name string
 ---@return string
 function M.page_to_filename(page_name)
-  return page_name:gsub("/", "___") .. ".md"
+  return util.encode_filename(page_name)
 end
 
 --- Decode a filename back to a page name.
---- "BJJ___Techniques___Triangle.md" → "BJJ/Techniques/Triangle"
+--- Delegates to shared util with percent-decode support (audit #29).
 ---@param filename string
 ---@return string
 function M.filename_to_page(filename)
-  return filename:gsub("%.md$", ""):gsub("___", "/")
+  return util.decode_filename(filename)
 end
 
 --- Detect the link element under the cursor. Returns nil if cursor is not inside any link.
@@ -27,16 +28,14 @@ end
 ---@return string|nil value  page name, block uuid, or tag name
 function M.link_under_cursor()
   local line = vim.api.nvim_get_current_line()
-  local col = vim.api.nvim_win_get_cursor(0)[2] + 1 -- convert 0-indexed to 1-indexed
+  local col = vim.api.nvim_win_get_cursor(0)[2] + 1
 
   -- Check [[wikilinks]]
   local pos = 1
   while true do
     local s, e, content = line:find("%[%[(.-)%]%]", pos)
     if not s then break end
-    if col >= s and col <= e then
-      return "link", content
-    end
+    if col >= s and col <= e then return "link", content end
     pos = e + 1
   end
 
@@ -45,9 +44,7 @@ function M.link_under_cursor()
   while true do
     local s, e, content = line:find("%(%((.-)%)%)", pos)
     if not s then break end
-    if col >= s and col <= e then
-      return "block_ref", content
-    end
+    if col >= s and col <= e then return "block_ref", content end
     pos = e + 1
   end
 
@@ -57,13 +54,10 @@ function M.link_under_cursor()
     local s, e, tag = line:find("#([%w_%-/]+)", pos)
     if not s then break end
     if col >= s and col <= e then
-      -- Verify we're not inside a wikilink
       local before = line:sub(1, s - 1)
       local opens = select(2, before:gsub("%[%[", ""))
       local closes = select(2, before:gsub("%]%]", ""))
-      if opens <= closes then
-        return "tag", tag
-      end
+      if opens <= closes then return "tag", tag end
     end
     pos = e + 1
   end
@@ -72,8 +66,8 @@ function M.link_under_cursor()
 end
 
 --- Open a page file, prompting to create if it doesn't exist.
----@param filepath string  full path to the .md file
----@param display_name string  the page name for display in the prompt
+---@param filepath string
+---@param display_name string
 local function open_or_create(filepath, display_name)
   if vim.fn.filereadable(filepath) == 1 then
     vim.cmd("edit " .. vim.fn.fnameescape(filepath))
@@ -83,14 +77,12 @@ local function open_or_create(filepath, display_name)
   vim.ui.select({ "Create page", "Cancel" }, {
     prompt = '"' .. display_name .. '" not found. Create it?',
   }, function(choice)
-    if choice == "Create page" then
-      -- Ensure parent directory exists
-      local dir = vim.fn.fnamemodify(filepath, ":h")
-      if vim.fn.isdirectory(dir) == 0 then
-        vim.fn.mkdir(dir, "p")
-      end
-      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+    if choice ~= "Create page" then return end
+    local dir = vim.fn.fnamemodify(filepath, ":h")
+    if vim.fn.isdirectory(dir) == 0 then
+      vim.fn.mkdir(dir, "p")
     end
+    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
   end)
 end
 
@@ -114,7 +106,6 @@ function M.follow()
   local link_type, value = M.link_under_cursor()
 
   if not link_type then
-    -- No link found — execute the default behavior of the mapped key
     local key = config.current.keymaps.follow_link
     if key == "<CR>" then
       vim.cmd("normal! j")
@@ -140,12 +131,11 @@ function M.follow()
     local journal_dir = vault .. "/journals"
     if vim.fn.isdirectory(journal_dir) == 1 then
       local candidates = {
-        value .. ".md",                         -- exact match
-        value:gsub("%-", "_") .. ".md",         -- hyphens → underscores
-        value:gsub("_", "-") .. ".md",          -- underscores → hyphens
+        value .. ".md",
+        value:gsub("%-", "_") .. ".md",
+        value:gsub("_", "-") .. ".md",
       }
 
-      -- Deduplicate (e.g. if value has no hyphens, first two are identical)
       local tried = {}
       for _, name in ipairs(candidates) do
         if not tried[name] then
@@ -158,7 +148,7 @@ function M.follow()
         end
       end
 
-      -- Last resort: glob scan for any file containing the core date digits
+      -- Last resort: glob scan for date digits
       local digits = value:gsub("[^%d]", "")
       if #digits >= 8 then
         local matches = vim.fn.glob(journal_dir .. "/*" .. digits:sub(1, 4)
@@ -174,7 +164,6 @@ function M.follow()
 
   elseif link_type == "block_ref" then
     local pattern = "id:: " .. value
-    -- Search pages/ and journals/ for the block id
     local search_dirs = {}
     local pages_dir = vault .. "/pages"
     local journals_dir = vault .. "/journals"
@@ -195,13 +184,11 @@ function M.follow()
       return
     end
 
-    -- Parse first result: "filepath:linenum:id:: uuid"
-    local filepath, lnum_str = results[1]:match("^(.+):(%d+):")
-    if filepath and lnum_str then
+    local fp, lnum_str = results[1]:match("^(.+):(%d+):")
+    if fp and lnum_str then
       local lnum = tonumber(lnum_str)
-      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+      vim.cmd("edit " .. vim.fn.fnameescape(fp))
       if lnum and lnum > 1 then
-        -- Jump to the bullet line (one above the id:: property)
         vim.api.nvim_win_set_cursor(0, { lnum - 1, 0 })
       elseif lnum then
         vim.api.nvim_win_set_cursor(0, { lnum, 0 })
@@ -217,16 +204,13 @@ end
 
 --- Wrap the visual selection in [[...]].
 function M.wrap_link()
-  -- Get selection range (works in visual mode callback)
   local start_pos = vim.fn.getpos("v")
   local end_pos = vim.fn.getpos(".")
 
-  -- Ensure start is before end
   if start_pos[2] > end_pos[2] or (start_pos[2] == end_pos[2] and start_pos[3] > end_pos[3]) then
     start_pos, end_pos = end_pos, start_pos
   end
 
-  -- Only single-line selections
   if start_pos[2] ~= end_pos[2] then
     vim.notify("Link wrapping only works on single-line selections", vim.log.levels.WARN)
     return
@@ -234,18 +218,17 @@ function M.wrap_link()
 
   local lnum = start_pos[2]
   local line = vim.api.nvim_buf_get_lines(0, lnum - 1, lnum, false)[1]
-  local col_start = start_pos[3] - 1  -- 0-indexed
-  local col_end = end_pos[3] - 1      -- 0-indexed, inclusive
+  local col_start = start_pos[3] - 1
+  local col_end = end_pos[3] - 1
 
   local before = line:sub(1, col_start)
   local selected = line:sub(col_start + 1, col_end + 1)
   local after = line:sub(col_end + 2)
 
-  -- Exit visual mode
   local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
   vim.api.nvim_feedkeys(esc, "x", false)
 
-  -- Check if already wrapped — toggle off
+  -- Toggle: unwrap if already wrapped
   if before:sub(-2) == "[[" and after:sub(1, 2) == "]]" then
     local new_line = before:sub(1, -3) .. selected .. after:sub(3)
     vim.api.nvim_buf_set_lines(0, lnum - 1, lnum, false, { new_line })

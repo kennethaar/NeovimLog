@@ -1,12 +1,16 @@
+--- logseq.nvim calendar sync
+--- Fetches ICS calendar data via Python and maintains a "- # Calendar"
+--- block in today's journal with chronological ordering.
+
+local util = require("logseq.util")
 local M = {}
 
--- Safely pulls the entire event block (including user notes/sub-bullets) 
--- and rebuilds the Calendar section in strict chronological order.
+-- ── Buffer manipulation ───────────────────────────────────────────────
+
 local function apply_events_to_buffer(buf, events)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local cal_start_idx = nil
 
-  -- 1. Find the "- # Calendar" header
   for i, line in ipairs(lines) do
     if line:match("^%- # Calendar") then
       cal_start_idx = i
@@ -14,36 +18,31 @@ local function apply_events_to_buffer(buf, events)
     end
   end
 
-  -- Create it if it doesn't exist
   if not cal_start_idx then
     vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "- # Calendar" })
     cal_start_idx = #lines + 2
     lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   end
 
-  -- 2. Find where the calendar block ends (the next root-level bullet)
   local cal_end_idx = cal_start_idx + 1
   while cal_end_idx <= #lines do
-    -- If a line has text and DOES NOT start with whitespace, it's a new root block
     if lines[cal_end_idx]:match("^[^%s]") then break end
     cal_end_idx = cal_end_idx + 1
   end
 
-  -- 3. Extract all existing blocks inside the Calendar section
+  -- Extract existing blocks
   local existing_blocks = {}
   local existing_by_uid = {}
-  local orphans = {} -- Catches empty lines or random text before the first event
+  local orphans = {}
   local current_block = nil
 
   for i = cal_start_idx + 1, cal_end_idx - 1 do
     local line = lines[i]
-    
-    -- Level 2 indent marks the start of an event
+
     if line:match("^  %- ") then
       if current_block then table.insert(existing_blocks, current_block) end
       current_block = { lines = { line }, uid = nil }
     elseif current_block then
-      -- It's a property, a note, or a sub-bullet. Attach it to the current event.
       table.insert(current_block.lines, line)
       local uid = line:match("^%s+id::%s*(.+)$")
       if uid then
@@ -54,14 +53,13 @@ local function apply_events_to_buffer(buf, events)
       table.insert(orphans, line)
     end
   end
-  
-  -- Catch the last block
+
   if current_block then
     table.insert(existing_blocks, current_block)
     if current_block.uid then existing_by_uid[current_block.uid] = current_block end
   end
 
-  -- 4. Build the new sorted list of lines
+  -- Build new sorted list
   local new_calendar_lines = {}
   local active_uids = {}
 
@@ -69,89 +67,77 @@ local function apply_events_to_buffer(buf, events)
     table.insert(new_calendar_lines, line)
   end
 
-  -- A. Add Active Events (in the exact chronological order Python gave us)
+  -- Active events (chronological order from Python)
   for _, ev in ipairs(events) do
     active_uids[ev.uid] = true
-    local formatted_title = ev.is_allday and string.format("  - (Heldags) %s", ev.summary)
-                                          or string.format("  - %s %s", ev.time_str, ev.summary)
+    local formatted_title = ev.is_allday
+      and string.format("  - (Heldags) %s", ev.summary)
+      or string.format("  - %s %s", ev.time_str, ev.summary)
 
     local block = existing_by_uid[ev.uid]
     if block then
-      -- Update title if changed and not cancelled
       local current_title = block.lines[1]
       if not current_title:match("~~.*~~") and current_title ~= formatted_title then
         block.lines[1] = formatted_title
       end
-      -- Reinsert the entire block (which preserves UIDs and user notes!)
-      for _, line in ipairs(block.lines) do 
-        table.insert(new_calendar_lines, line) 
+      for _, line in ipairs(block.lines) do
+        table.insert(new_calendar_lines, line)
       end
     else
-      -- Create brand new event block
       table.insert(new_calendar_lines, formatted_title)
       table.insert(new_calendar_lines, string.format("    id:: %s", ev.uid))
     end
   end
 
-  -- B. Append Cancelled / Removed Events at the bottom of the list
+  -- Cancelled/removed events at bottom
   for _, block in ipairs(existing_blocks) do
     if block.uid and not active_uids[block.uid] then
       local current_title = block.lines[1]
-      -- Strike it through if it isn't already
       if current_title:match("^%s*%- ") and not current_title:match("~~.*~~") then
-        local indent, content = current_title:match("^(%s*%- )(.*)$")
-        block.lines[1] = string.format("%s~~%s~~", indent, content)
+        local indent_part, content = current_title:match("^(%s*%- )(.*)$")
+        block.lines[1] = string.format("%s~~%s~~", indent_part, content)
       end
-      for _, line in ipairs(block.lines) do 
-        table.insert(new_calendar_lines, line) 
+      for _, line in ipairs(block.lines) do
+        table.insert(new_calendar_lines, line)
       end
     elseif not block.uid then
-      -- If the user typed an indent without an ID, just keep it safely at the bottom
-      for _, line in ipairs(block.lines) do 
-        table.insert(new_calendar_lines, line) 
+      for _, line in ipairs(block.lines) do
+        table.insert(new_calendar_lines, line)
       end
     end
   end
 
-  -- 5. Atomically replace the old calendar section with the new sorted section
   vim.api.nvim_buf_set_lines(buf, cal_start_idx, cal_end_idx - 1, false, new_calendar_lines)
 end
+
+-- ── Sync ──────────────────────────────────────────────────────────────
 
 function M.sync(force)
   local target_bufnr = vim.api.nvim_get_current_buf()
   local current_file = vim.api.nvim_buf_get_name(target_bufnr)
-  local config = require("logseq.config").current
-  
-  -- 1. Path Resolution
-  local today_filename = os.date(config.journal_format) .. ".md"
-  local today_filepath = config.vault_path .. "/journals/" .. today_filename
-  
-  local norm_current = vim.fn.resolve(current_file):gsub("\\", "/")
-  local norm_today = vim.fn.resolve(today_filepath):gsub("\\", "/")
-  if vim.fn.has("win32") == 1 then
-    norm_current = norm_current:lower()
-    norm_today = norm_today:lower()
-  end
-  
+  local cfg = require("logseq.config").current
+
+  local today_filename = os.date(cfg.journal_format) .. ".md"
+  local today_filepath = cfg.vault_path .. "/journals/" .. today_filename
+
+  local norm_current = util.normalize(current_file)
+  local norm_today = util.normalize(today_filepath)
   local is_today_journal = (norm_current == norm_today)
 
-  -- 2. Guard Clauses (Flattened logic)
-  if not is_today_journal and not force then
-    return -- Silent abort: Background sync on a non-journal page
-  end
+  -- Guard: silent abort for non-journal pages unless forced
+  if not is_today_journal and not force then return end
 
   if not is_today_journal and force then
-    -- Manual bypass warning, but NO fetching/success spam later
     vim.notify("[logseq.nvim] Warning: Syncing calendar into a non-today journal.", vim.log.levels.WARN)
   end
 
-  -- 3. URL Check
-  local urls = config.calendar_urls
-  if not urls or #urls == 0 then 
+  -- URL check
+  local urls = cfg.calendar_urls
+  if not urls or #urls == 0 then
     vim.schedule(function()
       local function ask_for_url(count)
-        local prompt_msg = count == 0 
-          and "No calendars. Paste ICS URL (empty to cancel): " 
+        local prompt_msg = count == 0
+          and "No calendars. Paste ICS URL (empty to cancel): "
           or string.format("Saved %d! Paste another URL (empty to sync): ", count)
 
         vim.ui.input({ prompt = prompt_msg }, function(input)
@@ -164,7 +150,7 @@ function M.sync(force)
             end
             return
           end
-          
+
           if require("logseq.config").add_calendar_url(input) then
             ask_for_url(count + 1)
           else
@@ -173,53 +159,46 @@ function M.sync(force)
           end
         end)
       end
-      ask_for_url(0) 
+      ask_for_url(0)
     end)
-    return 
+    return
   end
 
-  -- 4. Python Check
+  -- Python check
   local py_bin = vim.fn.executable("python3") == 1 and "python3" or "python"
   if vim.fn.executable(py_bin) == 0 then
     vim.notify("[logseq.nvim] Python is required for calendar sync.", vim.log.levels.ERROR)
     return
   end
 
-  -- 5. Execution
   local py_script_path = vim.fn.resolve(vim.fn.expand(vim.fn.stdpath("config") .. "/lua/logseq/ical_parser.py"))
 
-  -- ONLY show fetching notification on the actual journal page
   if is_today_journal then
     vim.notify("[logseq.nvim] Fetching calendar data...", vim.log.levels.INFO)
   end
-  
+
   local urls_json = vim.json.encode(urls)
-  
+
   vim.fn.jobstart({ py_bin, py_script_path, urls_json }, {
     stdout_buffered = true,
     stderr_buffered = true,
     on_stdout = function(_, data)
-      -- Guard: Empty data
       if not data or not data[1] or data[1] == "" then return end
 
       local ok, events = pcall(vim.json.decode, table.concat(data, ""))
-      
-      -- Guard: Invalid JSON
       if not ok or not events then
         vim.schedule(function() vim.notify("Failed reading valid JSON from Python.", vim.log.levels.ERROR) end)
         return
       end
 
-      -- Success Logic (Flattened)
-      vim.schedule(function() 
+      vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(target_bufnr) then return end
 
-        apply_events_to_buffer(target_bufnr, events) 
-        
+        apply_events_to_buffer(target_bufnr, events)
+
         local rok, reminders = pcall(require, "logseq.reminders")
         if rok then reminders.schedule(events) end
-        
-        -- ONLY show success notification on the actual journal page
+
         if is_today_journal then
           vim.notify("[logseq.nvim] Calendar synced successfully!", vim.log.levels.INFO)
         end
@@ -228,14 +207,14 @@ function M.sync(force)
     on_stderr = function(_, data)
       local err_str = table.concat(data, "\n")
       if err_str:match("%S") then
-          vim.schedule(function() vim.notify("Python Error:\n" .. err_str, vim.log.levels.ERROR) end)
+        vim.schedule(function() vim.notify("Python Error:\n" .. err_str, vim.log.levels.ERROR) end)
       end
     end,
     on_exit = function(_, code)
       if code ~= 0 then
         vim.schedule(function() vim.notify("[logseq.nvim] Python script exited with error code: " .. code, vim.log.levels.ERROR) end)
       end
-    end
+    end,
   })
 end
 

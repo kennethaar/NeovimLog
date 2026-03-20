@@ -19,7 +19,6 @@ local function assert_eq(got, expected, msg)
 end
 
 local function assert_table_eq(got, expected, msg)
-  -- Shallow compare of arrays
   if #got ~= #expected then
     fail_count = fail_count + 1
     print("FAIL: " .. msg .. " (length mismatch: " .. #got .. " vs " .. #expected .. ")")
@@ -173,7 +172,6 @@ r = parser.parse({
   "  - Child block",      -- 4
 })
 assert_eq(r.blocks[1].line_start, 1, "multi-line block starts at 1")
--- line_end for bullet+continuations should be 3, but after children propagated it's 4
 assert_eq(r.blocks[1].line_end, 4, "multi-line block ends at 4 (with child)")
 assert_eq(#r.blocks[1].children, 1, "has 1 child")
 assert_eq(r.blocks[1].children[1].line_start, 4, "child at line 4")
@@ -191,6 +189,40 @@ assert_eq(r.page_properties["status"], "Active", "page prop parsed")
 r = parser.parse({ "- " })
 assert_eq(#r.blocks, 1, "empty bullet parsed")
 assert_eq(r.blocks[1].content, "", "empty bullet content is empty string")
+
+-- ── Test 11: block_at_line recursive correctness ─────────────────────
+-- Verifies the new recursive descent (audit #19) returns the same
+-- results as the old flatten+scan approach.
+
+print("Test 11: block_at_line recursive descent")
+r = parser.parse({
+  "- A",              -- 1
+  "  id:: x",         -- 2
+  "  - B",            -- 3
+  "    - C",          -- 4
+  "      - D",        -- 5
+  "  - E",            -- 6
+  "- F",              -- 7
+})
+
+found = parser.block_at_line(r.blocks, 1)
+assert_eq(found and found.content, "A", "line 1 → A")
+found = parser.block_at_line(r.blocks, 2)
+assert_eq(found and found.content, "A", "line 2 (property of A) → A")
+found = parser.block_at_line(r.blocks, 3)
+assert_eq(found and found.content, "B", "line 3 → B")
+found = parser.block_at_line(r.blocks, 4)
+assert_eq(found and found.content, "C", "line 4 → C")
+found = parser.block_at_line(r.blocks, 5)
+assert_eq(found and found.content, "D", "line 5 → D (deepest)")
+found = parser.block_at_line(r.blocks, 6)
+assert_eq(found and found.content, "E", "line 6 → E")
+found = parser.block_at_line(r.blocks, 7)
+assert_eq(found and found.content, "F", "line 7 → F")
+
+-- Out of range
+found = parser.block_at_line(r.blocks, 99)
+assert_eq(found, nil, "line 99 → nil")
 
 -- ── Summary ──────────────────────────────────────────────────────────
 

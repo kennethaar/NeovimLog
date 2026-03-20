@@ -1,28 +1,27 @@
+--- logseq.nvim UI
+--- Winbar, statusline, save indicator, syntax concealment, and highlights.
+
 local M = {}
 
--- Store the temporary save states for buffers
 M._saved_buffers = {}
 
+-- ── Winbar ────────────────────────────────────────────────────────────
+
 function M.winbar()
-  -- Neovim 0.8+ provides statusline_winid, letting us know exactly which window's bar is drawing
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
   local bufnr = vim.api.nvim_win_get_buf(winid)
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   local name = vim.fn.fnamemodify(filepath, ":t")
   if name == "" then return "" end
-  
-  local title = name:gsub("%.md$", ""):gsub("---", "/")
 
+  local title = name:gsub("%.md$", ""):gsub("---", "/")
   local close_btn = "%=%#Comment#(:q) %@v:lua.require('logseq.ui').close_win@%#Normal#✕%X "
-  
-  -- If this buffer just saved, append the checkmark
+
   if M._saved_buffers[bufnr] then
     return " " .. title .. "  ✓ Saved" .. close_btn
   end
 
-  -- Show current/next calendar event (powered by reminders module)
-  -- %< tells Neovim: "if the winbar overflows, truncate HERE" — so ✕ always stays visible
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
@@ -30,23 +29,20 @@ function M.winbar()
       return " " .. title .. "%<  │  " .. event_text .. close_btn
     end
   end
-  
+
   return " " .. title .. close_btn
 end
 
--- This is called by the autocommand to trigger the UI flash
 function M.trigger_save_indicator(bufnr)
   M._saved_buffers[bufnr] = true
-  vim.cmd("redraw!") -- Force the winbar to update immediately
+  vim.cmd("redraw!")
 
-  -- Clear the indicator after 1.5 seconds (1500 ms)
   vim.defer_fn(function()
     M._saved_buffers[bufnr] = nil
-    -- vim.schedule ensures we don't cause async drawing errors
-    vim.schedule(function() 
-       if vim.api.nvim_buf_is_valid(bufnr) then
-          vim.cmd("redraw!") 
-       end
+    vim.schedule(function()
+      if vim.api.nvim_buf_is_valid(bufnr) then
+        vim.cmd("redraw!")
+      end
     end)
   end, 1500)
 end
@@ -57,81 +53,59 @@ end
 
 function M.open_help()
   local src = debug.getinfo(1, "S").source:gsub("^@", "")
-  local help_file = vim.fn.fnamemodify(src, ":p:h:h") .. "/README.md" 
-  
+  local help_file = vim.fn.fnamemodify(src, ":p:h:h") .. "/README.md"
+
   if vim.fn.filereadable(help_file) == 1 then
     vim.cmd("vsplit " .. vim.fn.fnameescape(help_file))
-  else
-    local msg = string.format(
-      "Logseq Mode Active!\n" ..
-      "• Folding: za\n" ..
-      "• Move Block: <Alt-Up/Down>\n" ..
-      "• Indent: Tab / Shift-Tab\n" ..
-      "• Search Link: [[\n" ..
-      "• Add link by selcting text and hitting enter\n" ..
-      "• Cycle TODO state by hitting Ctrl + T\n" ..
-      "• Trigger calsync with :Calsync\n" ..
-      "(Note: Could not locate README at %s)", help_file
-    )
-    vim.notify(msg, vim.log.levels.INFO)
+    return
   end
+
+  vim.notify(
+    "Logseq Mode Active!\n" ..
+    "• Folding: za\n" ..
+    "• Move Block: <Alt-Up/Down>\n" ..
+    "• Indent: Tab / Shift-Tab\n" ..
+    "• Search Link: [[\n" ..
+    "• Add link by selecting text and hitting enter\n" ..
+    "• Cycle TODO state by hitting Ctrl + T\n" ..
+    "• Trigger calsync with :Calsync\n" ..
+    string.format("(Could not locate README at %s)", help_file),
+    vim.log.levels.INFO
+  )
 end
 
-function M.setup_buf(bufnr)
-  -- Setup dynamic Winbar (first — must not be blocked by syntax errors)
-  vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
+-- ── Syntax Setup ─────────────────────────────────────────────────────
+-- (audit #30) Each syntax rule is individually pcall-wrapped so one
+-- failure doesn't prevent the rest from loading.
 
-  -- Setup Statusline
-  local stl = vim.o.statusline
-  if stl == "" then stl = "%<%f %h%m%r%=%-14.(%l,%c%V%) %P" end
-  if not stl:match("logseq.ui") then
-    vim.opt_local.statusline = stl .. " %=%@v:lua.require('logseq.ui').open_help@ hh %X"
-  end
+local function setup_syntax(bufnr)
+  vim.api.nvim_buf_call(bufnr, function()
+    -- Hide id:: property lines entirely
+    pcall(vim.cmd, [[syntax match LogseqUID /^\s*id::.*$/ conceal]])
 
-  vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
-
-  -- Listen for ANY file save (autosave or manual) and trigger the indicator
-  vim.api.nvim_create_autocmd("BufWritePost", {
-    buffer = bufnr,
-    callback = function(ev)
-      M.trigger_save_indicator(ev.buf)
-    end
-  })
-
-  -- Syntax concealment (wrapped in pcall so a bad rule can't break the rest of setup)
-  vim.opt_local.conceallevel = 2
-
-  local ok, err = pcall(function()
-    vim.api.nvim_buf_call(bufnr, function()
-      -- Hide id:: property lines entirely
-      vim.cmd([[syntax match LogseqUID /^\s*id::.*$/ conceal]])
-
-      -- Warm red on calendar time slots (matchadd wins over markdown syntax)
+    -- Calendar time slots
+    pcall(function()
       vim.fn.matchadd("LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
       vim.fn.matchadd("LogseqTime", [[(Heldags)]])
-
-      -- Conceal [[wikilinks]]: hide [[ ]], trim namespace prefix, underline visible name
-      vim.cmd([[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
-      -- NOTE: Cannot use [[ ]] Lua string here — Vim's \] creates ]] which terminates Lua long strings
-      vim.cmd("syntax match LogseqLinkNS /.*\\// contained conceal")
-
-      -- Conceal ((block-refs)): hide (( ))
-      vim.cmd([[syntax region LogseqBlockRef matchgroup=LogseqBlockRefDelim start=/((\ze[^(]/ end=/))/ concealends oneline]])
-
-      -- Conceal #tags: hide the # prefix
-      vim.cmd([[syntax match LogseqTagHash /#\ze[[:alnum:]_\-\/]/ conceal]])
-      vim.cmd([[syntax match LogseqTag /#[[:alnum:]_\-\/]\+/ contains=LogseqTagHash]])
-
-      -- Strikethrough for ~~cancelled~~ text (used by calendar for removed events)
-      vim.cmd([[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
     end)
+
+    -- Conceal [[wikilinks]]
+    pcall(vim.cmd, [[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
+    pcall(vim.cmd, "syntax match LogseqLinkNS /.*\\// contained conceal")
+
+    -- Conceal ((block-refs))
+    pcall(vim.cmd, [[syntax region LogseqBlockRef matchgroup=LogseqBlockRefDelim start=/((\ze[^(]/ end=/))/ concealends oneline]])
+
+    -- Conceal #tags
+    pcall(vim.cmd, [[syntax match LogseqTagHash /#\ze[[:alnum:]_\-\/]/ conceal]])
+    pcall(vim.cmd, [[syntax match LogseqTag /#[[:alnum:]_\-\/]\+/ contains=LogseqTagHash]])
+
+    -- Strikethrough for ~~cancelled~~ text
+    pcall(vim.cmd, [[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
   end)
+end
 
-  if not ok then
-    vim.notify("[logseq.nvim] Syntax conceal error: " .. tostring(err), vim.log.levels.WARN)
-  end
-
-  -- Highlights: colored links, tags, strikethrough, and time slots
+local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60", ctermfg = 167 })
   vim.api.nvim_set_hl(0, "LogseqLink", { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
   vim.api.nvim_set_hl(0, "LogseqBlockRef", { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
@@ -140,13 +114,40 @@ function M.setup_buf(bufnr)
   vim.api.nvim_set_hl(0, "LogseqStrikeDelim", { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqLinkDelim", { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqBlockRefDelim", { link = "Conceal" })
+end
 
-  -- Trigger active-event highlight on buffer enter (reminders module handles the extmarks)
+-- ── Buffer Setup ─────────────────────────────────────────────────────
+
+function M.setup_buf(bufnr)
+  -- Winbar (audit #15: v:lua.require pattern is safe in opt_local)
+  vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
+
+  -- Statusline
+  local stl = vim.o.statusline
+  if stl == "" then stl = "%<%f %h%m%r%=%-14.(%l,%c%V%) %P" end
+  if not stl:match("logseq.ui") then
+    vim.opt_local.statusline = stl .. " %=%@v:lua.require('logseq.ui').open_help@ hh %X"
+  end
+
+  vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
+
+  -- Save indicator
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    buffer = bufnr,
+    callback = function(ev) M.trigger_save_indicator(ev.buf) end,
+  })
+
+  -- Syntax
+  vim.opt_local.conceallevel = 2
+  setup_syntax(bufnr)
+  setup_highlights()
+
+  -- Active-event highlight on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
     buffer = bufnr,
     callback = function()
       pcall(function() require("logseq.reminders").update_highlight() end)
-    end
+    end,
   })
 end
 

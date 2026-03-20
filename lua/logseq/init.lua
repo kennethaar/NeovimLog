@@ -1,17 +1,12 @@
+--- logseq.nvim entry point
+--- Plugin activation, command registration, and autocmd setup.
+
 local config = require("logseq.config")
+local util = require("logseq.util")
 local M = {}
 
-local function normalize(p)
-  if not p or p == "" then return "" end
-  local resolved = vim.fn.resolve(vim.fn.expand(p)):gsub("\\", "/")
-  if vim.fn.has("win32") == 1 then resolved = resolved:lower() end
-  return resolved
-end
-
 local function is_vault_file(bufpath)
-  local vault = config.current.vault_path
-  if not vault or vault == "" then return false end
-  return normalize(bufpath):sub(1, #vault) == normalize(vault)
+  return util.is_vault_file(bufpath, config.current.vault_path)
 end
 
 local function activate(bufnr)
@@ -26,7 +21,7 @@ local function activate(bufnr)
     "logseq.editing",
     "logseq.autosave",
     "logseq.backlinks",
-    "logseq.queries"
+    "logseq.queries",
   }
 
   for _, mod in ipairs(modules) do
@@ -43,13 +38,13 @@ end
 
 local function run_interactive_setup(opts, callback)
   vim.notify("Logseq vault not configured. Starting setup...", vim.log.levels.INFO)
-  
+
   vim.ui.input({ prompt = "Enter Logseq Vault Path: ", completion = "dir" }, function(vault_input)
     if not vault_input or vault_input == "" then
       vim.notify("Setup aborted. Vault path is required.", vim.log.levels.WARN)
       return
     end
-    
+
     opts.vault_path = vault_input
     config.save_to_disk(vault_input, nil)
     callback(opts)
@@ -61,17 +56,17 @@ local function bootstrap(opts)
 
   local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
 
-  -- Command 1: Force Sync
+  -- ── Commands ──────────────────────────────────────────────────────
+
   vim.api.nvim_create_user_command("Calsync", function()
     local ok, cal = pcall(require, "logseq.calendar")
     if ok then cal.sync(true) else vim.notify("Calendar module not found", vim.log.levels.ERROR) end
   end, {})
 
-  -- Command 2: Add Calendar URL (Renamed to Caladd)
   vim.api.nvim_create_user_command("Caladd", function()
     local function ask_for_url(count)
-      local prompt_msg = count == 0 
-        and "Paste Calendar ICS URL (empty to cancel): " 
+      local prompt_msg = count == 0
+        and "Paste Calendar ICS URL (empty to cancel): "
         or string.format("Saved %d! Paste another URL (empty to finish): ", count)
 
       vim.ui.input({ prompt = prompt_msg }, function(input)
@@ -82,7 +77,7 @@ local function bootstrap(opts)
           end
           return
         end
-        
+
         if config.add_calendar_url(input) then
           ask_for_url(count + 1)
         else
@@ -92,10 +87,9 @@ local function bootstrap(opts)
       end)
     end
 
-    ask_for_url(0) 
+    ask_for_url(0)
   end, {})
 
-  -- Command 3: Change reminder lead time
   vim.api.nvim_create_user_command("Calremind", function()
     local current = config.current.reminder_minutes
     local prompt_msg = current
@@ -125,32 +119,50 @@ local function bootstrap(opts)
     end)
   end, {})
 
-  -- Command 4: Jump to Today's Journal
   vim.api.nvim_create_user_command("LogseqToday", function()
     local dir = config.current.vault_path .. "/journals"
     if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
     local filepath = dir .. "/" .. os.date(config.current.journal_format) .. ".md"
-    
-    if normalize(vim.api.nvim_buf_get_name(0)) == normalize(filepath) then return end
+
+    if util.normalize(vim.api.nvim_buf_get_name(0)) == util.normalize(filepath) then return end
     if vim.bo.modified then vim.cmd("write") end
-    
+
     vim.cmd("edit " .. vim.fn.fnameescape(filepath))
     vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
   end, {})
 
-  -- Auto-activate on markdown files inside the vault (Refactored for flatter logic)
-  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile", "BufEnter" }, {
+  -- (audit #28) LogseqNewPage — create a new page with proper namespace encoding
+  vim.api.nvim_create_user_command("LogseqNewPage", function(cmd_opts)
+    local page_name = cmd_opts.args
+    if not page_name or page_name == "" then
+      vim.ui.input({ prompt = "Page name: " }, function(input)
+        if not input or input == "" then return end
+        local filename = util.encode_filename(input)
+        local filepath = config.current.vault_path .. "/pages/" .. filename
+        vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+        vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
+      end)
+      return
+    end
+    local filename = util.encode_filename(page_name)
+    local filepath = config.current.vault_path .. "/pages/" .. filename
+    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+    vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
+  end, { nargs = "?" })
+
+  -- ── Autocmds ──────────────────────────────────────────────────────
+
+  -- Auto-activate on markdown files inside the vault
+  -- (audit #22) Calendar sync only on BufReadPost/BufNewFile, NOT BufEnter
+  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
     pattern = "*.md",
     callback = function(ev)
       local bufpath = vim.api.nvim_buf_get_name(ev.buf)
-      
-      -- Guard clause: exit early if not in vault
-      if not is_vault_file(bufpath) then return end 
+      if not is_vault_file(bufpath) then return end
 
       activate(ev.buf)
-      
-      -- Template Injection for new files
+
       if ev.event == "BufNewFile" then
         vim.schedule(function()
           local ok, templates = pcall(require, "logseq.templates")
@@ -158,7 +170,27 @@ local function bootstrap(opts)
         end)
       end
 
-      pcall(function() require("logseq.calendar").sync() end) 
+      pcall(function() require("logseq.calendar").sync() end)
+    end,
+  })
+
+  -- Activate on BufEnter without calendar sync (audit #22)
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      if not is_vault_file(bufpath) then return end
+      activate(ev.buf)
+    end,
+  })
+
+  -- Clean up parser cache on buffer unload
+  vim.api.nvim_create_autocmd("BufUnload", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      pcall(function() require("logseq.parser").invalidate_cache(ev.buf) end)
     end,
   })
 
@@ -179,7 +211,7 @@ local function bootstrap(opts)
           vim.notify("[logseq.nvim] Reminders disabled. Enable with :Calremind", vim.log.levels.INFO)
         end
       end)
-    end, 500)  -- Small delay so it doesn't collide with other startup prompts
+    end, 500)
   end
 end
 

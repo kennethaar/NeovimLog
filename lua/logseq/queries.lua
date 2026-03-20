@@ -4,12 +4,10 @@
 ---   • CR to jump to the source task
 ---   • Inline editing with write-back to source files on save
 ---   • Virtual-text source attribution (← Page Name)
----
---- Follows the same lifecycle as backlinks.lua:
----   BufWritePre  → sync edits back to source files, strip section
----   BufWritePost → re-inject section if it was visible
 
 local config = require("logseq.config")
+local util = require("logseq.util")
+
 local M = {}
 
 -- ── Constants ─────────────────────────────────────────────────────────
@@ -17,31 +15,35 @@ local M = {}
 local HEADER_PATTERN = "^── Queries.*──$"
 local SEPARATOR = ""
 
-local todo_states = { "TODO", "DOING", "WAITING" }
+-- ── Per-buffer state (consolidated, audit #21 pattern) ────────────────
 
--- ── Per-buffer state ──────────────────────────────────────────────────
+M._state = {} -- bufnr → { visible, region, source_map, had_queries }
 
-M._visible = {}       -- bufnr → bool
-M._region = {}        -- bufnr → { start_line, end_line }
-M._source_map = {}    -- bufnr → { [abs_line] = { filepath, lnum, indent_prefix, original_task, source } }
-M._had_queries = {}   -- bufnr → bool (for save/restore cycle)
+local function get_state(bufnr)
+  if not M._state[bufnr] then
+    M._state[bufnr] = {
+      visible = false,
+      region = nil,
+      source_map = nil,
+      had_queries = false,
+    }
+  end
+  return M._state[bufnr]
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 
 local function is_active_task(line)
-  for _, state in ipairs(todo_states) do
-    if line:match("^%s*%- " .. state .. "%s+") then
-      return true
-    end
+  for _, state in ipairs(util.active_todo_states) do
+    if line:match("^%s*%- " .. state .. "%s+") then return true end
   end
   return false
 end
 
---- Check if a buffer line falls inside the queries section.
 function M.in_region(bufnr, row)
-  local region = M._region[bufnr]
-  if not region then return false end
-  return row >= region.start_line and row <= region.end_line
+  local state = get_state(bufnr)
+  if not state.region then return false end
+  return row >= state.region.start_line and row <= state.region.end_line
 end
 
 local function find_header_line(bufnr)
@@ -52,20 +54,17 @@ local function find_header_line(bufnr)
   return nil
 end
 
--- ── Region recalculation (mirrors backlinks.lua) ──────────────────────
--- When text changes above the queries section, absolute line numbers shift.
--- This re-anchors _region and _source_map to the header's new position.
+-- ── Region recalculation ──────────────────────────────────────────────
 
 local function recalculate_region(bufnr)
-  if not M._visible[bufnr] then return end
-  local old_region = M._region[bufnr]
-  if not old_region then return end
+  local state = get_state(bufnr)
+  if not state.visible or not state.region then return end
 
   local header_line = find_header_line(bufnr)
   if not header_line then
-    M._visible[bufnr] = false
-    M._region[bufnr] = nil
-    M._source_map[bufnr] = nil
+    state.visible = false
+    state.region = nil
+    state.source_map = nil
     return
   end
 
@@ -76,21 +75,21 @@ local function recalculate_region(bufnr)
   end
 
   local new_end = vim.api.nvim_buf_line_count(bufnr)
-  local shift = new_start - old_region.start_line
+  local shift = new_start - state.region.start_line
 
   if shift == 0 then
-    M._region[bufnr].end_line = new_end
+    state.region.end_line = new_end
     return
   end
 
-  local old_smap = M._source_map[bufnr] or {}
+  local old_smap = state.source_map or {}
   local new_smap = {}
   for abs_line, info in pairs(old_smap) do
     new_smap[abs_line + shift] = info
   end
 
-  M._region[bufnr] = { start_line = new_start, end_line = new_end }
-  M._source_map[bufnr] = new_smap
+  state.region = { start_line = new_start, end_line = new_end }
+  state.source_map = new_smap
 end
 
 -- ── File Scanner ──────────────────────────────────────────────────────
@@ -113,7 +112,6 @@ local function process_single_file(filepath, page_link, all_todos, very_next_tod
 
   for line in f:lines() do
     line_num = line_num + 1
-    -- Match "  - " specifically (space then dash then space) to avoid matching "---" or "-x"
     local indent_str = line:match("^(%s*)%- ")
     if not indent_str then goto continue end
 
@@ -125,7 +123,6 @@ local function process_single_file(filepath, page_link, all_todos, very_next_tod
 
     local current_is_task = is_active_task(line)
     local parent_is_task = false
-
     for _, parent in ipairs(indent_stack) do
       if parent.is_task then
         parent_is_task = true
@@ -138,16 +135,15 @@ local function process_single_file(filepath, page_link, all_todos, very_next_tod
     if not current_is_task or not line:find(page_link, 1, true) then goto continue end
 
     local clean_task = vim.trim(line:gsub("^%s*%- ", ""))
-
-    -- Defensive copy: separate table for each list to prevent shared-mutation bugs
-    table.insert(all_todos, {
+    local entry = {
       task = clean_task,
       source = source_page,
       filepath = filepath,
       lnum = line_num,
-      indent_prefix = indent_str, -- string of spaces, e.g. "  "
-    })
+      indent_prefix = indent_str,
+    }
 
+    table.insert(all_todos, entry)
     if not parent_is_task then
       table.insert(very_next_todos, {
         task = clean_task,
@@ -173,10 +169,7 @@ local function gather_tasks(page_name)
 
   local function scan_dir(dir)
     if vim.fn.isdirectory(dir) == 0 then return end
-    local md_files = vim.fn.glob(dir .. "/*.md", true, true)
-    for _, file in ipairs(md_files) do
-      table.insert(files, file)
-    end
+    vim.list_extend(files, vim.fn.glob(dir .. "/*.md", true, true))
   end
 
   scan_dir(vault .. "/pages")
@@ -196,7 +189,7 @@ end
 
 local function build_section(tasks, heading_title)
   local lines = {}
-  local smap = {} -- { [relative_line_index] = source_info }
+  local smap = {}
 
   table.insert(lines, string.format("─── %d %s ───", #tasks, heading_title))
 
@@ -223,7 +216,6 @@ end
 
 -- ── Inline Edit Sync ──────────────────────────────────────────────────
 
---- Apply a single edit to a loaded buffer. Returns true on success.
 local function apply_edit_to_buffer(target_buf, edit)
   local source_lines = vim.api.nvim_buf_get_lines(target_buf, edit.lnum - 1, edit.lnum, false)
   if #source_lines == 0 then return false end
@@ -236,7 +228,6 @@ local function apply_edit_to_buffer(target_buf, edit)
   return true
 end
 
---- Apply a single edit to an in-memory file table. Returns true on success.
 local function apply_edit_to_disk(file_lines, edit)
   if edit.lnum > #file_lines then return false end
 
@@ -247,19 +238,17 @@ local function apply_edit_to_disk(file_lines, edit)
   return true
 end
 
---- Compare current buffer text against stored originals and write changes back.
 local function sync_edits(bufnr)
-  local smap = M._source_map[bufnr]
-  if not smap then return end
+  local state = get_state(bufnr)
+  if not state.source_map then return end
 
   local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local edits_by_file = {}
 
-  for abs_line, info in pairs(smap) do
+  for abs_line, info in pairs(state.source_map) do
     if abs_line > #buf_lines then goto next_line end
 
     local current_text = buf_lines[abs_line]
-    -- Strip bullet prefix, then strip the appended source suffix (← [[Page]])
     local displayed_task = vim.trim(current_text:gsub("^%s*%- ", ""))
     displayed_task = displayed_task:gsub("%s*←%s*%[%[.-%]%]$", "")
 
@@ -277,19 +266,16 @@ local function sync_edits(bufnr)
     ::next_line::
   end
 
-  -- Early exit: nothing changed
   if not next(edits_by_file) then return end
 
   local total_written = 0
 
   for filepath, edits in pairs(edits_by_file) do
-    -- Sort descending so line-number edits don't shift each other
     table.sort(edits, function(a, b) return a.lnum > b.lnum end)
 
     local target_buf = vim.fn.bufnr(filepath)
 
     if target_buf ~= -1 and vim.api.nvim_buf_is_loaded(target_buf) then
-      -- Buffer is open — edit via API (preserves undo)
       local buf_changed = false
       for _, edit in ipairs(edits) do
         if apply_edit_to_buffer(target_buf, edit) then
@@ -303,7 +289,6 @@ local function sync_edits(bufnr)
         end)
       end
     else
-      -- Buffer not loaded — direct file I/O
       local file_lines = vim.fn.readfile(filepath)
       local file_changed = false
       for _, edit in ipairs(edits) do
@@ -329,11 +314,12 @@ end
 -- ── Section Management ────────────────────────────────────────────────
 
 function M.remove_section(bufnr)
+  local state = get_state(bufnr)
   local header_line = find_header_line(bufnr)
   if not header_line then
-    M._visible[bufnr] = false
-    M._region[bufnr] = nil
-    M._source_map[bufnr] = nil
+    state.visible = false
+    state.region = nil
+    state.source_map = nil
     return false
   end
 
@@ -347,13 +333,12 @@ function M.remove_section(bufnr)
   vim.api.nvim_buf_set_lines(bufnr, start - 1, vim.api.nvim_buf_line_count(bufnr), false, {})
   vim.bo[bufnr].modified = was_modified
 
-  M._visible[bufnr] = false
-  M._region[bufnr] = nil
-  M._source_map[bufnr] = nil
+  state.visible = false
+  state.region = nil
+  state.source_map = nil
 
   local ns = vim.api.nvim_create_namespace("logseq_queries")
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-
   return true
 end
 
@@ -377,13 +362,11 @@ function M.render_section(bufnr)
   local query_content = f:read("*all")
   f:close()
 
-  -- Gather tasks
   local page_name = filename:gsub("%.md$", ""):gsub("___", "/")
   local all_todos, very_next_todos = gather_tasks(page_name)
 
-  -- Build display lines from the query template
   local display_lines = { "── Queries ──" }
-  local all_smap = {} -- { [rel_index_in_display_lines] = source_info }
+  local all_smap = {}
 
   for line in query_content:gmatch("([^\n]*)\n?") do
     if line == "%QueryTodos%" then
@@ -405,10 +388,10 @@ function M.render_section(bufnr)
     end
   end
 
-  -- Inject at EOF
+  local state = get_state(bufnr)
   local was_modified = vim.bo[bufnr].modified
   local line_count = vim.api.nvim_buf_line_count(bufnr)
-  local section_start = line_count + 1  -- 1-indexed first line of injected content
+  local section_start = line_count + 1
 
   local inject = { SEPARATOR }
   vim.list_extend(inject, display_lines)
@@ -416,27 +399,22 @@ function M.render_section(bufnr)
   vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, inject)
   vim.bo[bufnr].modified = was_modified
 
-  -- Region tracking (1-indexed)
-  M._region[bufnr] = {
+  state.region = {
     start_line = section_start,
     end_line = section_start + #inject - 1,
   }
-  M._visible[bufnr] = true
+  state.visible = true
 
-  -- Build absolute source map
-  M._source_map[bufnr] = {}
+  state.source_map = {}
   local ns = vim.api.nvim_create_namespace("logseq_queries")
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
   for rel_line, info in pairs(all_smap) do
     local abs_line = section_start + rel_line
-    M._source_map[bufnr][abs_line] = info
+    state.source_map[abs_line] = info
   end
 
-  -- Highlights — all nvim_buf_add_highlight calls use 0-indexed lines
-  -- base_0 converts section_start (1-indexed) to 0-indexed base for inject[1]
   local base_0 = section_start - 1
-
   for i = 1, #inject do
     local line_0 = base_0 + (i - 1)
     local text = inject[i]
@@ -451,21 +429,16 @@ end
 
 -- ── Navigation ────────────────────────────────────────────────────────
 
---- Jump to the source file + line of the task under cursor.
---- Called by links.lua when CR is pressed inside the queries region.
----@return boolean true if navigation happened
 function M.navigate()
   local bufnr = vim.api.nvim_get_current_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
 
   if not M.in_region(bufnr, lnum) then return false end
 
-  local smap = M._source_map[bufnr]
-  if not smap or not smap[lnum] then return false end
+  local state = get_state(bufnr)
+  if not state.source_map or not state.source_map[lnum] then return false end
 
-  local target = smap[lnum]
-
-  -- Sync any pending edits before navigating away
+  local target = state.source_map[lnum]
   sync_edits(bufnr)
 
   vim.cmd("normal! m'")
@@ -478,7 +451,8 @@ end
 
 function M.toggle()
   local bufnr = vim.api.nvim_get_current_buf()
-  if M._visible[bufnr] then
+  local state = get_state(bufnr)
+  if state.visible then
     sync_edits(bufnr)
     M.remove_section(bufnr)
   else
@@ -489,15 +463,17 @@ end
 -- ── Write Lifecycle ───────────────────────────────────────────────────
 
 local function on_write_pre(bufnr)
-  if not M._visible[bufnr] then return end
+  local state = get_state(bufnr)
+  if not state.visible then return end
   sync_edits(bufnr)
-  M._had_queries[bufnr] = true
+  state.had_queries = true
   M.remove_section(bufnr)
 end
 
 local function on_write_post(bufnr)
-  if not M._had_queries[bufnr] then return end
-  M._had_queries[bufnr] = nil
+  local state = get_state(bufnr)
+  if not state.had_queries then return end
+  state.had_queries = false
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(bufnr) then
       M.render_section(bufnr)
@@ -506,15 +482,13 @@ local function on_write_post(bufnr)
 end
 
 -- ── Insert Guard ──────────────────────────────────────────────────────
--- Allow insert mode ONLY on task lines (those with source_map entries).
--- Headings, separators, and template lines are not editable.
 
 local function guard_insert(bufnr)
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   if not M.in_region(bufnr, lnum) then return end
 
-  local smap = M._source_map[bufnr]
-  if smap and smap[lnum] then return end -- task line: allow editing
+  local state = get_state(bufnr)
+  if state.source_map and state.source_map[lnum] then return end
 
   vim.cmd("stopinsert")
   vim.notify("[logseq.nvim] Only task lines are editable.", vim.log.levels.INFO)
@@ -545,17 +519,15 @@ function M.setup_buf(bufnr)
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = group, buffer = bufnr,
     callback = function(ev)
-      if M._visible[ev.buf] then recalculate_region(ev.buf) end
+      local state = get_state(ev.buf)
+      if state.visible then recalculate_region(ev.buf) end
     end,
   })
 
   vim.api.nvim_create_autocmd("BufUnload", {
     group = group, buffer = bufnr,
     callback = function(ev)
-      M._visible[ev.buf] = nil
-      M._region[ev.buf] = nil
-      M._source_map[ev.buf] = nil
-      M._had_queries[ev.buf] = nil
+      M._state[ev.buf] = nil
     end,
   })
 end

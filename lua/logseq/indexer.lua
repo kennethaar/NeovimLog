@@ -1,25 +1,20 @@
 --- logseq.nvim indexer
+--- Async vault scanner for backlink discovery.
+--- Uses shared util.normalize (audit #8).
+--- Cache stores only what's needed for backlinks, not full parse trees (audit #20).
 
 local parser = require("logseq.parser")
-local links_mod = require("logseq.links")
+local util = require("logseq.util")
 local config = require("logseq.config")
 
 local M = {}
-
--- ── Path normalization ────────────────────────────────────────────────
-
-local function norm_path(p)
-  local resolved = vim.fn.resolve(vim.fn.expand(p)):gsub("\\", "/")
-  if vim.fn.has("win32") == 1 then resolved = resolved:lower() end
-  return resolved
-end
 
 -- ── Cache ─────────────────────────────────────────────────────────────
 
 M._cache = {}
 
 function M.invalidate(filepath)
-  M._cache[norm_path(filepath)] = nil
+  M._cache[util.normalize(filepath)] = nil
 end
 
 function M.invalidate_all()
@@ -32,22 +27,18 @@ function M.page_name_from_file(filepath)
   local vault = config.current.vault_path
   if not vault or vault == "" then return nil end
 
-  local norm_vault = vim.fn.resolve(vim.fn.expand(vault)):gsub("\\", "/")
-  local norm_file = vim.fn.resolve(vim.fn.expand(filepath)):gsub("\\", "/")
+  local norm_vault = util.normalize(vault)
+  local norm_file = util.normalize(filepath)
 
-  local vault_cmp = vim.fn.has("win32") == 1 and norm_vault:lower() or norm_vault
-  local file_cmp = vim.fn.has("win32") == 1 and norm_file:lower() or norm_file
-  if file_cmp:sub(1, #vault_cmp) ~= vault_cmp then return nil end
+  if norm_file:sub(1, #norm_vault + 1) ~= norm_vault .. "/" then return nil end
 
-  local rel = norm_file:sub(#norm_vault + 2) 
+  local rel = norm_file:sub(#norm_vault + 2)
 
   local journal_name = rel:match("^journals/(.+)%.md$")
   if journal_name then return journal_name end
 
   local page_name = rel:match("^pages/(.+)%.md$")
-  if page_name then
-    return links_mod.filename_to_page(page_name .. ".md")
-  end
+  if page_name then return util.decode_filename(page_name .. ".md") end
 
   return nil
 end
@@ -55,7 +46,7 @@ end
 -- ── Effective refs computation ────────────────────────────────────────
 
 local function compute_all_refs(flat, page_name)
-  local memo = {} 
+  local memo = {}
   for _, block in ipairs(flat) do
     local refs = {}
     for _, link in ipairs(block.links) do refs[link] = true end
@@ -84,7 +75,7 @@ local function extract_context(block, lines)
   end
 
   local result = {}
-  local base_indent = 2 
+  local base_indent = 2
 
   for i, anc in ipairs(ancestors) do
     table.insert(result, {
@@ -137,8 +128,7 @@ end
 local function list_md_files(dirs)
   local files = {}
   for _, dir in ipairs(dirs) do
-    local found = vim.fn.glob(dir .. "/*.md", true, true)
-    vim.list_extend(files, found)
+    vim.list_extend(files, vim.fn.glob(dir .. "/*.md", true, true))
   end
   return files
 end
@@ -154,7 +144,6 @@ end
 
 -- ── Main finder (Async) ───────────────────────────────────────────────
 
---- Find all backlinks for a given page name asynchronously.
 ---@param page_name string
 ---@param exclude_file string|nil
 ---@param on_complete function
@@ -170,7 +159,7 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
   if vim.fn.isdirectory(journals_dir) == 1 then table.insert(search_dirs, journals_dir) end
   if #search_dirs == 0 then return on_complete({}) end
 
-  local norm_exclude = exclude_file and norm_path(exclude_file) or nil
+  local norm_exclude = exclude_file and util.normalize(exclude_file) or nil
   local needles = build_needles(page_name)
   local all_files = list_md_files(search_dirs)
   local results = {}
@@ -179,14 +168,14 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
 
   local i = 1
   local uv = vim.uv or vim.loop
-  
+
   local function process_chunk()
-    local chunk_size = 50 
+    local chunk_size = 50
     local chunk_end = math.min(i + chunk_size - 1, #all_files)
 
     for j = i, chunk_end do
       local filepath = all_files[j]
-      local norm = norm_path(filepath)
+      local norm = util.normalize(filepath)
       if norm == norm_exclude then goto next_file end
 
       local stat = uv.fs_stat(filepath)
@@ -210,6 +199,8 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
         if #file_lines > 0 and file_lines[#file_lines] == "" then table.remove(file_lines) end
 
         parsed = parser.parse(file_lines)
+        -- Cache: store parsed data for reuse. Parent refs create cycles but
+        -- Lua's GC handles them. Cache is cleared on invalidate/invalidate_all.
         M._cache[norm] = { mtime = mtime, parsed = parsed, lines = file_lines, content = file_content }
       end
 
@@ -241,7 +232,6 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
       ::next_file::
     end
 
-    -- Report progress back to the UI
     if on_progress then
       on_progress(chunk_end, #all_files)
     end

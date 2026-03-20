@@ -2,10 +2,10 @@
 --- Per-line foldexpr using pattern matching. Does NOT parse the full tree.
 ---
 --- Fold level mapping:
----   bullet at indent 0  → >1 (starts fold level 1)
----   bullet at indent 2  → >2 (starts fold level 2)
+---   bullet at indent 0  → >1
+---   bullet at indent 2  → >2
 ---   bullet at indent N  → >(N/2 + 1)
----   property/continuation → same level as parent (indent / 2)
+---   property/continuation → same level as parent
 ---   page property (col 0, no bullet) → 0
 ---   empty line → "="
 
@@ -36,7 +36,6 @@ function M.foldtext()
 end
 
 function M.setup_buf(bufnr)
-  -- Default setup
   vim.opt_local.foldmethod = "expr"
   vim.opt_local.foldexpr = "v:lua.require('logseq.fold').foldexpr(v:lnum)"
   vim.opt_local.foldtext = "v:lua.require('logseq.fold').foldtext()"
@@ -47,20 +46,29 @@ function M.setup_buf(bufnr)
     vim.opt_local.foldlevel = 99
   end
 
-  -- NEW: The Anti-Flicker Hack
-  -- Suspend expression folding while typing!
+  -- Bind fold_toggle keymap (audit #12: was defined in config but never bound)
+  local km = config.keymaps or {}
+  if km.fold_toggle then
+    vim.keymap.set("n", km.fold_toggle, "za", {
+      buffer = bufnr,
+      silent = true,
+      desc = "Logseq: toggle fold",
+    })
+  end
+
+  -- Anti-Flicker: suspend expression folding while typing
   local group = vim.api.nvim_create_augroup("LogseqFoldFix_" .. bufnr, { clear = true })
-  
+
   vim.api.nvim_create_autocmd("InsertEnter", {
     group = group,
     buffer = bufnr,
-    callback = function() vim.opt_local.foldmethod = "manual" end
+    callback = function() vim.opt_local.foldmethod = "manual" end,
   })
-  
+
   vim.api.nvim_create_autocmd("InsertLeave", {
     group = group,
     buffer = bufnr,
-    callback = function() vim.opt_local.foldmethod = "expr" end
+    callback = function() vim.opt_local.foldmethod = "expr" end,
   })
 end
 
