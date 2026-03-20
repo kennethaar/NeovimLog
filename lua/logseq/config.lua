@@ -26,6 +26,9 @@ M.defaults = {
     fold_toggle      = "za",
     follow_link      = "<CR>",
     toggle_backlinks = "<leader>b",
+    zoom_in          = "<leader>zi",
+    zoom_out         = "<leader>zo",
+    zoom_reset       = "<leader>zr",
   },
 }
 
