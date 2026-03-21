@@ -236,6 +236,13 @@ local function bootstrap(opts)
     end,
   })
 
+  -- Reload files changed externally (e.g. by termux-url-opener appending URLs)
+  vim.o.autoread = true
+  vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter" }, {
+    group = group,
+    callback = function() vim.cmd("checktime") end,
+  })
+
   -- Clean up parser cache on buffer unload
   vim.api.nvim_create_autocmd("BufUnload", {
     group = group,
