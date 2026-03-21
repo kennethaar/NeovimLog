@@ -54,7 +54,7 @@ else
 fi
 
 # ── 5. Vault path ─────────────────────────────────────────────────────
-echo "[5/5] Setting vault path..."
+echo "[5/6] Setting vault path..."
 echo ""
 
 # Show current saved path if it exists
@@ -105,6 +105,19 @@ mkdir -p "$(dirname "$VAULT_PATH_FILE")"
 printf '%s' "$VAULT_PATH" > "$VAULT_PATH_FILE"
 echo "    Saved vault path to $VAULT_PATH_FILE"
 
+# ── 6. URL opener (share-to-journal) ──────────────────────────────────
+echo "[6/6] Installing termux-url-opener..."
+mkdir -p "$HOME/bin"
+TARGET="$HOME/bin/termux-url-opener"
+
+if [ -L "$TARGET" ] && [ "$(readlink "$TARGET")" = "$REPO_DIR/termux-url-opener" ]; then
+  echo "    Already installed."
+else
+  ln -sf "$REPO_DIR/termux-url-opener" "$TARGET"
+  chmod +x "$REPO_DIR/termux-url-opener"
+  echo "    Linked $TARGET -> $REPO_DIR/termux-url-opener"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────
 echo ""
 echo "=== Setup complete! ==="
@@ -120,3 +133,5 @@ echo "Vault path: $VAULT_PATH"
 echo "Neovim config: $NVIM_CONFIG -> $REPO_DIR"
 echo ""
 echo "To change vault path later, re-run this script."
+echo ""
+echo "Share any URL to Termux and it will be appended to today's journal."
