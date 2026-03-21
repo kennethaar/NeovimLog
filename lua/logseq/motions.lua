@@ -123,8 +123,15 @@ local function leading_ws(line)
 end
 
 ---@param delta integer  +N to demote, -N to promote
-local function shift_indent(delta)
-  local parsed, lines = parser.parse_buf()
+---@param parsed_in table|nil  pre-parsed result (avoids a second parse_buf call)
+---@param lines_in string[]|nil  pre-fetched lines (required when parsed_in is provided)
+local function shift_indent(delta, parsed_in, lines_in)
+  local parsed, lines
+  if parsed_in then
+    parsed, lines = parsed_in, lines_in
+  else
+    parsed, lines = parser.parse_buf()
+  end
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local block = parser.block_at_line(parsed.blocks, lnum)
   if not block then return end
@@ -148,7 +155,7 @@ local function shift_indent(delta)
 end
 
 function M.demote()
-  local parsed = parser.parse_buf()
+  local parsed, lines = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local block = parser.block_at_line(parsed.blocks, lnum)
   if not block then return end
@@ -157,7 +164,7 @@ function M.demote()
   local idx = parser.sibling_index(block, sibs)
   if not idx or idx <= 1 then return end
 
-  shift_indent(indent_size())
+  shift_indent(indent_size(), parsed, lines)
 end
 
 function M.promote()

@@ -55,10 +55,20 @@ end
 
 local function recalculate_region(bufnr)
   local state = get_state(bufnr)
-  if not state.visible then return end
-  if not state.region then return end
+  if not state.visible or not state.region then return end
 
-  local header_line = find_header_line(bufnr)
+  -- Only read lines near the known region boundary instead of the whole buffer.
+  -- A window of 100 lines handles typical edits and even large pastes above the section.
+  local search_from = math.max(1, state.region.start_line - 100)
+  local tail_lines = vim.api.nvim_buf_get_lines(bufnr, search_from - 1, -1, false)
+  local header_line = nil
+  for i = #tail_lines, 1, -1 do
+    if tail_lines[i]:match(HEADER_PATTERN) then
+      header_line = search_from + i - 1
+      break
+    end
+  end
+
   if not header_line then
     state.visible = false
     state.region = nil

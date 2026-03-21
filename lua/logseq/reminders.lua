@@ -224,37 +224,34 @@ function M.update_highlight()
 end
 
 --- Start the 30-second tick timer that forces winbar redraws.
+--- Uses a self-rescheduling one-shot pattern: the timer fires once, updates state,
+--- then reschedules itself only if there are still relevant events.
 local function start_tick_timer()
   if M._state.tick_timer then
     vim.fn.timer_stop(M._state.tick_timer)
     M._state.tick_timer = nil
   end
 
-  M._state.tick_timer = vim.fn.timer_start(30000, function()
+  local function tick(_)
     vim.schedule(function()
-      -- Refresh active event highlight
+      if not M._state.tick_timer then return end  -- cancelled between fire and schedule
+      M._state.tick_timer = nil
+
       pcall(M.update_highlight)
-      -- Only redraw if we still have future events worth counting down
-      if M.next_meeting_str() ~= "" then
-        pcall(vim.cmd, "redraw!")
-      else
-        -- Check if any event is still active (for highlights)
-        local now = os.time()
-        local any_active = false
-        for _, ev in ipairs(M._state.events) do
-          if ev.end_epoch and ev.end_epoch > now then any_active = true; break end
+      pcall(vim.cmd, "redraw!")
+
+      local now = os.time()
+      for _, ev in ipairs(M._state.events) do
+        if ev.start_epoch > now or (ev.end_epoch and ev.end_epoch > now) then
+          start_tick_timer()  -- still relevant — reschedule
+          return
         end
-        if not any_active then
-          -- No more meetings and nothing active — stop ticking
-          if M._state.tick_timer then
-            vim.fn.timer_stop(M._state.tick_timer)
-            M._state.tick_timer = nil
-          end
-        end
-        pcall(vim.cmd, "redraw!")
       end
+      -- No more relevant events — stop ticking
     end)
-  end, { ["repeat"] = -1 })  -- repeat indefinitely
+  end
+
+  M._state.tick_timer = vim.fn.timer_start(30000, tick)
 end
 
 -- ── Timer Scheduling ─────────────────────────────────────────────────

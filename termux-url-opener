@@ -42,10 +42,10 @@ TODAY=$(date +%Y_%m_%d)
 JOURNAL="$JOURNAL_DIR/${TODAY}.md"
 
 # ── Append entry ──────────────────────────────────────────────────────────────
-# Ensure file ends with a newline before appending
+# Ensure file ends with a newline before appending.
+# wc -l counts the newline in the last byte: 1 = ends with \n, 0 = does not.
 if [ -f "$JOURNAL" ] && [ -s "$JOURNAL" ]; then
-  last_byte=$(tail -c 1 "$JOURNAL" | od -An -tx1 | tr -d ' \n')
-  if [ "$last_byte" != "0a" ]; then
+  if [ "$(tail -c 1 "$JOURNAL" | wc -l)" -eq 0 ]; then
     printf '\n' >> "$JOURNAL"
   fi
 fi

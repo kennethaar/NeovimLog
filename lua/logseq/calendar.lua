@@ -5,6 +5,40 @@
 local util = require("logseq.util")
 local M = {}
 
+-- ── URL collection prompt ─────────────────────────────────────────────
+
+--- Interactively prompt the user to add one or more calendar ICS URLs.
+--- Shared by M.sync (when no URLs configured) and the :Caladd command.
+---@param opts { first_prompt?: string, on_abort?: function, on_done?: function }
+function M.prompt_add_calendar_urls(opts)
+  opts = opts or {}
+  local function ask(count)
+    local prompt = count == 0
+      and (opts.first_prompt or "Paste Calendar ICS URL (empty to cancel): ")
+      or string.format("Saved %d! Paste another URL (empty to finish): ", count)
+
+    vim.ui.input({ prompt = prompt }, function(input)
+      if not input or input == "" then
+        if count > 0 then
+          vim.notify(string.format("[logseq.nvim] %d calendars saved!", count), vim.log.levels.INFO)
+          if opts.on_done then opts.on_done(count) end
+        elseif opts.on_abort then
+          opts.on_abort()
+        end
+        return
+      end
+
+      if require("logseq.config").add_calendar_url(input) then
+        ask(count + 1)
+      else
+        vim.notify("[logseq.nvim] URL already exists or failed to save.", vim.log.levels.WARN)
+        ask(count)
+      end
+    end)
+  end
+  ask(0)
+end
+
 -- ── Buffer manipulation ───────────────────────────────────────────────
 
 local function apply_events_to_buffer(buf, events)
@@ -127,7 +161,7 @@ function M.sync(force)
   -- Guard: silent abort for non-journal pages unless forced
   if not is_today_journal and not force then return end
 
-  if not is_today_journal and force then
+  if not is_today_journal then
     vim.notify("[logseq.nvim] Warning: Syncing calendar into a non-today journal.", vim.log.levels.WARN)
   end
 
@@ -135,31 +169,13 @@ function M.sync(force)
   local urls = cfg.calendar_urls
   if not urls or #urls == 0 then
     vim.schedule(function()
-      local function ask_for_url(count)
-        local prompt_msg = count == 0
-          and "No calendars. Paste ICS URL (empty to cancel): "
-          or string.format("Saved %d! Paste another URL (empty to sync): ", count)
-
-        vim.ui.input({ prompt = prompt_msg }, function(input)
-          if not input or input == "" then
-            if count > 0 then
-              vim.notify(string.format("[logseq.nvim] %d calendars saved! Starting sync...", count), vim.log.levels.INFO)
-              M.sync(force)
-            else
-              vim.notify("[logseq.nvim] Sync aborted. No URL provided.", vim.log.levels.WARN)
-            end
-            return
-          end
-
-          if require("logseq.config").add_calendar_url(input) then
-            ask_for_url(count + 1)
-          else
-            vim.notify("[logseq.nvim] URL already exists or failed to save.", vim.log.levels.WARN)
-            ask_for_url(count)
-          end
-        end)
-      end
-      ask_for_url(0)
+      M.prompt_add_calendar_urls({
+        first_prompt = "No calendars. Paste ICS URL (empty to cancel): ",
+        on_abort = function()
+          vim.notify("[logseq.nvim] Sync aborted. No URL provided.", vim.log.levels.WARN)
+        end,
+        on_done = function() M.sync(force) end,
+      })
     end)
     return
   end
@@ -178,6 +194,7 @@ function M.sync(force)
   end
 
   local urls_json = vim.json.encode(urls)
+  local stderr_buf = {}
 
   vim.fn.jobstart({ py_bin, py_script_path, urls_json }, {
     stdout_buffered = true,
@@ -205,14 +222,15 @@ function M.sync(force)
       end)
     end,
     on_stderr = function(_, data)
-      local err_str = table.concat(data, "\n")
-      if err_str:match("%S") then
-        vim.schedule(function() vim.notify("Python Error:\n" .. err_str, vim.log.levels.ERROR) end)
-      end
+      if data then vim.list_extend(stderr_buf, data) end
     end,
     on_exit = function(_, code)
       if code ~= 0 then
-        vim.schedule(function() vim.notify("[logseq.nvim] Python script exited with error code: " .. code, vim.log.levels.ERROR) end)
+        vim.schedule(function()
+          local err_str = table.concat(stderr_buf, "\n"):gsub("%s+$", "")
+          local msg = err_str ~= "" and err_str or ("exit code " .. code)
+          vim.notify("[logseq.nvim] Calendar sync failed:\n" .. msg, vim.log.levels.ERROR)
+        end)
       end
     end,
   })

@@ -96,15 +96,15 @@ local function follow_wikilink(vault, value)
 
   local journal_dir = vault .. "/journals"
   if vim.fn.isdirectory(journal_dir) == 1 then
-    local tried = {}
+    local seen, candidates = {}, {}
     for _, name in ipairs({ value .. ".md", value:gsub("%-", "_") .. ".md", value:gsub("_", "-") .. ".md" }) do
-      if not tried[name] then
-        tried[name] = true
-        local p = journal_dir .. "/" .. name
-        if vim.fn.filereadable(p) == 1 then
-          vim.cmd("edit " .. vim.fn.fnameescape(p))
-          return
-        end
+      if not seen[name] then seen[name] = true; candidates[#candidates+1] = name end
+    end
+    for _, name in ipairs(candidates) do
+      local p = journal_dir .. "/" .. name
+      if vim.fn.filereadable(p) == 1 then
+        vim.cmd("edit " .. vim.fn.fnameescape(p))
+        return
       end
     end
 
@@ -122,7 +122,8 @@ local function follow_wikilink(vault, value)
   open_or_create(filepath, value)
 end
 
---- Follow a ((block-ref)) by grepping the vault for `id:: <uuid>`.
+--- Follow a ((block-ref)) by scanning vault files for `id:: <uuid>`.
+--- Pure Lua — no external grep dependency.
 local function follow_block_ref(vault, value)
   local search_dirs = {}
   if vim.fn.isdirectory(vault .. "/pages")   == 1 then search_dirs[#search_dirs+1] = vault .. "/pages"   end
@@ -133,20 +134,27 @@ local function follow_block_ref(vault, value)
     return
   end
 
-  local cmd = { "grep", "-rn", "--include=*.md", "id:: " .. value }
-  vim.list_extend(cmd, search_dirs)
-  local results = vim.fn.systemlist(cmd)
-
-  if vim.v.shell_error ~= 0 or #results == 0 then
-    vim.notify("Block ref not found: " .. value, vim.log.levels.WARN)
-    return
+  local pattern = "id:: " .. value
+  for _, dir in ipairs(search_dirs) do
+    for _, filepath in ipairs(vim.fn.glob(dir .. "/*.md", true, true)) do
+      local f = io.open(filepath, "r")
+      if f then
+        local lnum = 0
+        for line in f:lines() do
+          lnum = lnum + 1
+          if line:find(pattern, 1, true) then
+            f:close()
+            vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+            pcall(vim.api.nvim_win_set_cursor, 0, { lnum, 0 })
+            return
+          end
+        end
+        f:close()
+      end
+    end
   end
 
-  local fp, lnum_str = results[1]:match("^(.+):(%d+):")
-  if not fp then return end
-  local lnum = tonumber(lnum_str) or 1
-  vim.cmd("edit " .. vim.fn.fnameescape(fp))
-  pcall(vim.api.nvim_win_set_cursor, 0, { lnum, 0 })
+  vim.notify("Block ref not found: " .. value, vim.log.levels.WARN)
 end
 
 --- Follow a #tag by opening its page file.

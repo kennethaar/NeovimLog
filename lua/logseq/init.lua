@@ -67,30 +67,9 @@ local function bootstrap(opts)
   end, {})
 
   vim.api.nvim_create_user_command("Caladd", function()
-    local function ask_for_url(count)
-      local prompt_msg = count == 0
-        and "Paste Calendar ICS URL (empty to cancel): "
-        or string.format("Saved %d! Paste another URL (empty to finish): ", count)
-
-      vim.ui.input({ prompt = prompt_msg }, function(input)
-        if not input or input == "" then
-          if count > 0 then
-            vim.notify(string.format("[logseq.nvim] %d calendars saved! Starting sync...", count), vim.log.levels.INFO)
-            require("logseq.calendar").sync(true)
-          end
-          return
-        end
-
-        if config.add_calendar_url(input) then
-          ask_for_url(count + 1)
-        else
-          vim.notify("[logseq.nvim] URL already exists or failed to save.", vim.log.levels.WARN)
-          ask_for_url(count)
-        end
-      end)
-    end
-
-    ask_for_url(0)
+    require("logseq.calendar").prompt_add_calendar_urls({
+      on_done = function() require("logseq.calendar").sync(true) end,
+    })
   end, {})
 
   vim.api.nvim_create_user_command("CalEdit", function()
@@ -183,22 +162,22 @@ local function bootstrap(opts)
   end, {})
 
   -- (audit #28) LogseqNewPage — create a new page with proper namespace encoding
+  local function open_page(page_name)
+    local filepath = config.current.vault_path .. "/pages/" .. util.encode_filename(page_name)
+    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+    vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
+  end
+
   vim.api.nvim_create_user_command("LogseqNewPage", function(cmd_opts)
     local page_name = cmd_opts.args
     if not page_name or page_name == "" then
       vim.ui.input({ prompt = "Page name: " }, function(input)
         if not input or input == "" then return end
-        local filename = util.encode_filename(input)
-        local filepath = config.current.vault_path .. "/pages/" .. filename
-        vim.cmd("edit " .. vim.fn.fnameescape(filepath))
-        vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
+        open_page(input)
       end)
       return
     end
-    local filename = util.encode_filename(page_name)
-    local filepath = config.current.vault_path .. "/pages/" .. filename
-    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
-    vim.defer_fn(function() activate(vim.api.nvim_get_current_buf()) end, 50)
+    open_page(page_name)
   end, { nargs = "?" })
 
   -- ── Autocmds ──────────────────────────────────────────────────────
@@ -252,25 +231,6 @@ local function bootstrap(opts)
     end,
   })
 
-  -- First-run: ask for reminder lead time if never configured
-  if config.current.reminder_minutes == nil then
-    vim.defer_fn(function()
-      vim.ui.input({
-        prompt = "How many minutes before a meeting should I remind you? (default: 3): ",
-      }, function(input)
-        local mins = 3
-        if input and input ~= "" then
-          mins = tonumber(input) or 3
-        end
-        config.set_reminder_minutes(mins)
-        if mins > 0 then
-          vim.notify(string.format("[logseq.nvim] Reminders set to %d minutes. Change with :Calremind", mins), vim.log.levels.INFO)
-        else
-          vim.notify("[logseq.nvim] Reminders disabled. Enable with :Calremind", vim.log.levels.INFO)
-        end
-      end)
-    end, 500)
-  end
 end
 
 function M.setup(opts)

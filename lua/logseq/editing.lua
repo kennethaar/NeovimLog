@@ -45,13 +45,9 @@ end
 
 --- Check if lnum is in the page-properties region (before first bullet).
 local function in_page_properties(lnum)
-  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  for i = 1, #lines do
-    if lines[i]:match("^%s*%- ") then
-      return lnum < i
-    end
-  end
-  return true -- entire file is properties / empty
+  local parsed = parser.parse_buf()
+  if #parsed.blocks == 0 then return true end
+  return lnum < parsed.blocks[1].line_start
 end
 
 -- ── TODO Cycling ─────────────────────────────────────────────────────
