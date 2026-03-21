@@ -37,13 +37,13 @@ function M.winbar()
   local safe_title = title:gsub("%%", "%%%%")
   -- Hint clarifies that clicking renames AND rewrites all [[refs]] in the vault
   local title_btn = "%@v:lua.logseq_rename_page@" .. safe_title
-                    .. " %#Comment#📝(rn)%#Normal#%X"
+                    .. " %#Comment#rn📝%#Normal#%X"
   local nav_btns = "%=%#Comment#"
-    .. "%@v:lua.logseq_sl_backlinks@🖇️b%X "
-    .. "%@v:lua.logseq_sl_queries@❔q%X "
-    .. "%@v:lua.logseq_sl_calsync@🗓️c%X"
+    .. "%@v:lua.logseq_sl_backlinks@b🖇️%X "
+    .. "%@v:lua.logseq_sl_queries@q❔%X "
+    .. "%@v:lua.logseq_sl_calsync@c🗓️%X"
     .. "%#Normal#"
-  local close_btn = "  %#Comment#%@v:lua.logseq_close_win@(:q)✕%X%#Normal#"
+  local close_btn = "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#"
 
   if M._saved_buffers[bufnr] then
     return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
@@ -75,7 +75,7 @@ function M.trigger_save_indicator(bufnr)
 end
 
 function M.close_win(_minwid, _clicks, _button, _mods)
-  vim.cmd("q")
+  vim.cmd("wq")
 end
 
 --- Rename the current page and update all [[OldName]] links in the vault.
