@@ -80,6 +80,32 @@ function M.add_calendar_url(url)
   return save_data(M.current.vault_path, data)
 end
 
+--- Remove a calendar URL from disk and current session.
+---@param url string
+---@return boolean
+function M.remove_calendar_url(url)
+  if not url or url == "" then return false end
+  if not M.current.vault_path then return false end
+
+  local data = load_from_vault(M.current.vault_path)
+  data.calendar_urls = data.calendar_urls or M.current.calendar_urls or {}
+
+  local found = false
+  local new_urls = {}
+  for _, existing_url in ipairs(data.calendar_urls) do
+    if existing_url == url then
+      found = true
+    else
+      table.insert(new_urls, existing_url)
+    end
+  end
+
+  if not found then return false end
+  data.calendar_urls = new_urls
+  M.current.calendar_urls = new_urls
+  return save_data(M.current.vault_path, data)
+end
+
 --- Persist and update reminder lead time (audit #1: was missing entirely).
 ---@param mins integer
 function M.set_reminder_minutes(mins)
