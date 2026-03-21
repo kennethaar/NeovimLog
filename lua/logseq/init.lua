@@ -93,6 +93,54 @@ local function bootstrap(opts)
     ask_for_url(0)
   end, {})
 
+  vim.api.nvim_create_user_command("CalEdit", function()
+    local function show_menu()
+      local urls = config.current.calendar_urls or {}
+      local items = {}
+      for _, url in ipairs(urls) do
+        table.insert(items, url)
+      end
+      table.insert(items, "[ + Add new URL ]")
+      table.insert(items, "[ Done ]")
+
+      vim.ui.select(items, { prompt = "Calendar URLs (select to remove):" }, function(choice)
+        if not choice or choice == "[ Done ]" then return end
+
+        if choice == "[ + Add new URL ]" then
+          vim.ui.input({ prompt = "Paste Calendar ICS URL: " }, function(input)
+            if not input or input == "" then
+              show_menu()
+              return
+            end
+            if config.add_calendar_url(input) then
+              vim.notify("[logseq.nvim] URL added.", vim.log.levels.INFO)
+            else
+              vim.notify("[logseq.nvim] URL already exists or failed to save.", vim.log.levels.WARN)
+            end
+            show_menu()
+          end)
+          return
+        end
+
+        -- Selected an existing URL — confirm removal
+        vim.ui.select(
+          { "Remove this URL", "Cancel" },
+          { prompt = choice },
+          function(action)
+            if action == "Remove this URL" then
+              if config.remove_calendar_url(choice) then
+                vim.notify("[logseq.nvim] URL removed.", vim.log.levels.INFO)
+              end
+            end
+            show_menu()
+          end
+        )
+      end)
+    end
+
+    show_menu()
+  end, {})
+
   vim.api.nvim_create_user_command("Calremind", function()
     local current = config.current.reminder_minutes
     local prompt_msg = current
