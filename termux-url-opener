@@ -7,8 +7,9 @@
 # Install: symlinked to ~/bin/termux-url-opener by termux_setup.sh
 
 LOG="$HOME/.local/share/nvim/termux-url-opener.log"
+mkdir -p "$(dirname "$LOG")"
 notify() { termux-notification --title "Journal" --content "$1" 2>/dev/null; }
-log()    { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+log()    { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG" >&2; }
 
 URL="$1"
 if [ -z "$URL" ]; then
