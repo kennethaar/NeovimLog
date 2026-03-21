@@ -80,24 +80,22 @@ local function current_lines(entry, bufnr)
   return entry.line_start, entry.line_end
 end
 
---- Apply manual folds outside [line_start, line_end].
---- Cursor movement is done after buf_call so it acts on the actual user window.
+--- Apply manual folds outside [line_start, line_end] in the current window.
+--- Must be called with the target buffer current (always true for keymap callbacks).
 ---@param bufnr integer
 ---@param line_start integer
 ---@param line_end integer
 local function apply_zoom_folds(bufnr, line_start, line_end)
   local total = vim.api.nvim_buf_line_count(bufnr)
-  vim.api.nvim_buf_call(bufnr, function()
-    vim.opt_local.foldmethod = "manual"
-    vim.cmd("normal! zE")
-    if line_start > 1 then
-      vim.cmd(string.format("%d,%dfold", 1, line_start - 1))
-    end
-    if line_end < total then
-      vim.cmd(string.format("%d,%dfold", line_end + 1, total))
-    end
-    vim.opt_local.foldlevel = 99
-  end)
+  vim.opt_local.foldmethod = "manual"
+  vim.cmd("normal! zE")
+  if line_start > 1 then
+    vim.cmd(string.format("%d,%dfold", 1, line_start - 1))
+  end
+  if line_end < total then
+    vim.cmd(string.format("%d,%dfold", line_end + 1, total))
+  end
+  vim.opt_local.foldlevel = 99
   vim.api.nvim_win_set_cursor(0, { line_start, 0 })
 end
 
@@ -106,11 +104,9 @@ end
 local function restore_full_view(bufnr)
   _stacks[bufnr] = nil
   vim.b[bufnr].logseq_zoomed = false
-  vim.api.nvim_buf_call(bufnr, function()
-    vim.cmd("normal! zE")
-    vim.opt_local.foldmethod = "expr"
-    vim.opt_local.foldlevel = 99
-  end)
+  vim.cmd("normal! zE")
+  vim.opt_local.foldmethod = "expr"
+  vim.opt_local.foldlevel = 99
   vim.cmd("redrawstatus!")
 end
 
