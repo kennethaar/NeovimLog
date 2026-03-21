@@ -237,9 +237,9 @@ function M.setup_buf(bufnr)
 
   -- Statusline row 2: editing/cursor actions (file/nav buttons are in winbar row 1)
   vim.opt_local.statusline = table.concat({
-    "%@v:lua.logseq_sl_follow@🔗↩️%X",
-    "%@v:lua.logseq_sl_fold@⚡za%X",
-    "%@v:lua.logseq_sl_todo@✅^t%X",
+    "%@v:lua.logseq_sl_follow@↩️🔗%X",
+    "%@v:lua.logseq_sl_fold@a⚡%X",
+    "%@v:lua.logseq_sl_todo@^t✅%X",
     "%@v:lua.logseq_sl_indent@>>%X",
     "%@v:lua.logseq_sl_unindent@<<%X",
     "%@v:lua.logseq_sl_moveup@alt⬆️%X",
