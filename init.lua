@@ -1,6 +1,10 @@
 vim.g.mapleader = ","
 vim.o.mouse = "a"  -- enable mouse/touch so winbar click targets work
 
+vim.opt.wrap = true
+vim.opt.linebreak = true
+vim.opt.breakindent = true
+
 -- Finn vault-sti: les fra lagret fil (satt av termux_setup.sh), ellers Windows-sti
 local vault = nil
 if vim.fn.has("win32") == 1 then
