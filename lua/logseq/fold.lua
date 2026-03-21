@@ -66,8 +66,6 @@ function M.setup_buf(bufnr)
     group = group,
     buffer = bufnr,
     callback = function()
-      -- When zoomed, keep manual folds intact instead of restoring expr
-      if vim.b[bufnr].logseq_zoomed then return end
       vim.opt_local.foldmethod = "expr"
     end,
   })
