@@ -17,7 +17,11 @@ _G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
 -- statusline buttons (editing/cursor)
 _G.logseq_sl_follow    = function() require("logseq.links").follow() end
-_G.logseq_sl_fold      = function() vim.cmd("normal! za") end
+_G.logseq_sl_fold      = function()
+  if vim.fn.foldlevel(".") > 0 then
+    vim.cmd("normal! za")
+  end
+end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
 _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
 _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
