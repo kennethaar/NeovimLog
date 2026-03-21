@@ -1,43 +1,54 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# termux-url-opener — append shared URLs to today's Logseq journal
+# termux-url-opener — append shared URLs/text to today's Logseq journal
 #
 # Termux calls this script with the shared URL as $1 whenever you share
 # anything to Termux from another app.
 #
 # Install: symlinked to ~/bin/termux-url-opener by termux_setup.sh
 
-set -euo pipefail
+LOG="$HOME/.local/share/nvim/termux-url-opener.log"
+notify() { termux-notification --title "Journal" --content "$1" 2>/dev/null; }
+log()    { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
 
-URL="${1:-}"
+URL="$1"
 if [ -z "$URL" ]; then
-  termux-notification --title "Journal" --content "No URL received." 2>/dev/null || true
+  log "ERROR: called with no argument"
+  notify "Journal: no URL received"
   exit 1
 fi
+log "Received: $URL"
 
 # ── Resolve vault path ────────────────────────────────────────────────────────
 VAULT_PATH_FILE="$HOME/.local/share/nvim/logseq_vault"
 if [ ! -f "$VAULT_PATH_FILE" ]; then
-  termux-notification --title "Journal" --content "Vault not configured. Run termux_setup.sh first." 2>/dev/null || true
+  log "ERROR: vault path file not found: $VAULT_PATH_FILE"
+  notify "Journal: vault not configured (run termux_setup.sh)"
   exit 1
 fi
 
 VAULT=$(cat "$VAULT_PATH_FILE")
-JOURNAL_DIR="$VAULT/journals"
-mkdir -p "$JOURNAL_DIR"
+if [ -z "$VAULT" ]; then
+  log "ERROR: vault path file is empty"
+  notify "Journal: vault path is empty"
+  exit 1
+fi
+log "Vault: $VAULT"
 
 # ── Today's journal file (matches journal_format = "%Y_%m_%d") ────────────────
+JOURNAL_DIR="$VAULT/journals"
+mkdir -p "$JOURNAL_DIR"
 TODAY=$(date +%Y_%m_%d)
 JOURNAL="$JOURNAL_DIR/${TODAY}.md"
 
 # ── Append entry ──────────────────────────────────────────────────────────────
 # Ensure file ends with a newline before appending
 if [ -f "$JOURNAL" ] && [ -s "$JOURNAL" ]; then
-  LAST=$(tail -c 1 "$JOURNAL" | wc -l)
-  if [ "$LAST" -eq 0 ]; then
+  last_byte=$(tail -c 1 "$JOURNAL" | od -An -tx1 | tr -d ' \n')
+  if [ "$last_byte" != "0a" ]; then
     printf '\n' >> "$JOURNAL"
   fi
 fi
 
-printf -- '- %s\n' "$URL" >> "$JOURNAL"
-
-termux-notification --title "Journal" --content "Added to $TODAY" 2>/dev/null || true
+printf '- %s\n' "$URL" >> "$JOURNAL"
+log "Appended to $JOURNAL"
+notify "Added to journal: $TODAY"
