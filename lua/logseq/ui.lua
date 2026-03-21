@@ -23,10 +23,6 @@ _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
 _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
 _G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
 _G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
--- zoom buttons
-_G.logseq_sl_zoomin    = function() require("logseq.zoom").zoom_in() end
-_G.logseq_sl_zoomout   = function() require("logseq.zoom").zoom_out() end
-_G.logseq_sl_zoomreset = function() require("logseq.zoom").zoom_reset() end
 
 function M.winbar()
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
@@ -49,26 +45,19 @@ function M.winbar()
     .. "%#Normal#"
   local close_btn = "  %#Comment#%@v:lua.logseq_close_win@(:q)✕%X%#Normal#"
 
-  -- Zoom breadcrumb (shown when zoomed into a block)
-  local breadcrumb = ""
-  local ok_zoom, zoom = pcall(require, "logseq.zoom")
-  if ok_zoom then
-    breadcrumb = zoom.winbar_breadcrumb(bufnr)
-  end
-
   if M._saved_buffers[bufnr] then
-    return " " .. title_btn .. breadcrumb .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title_btn .. breadcrumb .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. title_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
     end
   end
 
-  return " " .. title_btn .. breadcrumb .. nav_btns .. close_btn
+  return " " .. title_btn .. nav_btns .. close_btn
 end
 
 function M.trigger_save_indicator(bufnr)
@@ -240,7 +229,6 @@ function M.setup_buf(bufnr)
     "%@v:lua.logseq_sl_unindent@<<%X",
     "%@v:lua.logseq_sl_moveup@alt⬆️%X",
     "%@v:lua.logseq_sl_movedown@alt⬇️%X",
-    "%@v:lua.logseq_sl_zoomin@🔍zi%X",
   }, "  ")
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
