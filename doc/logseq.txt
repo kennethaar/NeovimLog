@@ -1,0 +1,456 @@
+*logseq.txt*   Logseq-compatible outliner mode for Neovim
+
+Author:  kennethaar
+License: MIT
+
+==============================================================================
+CONTENTS                                                       *logseq-contents*
+
+  1. Introduction .................. |logseq-intro|
+  2. Setup ......................... |logseq-setup|
+  3. Configuration ................. |logseq-config|
+  4. Commands ...................... |logseq-commands|
+  5. Keymaps ....................... |logseq-keymaps|
+  6. Config UI ..................... |logseq-config-ui|
+  7. Features ...................... |logseq-features|
+     7.1 Folding ................... |logseq-folding|
+     7.2 Block navigation .......... |logseq-navigation|
+     7.3 Block editing ............. |logseq-editing|
+     7.4 Links .................... |logseq-links|
+     7.5 Backlinks ................ |logseq-backlinks|
+     7.6 Page search .............. |logseq-page-search|
+     7.7 Templates ................ |logseq-templates|
+     7.8 Calendar sync ............ |logseq-calendar|
+     7.9 Winbar & statusline ....... |logseq-ui|
+     7.10 Syntax & highlights ...... |logseq-syntax|
+  8. Persistence ................... |logseq-persistence|
+
+==============================================================================
+1. INTRODUCTION                                                   *logseq-intro*
+
+logseq.nvim turns Neovim into a Logseq-compatible outliner editor. It provides
+block-aware navigation, editing, folding, backlinks, calendar sync, and a
+clickable winbar/statusline — all scoped to a configured vault directory.
+
+The plugin activates automatically for every `.md` file inside the vault.
+
+==============================================================================
+2. SETUP                                                          *logseq-setup*
+
+Minimal setup in your Neovim config: >lua
+
+  require("logseq").setup({
+    vault_path = "/path/to/your/logseq/vault",
+  })
+<
+If `vault_path` is omitted or empty, an interactive prompt will ask for the
+path on first launch. The value is then saved to the vault's
+`.logseq_nvim.json` file.
+
+==============================================================================
+3. CONFIGURATION                                                 *logseq-config*
+
+All options are passed to `require("logseq").setup(opts)`. Saved settings
+(calendar URLs, keymaps, reminder lead time) are stored per-vault in
+`<vault>/.logseq_nvim.json` and are loaded automatically on startup.
+
+Merge order: Defaults ← Saved vault config ← `setup()` opts.
+
+------------------------------------------------------------------------------
+OPTIONS                                                    *logseq-config-opts*
+
+`vault_path` (string, required)
+  Absolute path to the Logseq vault directory.
+  Example: `"/home/user/Logseq"`
+
+`journal_format` (string, default: `"%Y_%m_%d"`)
+  `os.date()` format string used for today's journal filename.
+  Example: `"%Y_%m_%d"` produces `2026_03_22.md`.
+
+`indent_size` (integer, default: `2`)
+  Number of spaces per indent level.
+
+`fold_on_open` (boolean, default: `false`)
+  When `true`, buffers open with all folds closed.
+  When `false`, all folds are open (foldlevel 99).
+
+`enable_link_search` (boolean, default: `true`)
+  When `true`, typing `[[` in insert mode triggers fuzzy page completion.
+
+`reminder_minutes` (integer, default: `3`)
+  How many minutes before a calendar event to show a reminder notification.
+  Set to `0` to disable. Configurable at runtime via |:Calremind|.
+
+`calendar_urls` (list of strings, default: `{}`)
+  ICS calendar feed URLs. Manageable via |:Caladd| and |:CalEdit|.
+
+`keymaps` (table)
+  Normal-mode key assignments. See |logseq-keymaps| for defaults and actions.
+
+`winbar_buttons` (table)
+  Show/hide individual winbar buttons. See |logseq-ui|. >lua
+    winbar_buttons = {
+      rename    = true,   -- click page title to rename
+      backlinks = true,   -- b🖇️  toggle backlinks
+      queries   = true,   -- q❔  toggle queries
+      calsync   = true,   -- c🗓️  trigger calendar sync
+      close     = true,   -- :wq❌  close window
+    }
+<
+`bottombar_buttons` (table)
+  Show/hide individual statusline buttons. See |logseq-ui|. >lua
+    bottombar_buttons = {
+      follow_link = true,  -- 🔗↩️
+      fold_toggle = true,  -- ⚡za
+      todo_cycle  = true,  -- ✅^t
+      indent      = true,  -- >>
+      unindent    = true,  -- <<
+      move_up     = true,  -- alt⬆️
+      move_down   = true,  -- alt⬇️
+    }
+<
+==============================================================================
+4. COMMANDS                                                    *logseq-commands*
+
+------------------------------------------------------------------------------
+                                                               *:LogseqConfig*
+:LogseqConfig
+  Open the interactive Shortcuts & UI Config floating window.
+  Lets you remap keybindings and toggle winbar/statusline buttons.
+  See |logseq-config-ui| for details.
+
+------------------------------------------------------------------------------
+                                                                *:LogseqToday*
+:LogseqToday
+  Open (or create) today's journal file.
+  The filename is derived from `journal_format`.
+  Saves the current buffer first if it has unsaved changes.
+
+------------------------------------------------------------------------------
+                                                             *:LogseqNewPage*
+:LogseqNewPage [name]
+  Create or open a page. If `name` is omitted, a prompt is shown.
+  Page names with namespace separators (`/`) are encoded as `---` on disk.
+  Example: `:LogseqNewPage Projects/Work`
+
+------------------------------------------------------------------------------
+                                                                    *:Calsync*
+:Calsync
+  Manually trigger a calendar sync into today's journal.
+  Requires Python 3 and at least one ICS URL saved via |:Caladd|.
+  Events are fetched asynchronously and written to the `# Calendar` block.
+
+------------------------------------------------------------------------------
+                                                                     *:Caladd*
+:Caladd
+  Interactively add one or more ICS calendar feed URLs.
+  After the last URL is entered (empty input), sync runs automatically.
+  Duplicate URLs are silently rejected.
+
+------------------------------------------------------------------------------
+                                                                    *:CalEdit*
+:CalEdit
+  Open a menu to view, add, or remove saved ICS calendar URLs.
+  Selecting an existing URL shows an option to remove it.
+
+------------------------------------------------------------------------------
+                                                                  *:Calremind*
+:Calremind
+  Set the reminder lead time in minutes.
+  Enter `0` to disable reminders.
+  The current value is shown in the prompt if already configured.
+
+==============================================================================
+5. KEYMAPS                                                      *logseq-keymaps*
+
+All keymaps are buffer-local and only active inside vault `.md` files.
+Defaults are shown below. Change them via |logseq-config-opts| or the
+interactive |:LogseqConfig| UI.
+
+The `keymaps` config key → default value → description:
+
+  `next_sibling`     `<leader>j`   Jump to next sibling block
+  `prev_sibling`     `<leader>k`   Jump to previous sibling block
+  `first_child`      `<leader>J`   Jump to first child block
+  `parent`           `<leader>K`   Jump to parent block
+  `move_down`        `<A-Down>`    Swap current block with next sibling
+  `move_up`          `<A-Up>`      Swap current block with previous sibling
+  `promote`          `<<`          Outdent current block (with subtree)
+  `demote`           `>>`          Indent current block (with subtree)
+  `new_sibling`      `o`           Create new sibling block below (insert)
+  `fold_toggle`      `za`          Toggle fold at cursor
+  `follow_link`      `<CR>`        Follow link / navigate backlink entry
+  `toggle_backlinks` `<leader>b`   Toggle backlinks panel
+  `todo_cycle`       `<C-t>`       Cycle TODO state (normal & insert)
+  `help`             `hh`          Open this help file (or README)
+
+Additional fixed keymaps (not configurable):
+
+  Normal mode~
+  `O`          New sibling block above cursor (falls back to native O in
+               page-properties region)
+  `<Tab>`      Indent block (`>>`)
+  `<S-Tab>`    Outdent block (`<<`)
+  `j` / `k`   Move down/up and snap cursor after `- ` on bullet lines
+  `<Down>`/`<Up>`  Same as j/k with cursor snap
+
+  Insert mode~
+  `<CR>`       Smart Enter: create new sibling after current block's
+               full range; splits text at cursor if mid-content
+  `<S-CR>`     Smart property line: insert a continuation/property line
+               (no bullet) after the last property of the current block
+  `<Tab>`      Indent current block using the parser (consistent with `>>`)
+  `<S-Tab>`    Outdent current block using the parser (consistent with `<<`)
+  `<C-t>`      Cycle TODO state and return to insert mode
+
+  Visual mode~
+  `<CR>` (or `follow_link` key)
+               Wrap selection in `[[...]]` — or unwrap if already wrapped
+
+==============================================================================
+6. CONFIG UI                                                   *logseq-config-ui*
+
+Open with |:LogseqConfig|. A centered floating window appears with three
+sections:
+
+  KEYMAPS~
+  Lists every configurable action and its current key binding.
+  Navigate with `j`/`k` or `<Up>`/`<Down>`.
+  Press `<Enter>` on a row to edit the key binding.
+  Entering an empty string resets to the default.
+
+  WINBAR BUTTONS~
+  Toggle which buttons appear in the winbar (top bar).
+  Press `<Space>` to toggle the selected button on/off.
+
+  BOTTOMBAR BUTTONS~
+  Toggle which buttons appear in the statusline (bottom bar).
+  Press `<Space>` to toggle the selected button on/off.
+
+  Footer actions~
+  `w`      Save changes to disk and refresh all active buffers immediately.
+           Keymap changes take effect after reopening the buffer.
+  `r`      Reset all values to plugin defaults.
+  `q` / `<Esc>`  Close without saving.
+  `<Tab>`  Jump to the next section (Keymaps → Winbar → Bottombar → …).
+
+==============================================================================
+7. FEATURES                                                    *logseq-features*
+
+------------------------------------------------------------------------------
+7.1 FOLDING                                                    *logseq-folding*
+
+Expression-based folding maps the outline depth to fold levels:
+
+  - Bullet at indent 0 (`- text`)  → fold level 1
+  - Bullet at indent 2 (`  - text`) → fold level 2
+  - Bullet at indent N             → fold level N/2 + 1
+  - Property/continuation lines    → same level as parent bullet
+  - Page-level properties (`key:: val` at column 0) → fold level 0
+  - Empty lines                    → inherit surrounding fold level (`=`)
+
+Folds are suspended during insert mode to prevent flicker and re-enabled on
+`InsertLeave`.
+
+The fold text shows the first line of the block followed by `⋯ N lines`.
+
+------------------------------------------------------------------------------
+7.2 BLOCK NAVIGATION                                          *logseq-navigation*
+
+All navigation is block-aware using the parser tree:
+
+  `next_sibling`  Move to the start of the next sibling block.
+  `prev_sibling`  Move to the start of the previous sibling block.
+  `first_child`   Move to the start of the first child block.
+  `parent`        Move to the start of the parent block.
+
+------------------------------------------------------------------------------
+7.3 BLOCK EDITING                                              *logseq-editing*
+
+Block move~
+  `move_down` / `move_up`  Swap the current block (including all its
+  children) with the adjacent sibling. The cursor follows the block.
+
+Indent / outdent~
+  `promote` (`<<`) / `demote` (`>>`) shift the current block and all its
+  children by `indent_size` spaces. Promotion stops at indent 0.
+  In insert mode `<Tab>`/`<S-Tab>` do the same thing.
+
+TODO cycling~
+  `todo_cycle` rotates through: (none) → `TODO` → `DOING` → `DONE` →
+  `CANCELLED` → `WAITING` → (none again).
+
+Cursor snapping~
+  After vertical movement (normal or insert mode), the cursor is snapped
+  to just after `- ` on bullet lines so it never lands in the indentation.
+
+Protected regions~
+  The backlinks and queries panels are read-only. Attempting to enter insert
+  mode in those regions is silently blocked.
+
+------------------------------------------------------------------------------
+7.4 LINKS                                                         *logseq-links*
+
+Follow link (`<CR>` by default)~
+  - `[[wikilink]]`   Opens the page file. Tries `pages/`, then `journals/`.
+                     If the file does not exist, prompts to create it.
+  - `((block-ref))`  Greps the vault for `id:: <uuid>` and jumps to the line.
+  - `#tag`           Opens the tag's page file (creates if missing).
+
+The cursor must be inside the link delimiters for the follow to activate.
+If the cursor is not on a link, the keymap falls through to normal movement.
+
+Wrap link (visual mode)~
+  Select text and press the `follow_link` key to wrap it in `[[...]]`.
+  If the selection is already wrapped, the brackets are removed (toggle).
+  Only works on single-line selections.
+
+Rename page (winbar)~
+  Click the page title in the winbar (or use the `rename` button) to rename
+  the current page. All `[[OldName]]` references in the vault are rewritten
+  to `[[NewName]]` automatically.
+
+------------------------------------------------------------------------------
+7.5 BACKLINKS                                                  *logseq-backlinks*
+
+`toggle_backlinks` (`<leader>b` by default) appends a read-only "Linked
+References" section at the bottom of the current buffer. The section is
+removed when toggled off.
+
+While loading, a progress bar is shown. Results are grouped by source page.
+Pressing `<CR>` on any entry opens the source file at the matching line.
+
+The backlinks section is automatically removed before saving and re-rendered
+after saving, so it is never written to disk.
+
+When any vault file is saved, all other open buffers whose backlinks panel is
+currently visible are refreshed automatically.
+
+------------------------------------------------------------------------------
+7.6 PAGE SEARCH                                              *logseq-page-search*
+
+Typing `[[` in insert mode triggers fuzzy completion over all pages and
+journals in the vault. The completion menu appears automatically.
+
+Matching is scored: exact substring matches score highest; word-boundary and
+fuzzy character matches are also supported. The closing `]]` is appended
+automatically when a completion is accepted.
+
+Disable this feature by setting `enable_link_search = false` in setup opts.
+
+------------------------------------------------------------------------------
+7.7 TEMPLATES                                                  *logseq-templates*
+
+When a new file whose name contains `___` (triple underscore) is created, the
+plugin looks for a matching template page: >
+
+  <vault>/pages/Templates___<namespace>.md
+<
+Placeholders in the template are processed interactively:
+
+  `%TEXT%`              Prompts for free-text input.
+  `%Opt A% / %Opt B%`  Prompts with a selection menu for the listed options.
+
+The template is applied on `BufNewFile` only. You can also apply it manually
+with `<leader>t` (normal mode, buffer-local).
+
+------------------------------------------------------------------------------
+7.8 CALENDAR SYNC                                              *logseq-calendar*
+
+Calendar sync fetches events from ICS feeds via a bundled Python 3 script
+(`ical_parser.py`) and writes them to a `- # Calendar` block in today's
+journal.
+
+Events are inserted in chronological order with the format: >
+
+  - HH:MM-HH:MM Event title
+    id:: <uid>
+<
+All-day events are prefixed with `(Heldags)`.
+
+Events removed from the calendar are struck through (`~~title~~`) and moved
+to the bottom of the calendar block.
+
+Sync runs automatically when today's journal is opened. Use |:Calsync| to
+sync manually or click the `c🗓️` button in the winbar.
+
+Reminders~
+  After a sync, a reminder notification is scheduled for each upcoming event
+  at `reminder_minutes` minutes before start time. Configure with
+  |:Calremind|. The current upcoming event is shown in the winbar.
+
+Requirements~
+  - Python 3 must be available as `python3` or `python`.
+  - At least one ICS URL must be saved (|:Caladd|).
+
+------------------------------------------------------------------------------
+7.9 WINBAR & STATUSLINE                                             *logseq-ui*
+
+Winbar (top line)~
+  Shows the page name (decoded from the filename). Clickable elements:
+
+  `<page title>`  Click to rename the page (see |logseq-links|).
+  `rn📝`          Rename page.
+  `b🖇️`           Toggle backlinks panel.
+  `q❔`           Toggle queries panel.
+  `c🗓️`           Trigger calendar sync.
+  `:wq❌`         Close the window (`:wq`).
+
+  While a next calendar event is pending, the event time and title are shown
+  in the winbar between the page name and the nav buttons.
+
+  After saving, a `✓ Saved` indicator briefly appears (1.5 seconds).
+
+Statusline (bottom line)~
+  A row of clickable editing shortcuts:
+
+  `🔗↩️`    Follow link under cursor.
+  `⚡za`   Toggle fold.
+  `✅^t`   Cycle TODO state.
+  `>>`     Indent block.
+  `<<`     Outdent block.
+  `alt⬆️`  Move block up.
+  `alt⬇️`  Move block down.
+
+  Toggle individual buttons on/off via |:LogseqConfig| → BOTTOMBAR BUTTONS.
+
+------------------------------------------------------------------------------
+7.10 SYNTAX & HIGHLIGHTS                                          *logseq-syntax*
+
+The following syntax groups are defined and highlighted:
+
+  `LogseqLink`        `[[wikilinks]]` — teal, underlined.
+  `LogseqBlockRef`    `((block-refs))` — green, underlined, italic.
+  `LogseqTag`         `#tags` — pink/mauve, underlined.
+  `LogseqStrike`      `~~strikethrough~~` — grey, struck through.
+  `LogseqTime`        Time slots `HH:MM-HH:MM` and `(Heldags)` — red.
+
+Conceal~
+  `[[...]]` brackets are concealed (only the page name is shown).
+  Namespace prefixes (`Namespace/`) inside wikilinks are concealed.
+  `((...))` brackets are concealed.
+  The `#` prefix of tags is concealed.
+  `id:: <uuid>` property lines are fully concealed (`conceallevel=2`).
+
+To see concealed text, move the cursor onto it or set `conceallevel=0`.
+
+==============================================================================
+8. PERSISTENCE                                                *logseq-persistence*
+
+Settings that change at runtime are saved to: >
+
+  <vault_path>/.logseq_nvim.json
+<
+Keys persisted automatically:
+
+  `calendar_urls`     List of ICS feed URLs.
+  `reminder_minutes`  Reminder lead time.
+  `keymaps`           Custom key bindings (set via |:LogseqConfig|).
+  `winbar_buttons`    Winbar button visibility.
+  `bottombar_buttons` Statusline button visibility.
+
+This file is loaded at startup and merged with plugin defaults and any
+`setup()` options. You can safely delete it to reset to defaults.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
