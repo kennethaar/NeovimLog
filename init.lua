@@ -6,11 +6,16 @@ vim.opt.linebreak = true
 vim.opt.breakindent = true
 vim.opt.breakindentopt = "shift:2"
 
--- Finn vault-sti: les fra lagret fil (satt av termux_setup.sh), ellers Windows-sti
-local vault = nil
-if vim.fn.has("win32") == 1 then
-  vault = "C:/Users/kennetha/Documents/nvim/QAIA-Clean"
-else
+-- Machine-specific overrides: create local.lua (gitignored) to override anything.
+-- Example local.lua:
+--   return { vault_path = "D:/Notes/MyVault" }
+local local_ok, local_cfg = pcall(require, "local")
+local overrides = local_ok and local_cfg or {}
+
+-- Resolve vault path: local.lua wins, then the stored path file (written by setup scripts),
+-- then nil (which triggers interactive setup inside the plugin).
+local vault = overrides.vault_path
+if not vault then
   local vault_file = vim.fn.stdpath("data") .. "/logseq_vault"
   local f = io.open(vault_file, "r")
   if f then
@@ -28,7 +33,7 @@ vim.api.nvim_create_autocmd("VimEnter", {
   callback = function()
     if vim.fn.argc() == 0 then
       vim.cmd("LogseqToday")
-      
+
       -- Vent et halvt sekund så fila er klar, og kjør kalenderen fra logseq-mappa
       vim.defer_fn(function()
         local ok, cal = pcall(require, "logseq.calendar")
