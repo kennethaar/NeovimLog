@@ -1,53 +1,42 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# termux-url-opener — append shared URLs/text to today's Logseq journal
+# termux-url-opener — share URLs or text to today's Logseq journal
 #
-# Termux calls this script with the shared URL as $1 whenever you share
-# anything to Termux from another app.
+# Termux calls this script with the shared content as $1, whether the user
+# shared a URL or plain text from any Android app.
 #
-# Install: symlinked to ~/bin/termux-url-opener by termux_setup.sh
+# Strategy: write to an inbox file (never touches the journal directly),
+# then signal the running Neovim instance to flush it into the buffer.
+# This avoids any race with Neovim's autosave.
+
+set -euo pipefail
 
 LOG="$HOME/.local/share/nvim/termux-url-opener.log"
+INBOX="$HOME/.local/share/nvim/journal_inbox.md"
+SOCKET="$HOME/.local/share/nvim/server.pipe"
 mkdir -p "$(dirname "$LOG")"
-notify() { termux-notification --title "Journal" --content "$1" 2>/dev/null; }
+
 log()    { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG" >&2; }
+notify() { termux-notification --title "Journal" --content "$1" 2>/dev/null || true; }
 
-URL="$1"
-if [ -z "$URL" ]; then
+INPUT="${1:-}"
+if [ -z "$INPUT" ]; then
   log "ERROR: called with no argument"
-  notify "Journal: no URL received"
+  notify "Journal: nothing received"
   exit 1
 fi
-log "Received: $URL"
+log "Received: $INPUT"
 
-# ── Resolve vault path ────────────────────────────────────────────────────────
-VAULT_PATH_FILE="$HOME/.local/share/nvim/logseq_vault"
-if [ ! -f "$VAULT_PATH_FILE" ]; then
-  log "ERROR: vault path file not found: $VAULT_PATH_FILE"
-  notify "Journal: vault not configured (run termux_setup.sh)"
-  exit 1
+# Format as a Logseq bullet (works for both URLs and plain text)
+printf -- '- %s\n' "$INPUT" >> "$INBOX"
+log "Written to inbox: $INBOX"
+
+# Signal Neovim to flush the inbox immediately (non-blocking, best-effort)
+if [ -S "$SOCKET" ]; then
+  nvim --server "$SOCKET" --remote-expr 'execute("LogseqFlushInbox")' 2>/dev/null \
+    && log "Signalled Neovim to flush inbox" \
+    || log "Neovim signal failed (will flush on next focus)"
+else
+  log "Neovim not running; inbox will flush on next startup/focus"
 fi
 
-VAULT=$(cat "$VAULT_PATH_FILE")
-if [ -z "$VAULT" ]; then
-  log "ERROR: vault path file is empty"
-  notify "Journal: vault path is empty"
-  exit 1
-fi
-
-# ── Today's journal file (matches journal_format = "%Y_%m_%d") ────────────────
-JOURNAL_DIR="$VAULT/journals"
-mkdir -p "$JOURNAL_DIR"
-TODAY=$(date +%Y_%m_%d)
-JOURNAL="$JOURNAL_DIR/${TODAY}.md"
-
-# ── Append entry ──────────────────────────────────────────────────────────────
-# Ensure file ends with a newline before appending.
-if [ -f "$JOURNAL" ] && [ -s "$JOURNAL" ]; then
-  if [ "$(tail -c 1 "$JOURNAL" | wc -l)" -eq 0 ]; then
-    printf '\n' >> "$JOURNAL"
-  fi
-fi
-
-printf '- %s\n' "$URL" >> "$JOURNAL"
-log "Appended to $JOURNAL"
-notify "Added to journal: $TODAY"
+notify "Added to journal: $(printf '%s' "$INPUT" | cut -c1-60)"

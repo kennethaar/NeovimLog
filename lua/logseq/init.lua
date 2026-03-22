@@ -51,8 +51,47 @@ local function run_interactive_setup(opts, callback)
   end)
 end
 
+-- ── Inbox flush ───────────────────────────────────────────────────────────────
+-- termux-url-opener writes shared URLs/text to this inbox file.
+-- Neovim merges it into the journal buffer when signalled or on focus.
+-- Using an inbox avoids any race with autosave: autosave only touches the
+-- buffer it owns; the inbox is a separate file never written by Neovim.
+
+local INBOX = vim.fn.stdpath("data") .. "/journal_inbox.md"
+local SOCKET = vim.fn.stdpath("data") .. "/server.pipe"
+
+local function flush_inbox()
+  local f = io.open(INBOX, "r")
+  if not f then return end
+  local raw = f:read("*all")
+  f:close()
+
+  local lines = {}
+  for line in raw:gmatch("[^\n]+") do lines[#lines + 1] = line end
+  if #lines == 0 then os.remove(INBOX); return end
+
+  local cfg = config.current
+  if not cfg or not cfg.journal_format then return end
+  local today = os.date(cfg.journal_format)  -- e.g. "2026_03_22"
+
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(buf):find(today, 1, true) then
+      os.remove(INBOX)
+      vim.api.nvim_buf_set_lines(buf, -1, -1, false, lines)
+      vim.notify(("[logseq] %d item(s) added from shared inbox"):format(#lines), vim.log.levels.INFO)
+      return
+    end
+  end
+  -- journal not open yet; leave inbox for next focus/startup
+end
+
 local function bootstrap(opts)
   if not config.setup(opts) then return end
+
+  -- Start a server on a known path so termux-url-opener can ping us to flush
+  -- the inbox immediately rather than waiting for the next FocusGained.
+  vim.fn.delete(SOCKET)  -- remove stale socket from any previous crashed session
+  pcall(vim.fn.serverstart, SOCKET)
 
   -- One-time global autocmd: refresh backlinks panels when any vault file is written
   pcall(function() require("logseq.backlinks").setup_global() end)
@@ -60,6 +99,8 @@ local function bootstrap(opts)
   local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
 
   -- ── Commands ──────────────────────────────────────────────────────
+
+  vim.api.nvim_create_user_command("LogseqFlushInbox", flush_inbox, {})
 
   vim.api.nvim_create_user_command("Calsync", function()
     local ok, cal = pcall(require, "logseq.calendar")
@@ -201,6 +242,7 @@ local function bootstrap(opts)
       end
 
       pcall(function() require("logseq.calendar").sync() end)
+      vim.schedule(flush_inbox)
     end,
   })
 
@@ -215,11 +257,15 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Reload files changed externally (e.g. by termux-url-opener appending URLs)
+  -- Flush inbox and reload on focus (inbox covers modified buffers;
+  -- autoread+checktime covers clean buffers changed externally)
   vim.o.autoread = true
   vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter" }, {
     group = group,
-    callback = function() vim.cmd("checktime") end,
+    callback = function()
+      vim.cmd("checktime")
+      flush_inbox()
+    end,
   })
 
   -- Clean up parser cache on buffer unload
