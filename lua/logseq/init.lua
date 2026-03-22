@@ -88,9 +88,13 @@ end
 local function bootstrap(opts)
   if not config.setup(opts) then return end
 
-  -- Start a server on a known path so termux-url-opener can ping us to flush
-  -- the inbox immediately rather than waiting for the next FocusGained.
-  vim.fn.delete(SOCKET)  -- remove stale socket from any previous crashed session
+  -- Poll for inbox every 2 seconds. flush_inbox() returns immediately when the
+  -- inbox doesn't exist, so this is essentially free. FocusGained is unreliable
+  -- in Termux on Android (focus events often not sent by the terminal).
+  vim.fn.timer_start(2000, function() M.flush_inbox() end, { ["repeat"] = -1 })
+
+  -- Start a server so LogseqFlushInbox can be called via --remote-expr if needed.
+  vim.fn.delete(SOCKET)
   pcall(vim.fn.serverstart, SOCKET)
 
   -- One-time global autocmd: refresh backlinks panels when any vault file is written
