@@ -26,6 +26,24 @@ M.defaults = {
     fold_toggle      = "za",
     follow_link      = "<CR>",
     toggle_backlinks = "<leader>b",
+    todo_cycle       = "<C-t>",
+    help             = "hh",
+  },
+  winbar_buttons = {
+    rename    = true,
+    backlinks = true,
+    queries   = true,
+    calsync   = true,
+    close     = true,
+  },
+  bottombar_buttons = {
+    follow_link = true,
+    fold_toggle = true,
+    todo_cycle  = true,
+    indent      = true,
+    unindent    = true,
+    move_up     = true,
+    move_down   = true,
   },
 }
 
@@ -114,6 +132,23 @@ function M.set_reminder_minutes(mins)
 
   local data = load_from_vault(M.current.vault_path)
   data.reminder_minutes = mins
+  save_data(M.current.vault_path, data)
+end
+
+--- Persist keymap and UI visibility settings.
+---@param keymaps table
+---@param winbar_buttons table
+---@param bottombar_buttons table
+function M.save_keymaps_and_ui(keymaps, winbar_buttons, bottombar_buttons)
+  M.current.keymaps = vim.tbl_deep_extend("force", M.current.keymaps or {}, keymaps)
+  M.current.winbar_buttons = winbar_buttons
+  M.current.bottombar_buttons = bottombar_buttons
+
+  if not M.current.vault_path then return end
+  local data = load_from_vault(M.current.vault_path)
+  data.keymaps = M.current.keymaps
+  data.winbar_buttons = M.current.winbar_buttons
+  data.bottombar_buttons = M.current.bottombar_buttons
   save_data(M.current.vault_path, data)
 end
 

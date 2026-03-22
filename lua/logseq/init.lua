@@ -61,6 +61,10 @@ local function bootstrap(opts)
 
   -- ── Commands ──────────────────────────────────────────────────────
 
+  vim.api.nvim_create_user_command("LogseqConfig", function()
+    require("logseq.config_ui").open()
+  end, { desc = "Open Logseq shortcuts & UI config" })
+
   vim.api.nvim_create_user_command("Calsync", function()
     local ok, cal = pcall(require, "logseq.calendar")
     if ok then cal.sync(true) else vim.notify("Calendar module not found", vim.log.levels.ERROR) end

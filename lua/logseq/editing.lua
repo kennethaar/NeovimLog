@@ -314,8 +314,9 @@ function M.setup_buf(bufnr)
   })
 
   -- TODO cycling
-  map("n", "<C-t>", M.cycle_todo, { buffer = bufnr, desc = "Logseq: cycle TODO" })
-  map("i", "<C-t>", function() M.cycle_todo(); vim.cmd("startinsert!") end, { buffer = bufnr })
+  local todo_key = require("logseq.config").current.keymaps.todo_cycle or "<C-t>"
+  map("n", todo_key, M.cycle_todo, { buffer = bufnr, desc = "Logseq: cycle TODO" })
+  map("i", todo_key, function() M.cycle_todo(); vim.cmd("startinsert!") end, { buffer = bufnr })
 
   -- Tab indent/outdent (audit #13: parser-aware in insert mode)
   map("i", "<Tab>", function() M.insert_tab_indent(bufnr) end, { buffer = bufnr, desc = "Logseq: indent block" })

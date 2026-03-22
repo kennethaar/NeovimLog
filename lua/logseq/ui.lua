@@ -35,15 +35,34 @@ function M.winbar()
   local title = name:gsub("%.md$", ""):gsub("---", "/")
   -- Escape any literal % in the title so statusline doesn't mis-interpret them
   local safe_title = title:gsub("%%", "%%%%")
-  -- Hint clarifies that clicking renames AND rewrites all [[refs]] in the vault
-  local title_btn = "%@v:lua.logseq_rename_page@" .. safe_title
-                    .. " %#Comment#rn📝%#Normal#%X"
-  local nav_btns = "%=%#Comment#"
-    .. "%@v:lua.logseq_sl_backlinks@b🖇️%X "
-    .. "%@v:lua.logseq_sl_queries@q❔%X "
-    .. "%@v:lua.logseq_sl_calsync@c🗓️%X"
-    .. "%#Normal#"
-  local close_btn = "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#"
+
+  local wb = (require("logseq.config").current.winbar_buttons) or {}
+
+  -- Title + optional rename hint
+  local title_btn
+  if wb.rename ~= false then
+    title_btn = "%@v:lua.logseq_rename_page@" .. safe_title
+                .. " %#Comment#rn📝%#Normal#%X"
+  else
+    title_btn = safe_title
+  end
+
+  -- Right-side nav buttons
+  local nav_parts = {}
+  if wb.backlinks ~= false then
+    table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X")
+  end
+  if wb.queries ~= false then
+    table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X")
+  end
+  if wb.calsync ~= false then
+    table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X")
+  end
+  local nav_btns = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
+
+  local close_btn = wb.close ~= false
+    and "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#"
+    or ""
 
   if M._saved_buffers[bufnr] then
     return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
@@ -214,6 +233,21 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqStatusLine", { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
 end
 
+--- Build the statusline string respecting bottombar_buttons visibility config.
+---@return string
+function M.build_statusline()
+  local bb = (require("logseq.config").current.bottombar_buttons) or {}
+  local parts = {}
+  if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗↩️%X") end
+  if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡za%X") end
+  if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅^t%X") end
+  if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@>>%X") end
+  if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@<<%X") end
+  if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@alt⬆️%X") end
+  if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@alt⬇️%X") end
+  return table.concat(parts, "  ")
+end
+
 -- ── Buffer Setup ─────────────────────────────────────────────────────
 
 function M.setup_buf(bufnr)
@@ -221,18 +255,11 @@ function M.setup_buf(bufnr)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
 
   -- Statusline row 2: editing/cursor actions (file/nav buttons are in winbar row 1)
-  vim.opt_local.statusline = table.concat({
-    "%@v:lua.logseq_sl_follow@🔗↩️%X",
-    "%@v:lua.logseq_sl_fold@⚡za%X",
-    "%@v:lua.logseq_sl_todo@✅^t%X",
-    "%@v:lua.logseq_sl_indent@>>%X",
-    "%@v:lua.logseq_sl_unindent@<<%X",
-    "%@v:lua.logseq_sl_moveup@alt⬆️%X",
-    "%@v:lua.logseq_sl_movedown@alt⬇️%X",
-  }, "  ")
+  vim.opt_local.statusline = M.build_statusline()
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
-  vim.keymap.set("n", "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
+  local km = require("logseq.config").current.keymaps
+  vim.keymap.set("n", km.help or "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
 
   -- Save indicator
   vim.api.nvim_create_autocmd("BufWritePost", {
