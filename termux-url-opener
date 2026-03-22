@@ -1,21 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # termux-url-opener — share URLs or text to today's Logseq journal
 #
-# Termux calls this script with the shared content as $1, whether the user
-# shared a URL or plain text from any Android app.
-#
-# Strategy: write to an inbox file (never touches the journal directly),
-# then signal the running Neovim instance to flush it into the buffer.
-# This avoids any race with Neovim's autosave.
+# Writes to an inbox file; Neovim flushes it into the buffer on FocusGained
+# when the user switches back. No second Neovim process needed.
 
 set -euo pipefail
 
 LOG="$HOME/.local/share/nvim/termux-url-opener.log"
 INBOX="$HOME/.local/share/nvim/journal_inbox.md"
-SOCKET="$HOME/.local/share/nvim/server.pipe"
 mkdir -p "$(dirname "$LOG")"
 
-log()    { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG" >&2; }
+log()    { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
 notify() { termux-notification --title "Journal" --content "$1" 2>/dev/null || true; }
 
 INPUT="${1:-}"
@@ -24,19 +19,7 @@ if [ -z "$INPUT" ]; then
   notify "Journal: nothing received"
   exit 1
 fi
-log "Received: $INPUT"
 
-# Format as a Logseq bullet (works for both URLs and plain text)
 printf -- '- %s\n' "$INPUT" >> "$INBOX"
-log "Written to inbox: $INBOX"
-
-# Signal Neovim to flush the inbox immediately (non-blocking, best-effort)
-if [ -S "$SOCKET" ]; then
-  nvim --server "$SOCKET" --remote-expr 'luaeval("require(\"logseq\").flush_inbox()")' 2>/dev/null \
-    && log "Signalled Neovim to flush inbox" \
-    || log "Neovim signal failed (will flush on next focus)"
-else
-  log "Neovim not running; inbox will flush on next startup/focus"
-fi
-
+log "Inbox: $INPUT"
 notify "Added to journal: $(printf '%s' "$INPUT" | cut -c1-60)"
