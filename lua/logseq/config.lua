@@ -28,9 +28,11 @@ M.defaults = {
     toggle_backlinks = "<leader>b",
     todo_cycle       = "<C-t>",
     help             = "hh",
+    search_pages     = "<C-k>",
   },
   winbar_buttons = {
     rename    = true,
+    search    = true,
     backlinks = true,
     queries   = true,
     calsync   = true,

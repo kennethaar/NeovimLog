@@ -12,6 +12,7 @@ M._saved_buffers = {}
 _G.logseq_rename_page  = function(...) M.rename_page(...) end
 _G.logseq_close_win    = function(...) M.close_win(...) end
 -- winbar buttons (file/nav)
+_G.logseq_sl_search    = function() require("logseq.file_search").open() end
 _G.logseq_sl_backlinks = function() require("logseq.backlinks").toggle() end
 _G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
@@ -49,6 +50,9 @@ function M.winbar()
 
   -- Right-side nav buttons
   local nav_parts = {}
+  if wb.search ~= false then
+    table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X")
+  end
   if wb.backlinks ~= false then
     table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X")
   end
@@ -260,6 +264,11 @@ function M.setup_buf(bufnr)
 
   local km = require("logseq.config").current.keymaps
   vim.keymap.set("n", km.help or "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
+  if km.search_pages then
+    vim.keymap.set("n", km.search_pages, function()
+      require("logseq.file_search").open()
+    end, { buffer = bufnr, desc = "Logseq Search Pages" })
+  end
 
   -- Save indicator
   vim.api.nvim_create_autocmd("BufWritePost", {
