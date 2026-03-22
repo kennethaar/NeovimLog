@@ -60,7 +60,7 @@ end
 local INBOX = vim.fn.stdpath("data") .. "/journal_inbox.md"
 local SOCKET = vim.fn.stdpath("data") .. "/server.pipe"
 
-local function flush_inbox()
+function M.flush_inbox()
   local f = io.open(INBOX, "r")
   if not f then return end
   local raw = f:read("*all")
@@ -100,7 +100,7 @@ local function bootstrap(opts)
 
   -- ── Commands ──────────────────────────────────────────────────────
 
-  vim.api.nvim_create_user_command("LogseqFlushInbox", flush_inbox, {})
+  vim.api.nvim_create_user_command("LogseqFlushInbox", M.flush_inbox, {})
 
   vim.api.nvim_create_user_command("Calsync", function()
     local ok, cal = pcall(require, "logseq.calendar")
@@ -242,7 +242,7 @@ local function bootstrap(opts)
       end
 
       pcall(function() require("logseq.calendar").sync() end)
-      vim.schedule(flush_inbox)
+      vim.schedule(M.flush_inbox)
     end,
   })
 
@@ -264,7 +264,7 @@ local function bootstrap(opts)
     group = group,
     callback = function()
       vim.cmd("checktime")
-      flush_inbox()
+      M.flush_inbox()
     end,
   })
 

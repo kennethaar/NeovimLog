@@ -32,7 +32,7 @@ log "Written to inbox: $INBOX"
 
 # Signal Neovim to flush the inbox immediately (non-blocking, best-effort)
 if [ -S "$SOCKET" ]; then
-  nvim --server "$SOCKET" --remote-expr 'execute("LogseqFlushInbox")' 2>/dev/null \
+  nvim --server "$SOCKET" --remote-expr 'luaeval("require(\"logseq\").flush_inbox()")' 2>/dev/null \
     && log "Signalled Neovim to flush inbox" \
     || log "Neovim signal failed (will flush on next focus)"
 else
