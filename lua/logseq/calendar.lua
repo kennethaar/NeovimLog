@@ -77,7 +77,8 @@ local function apply_events_to_buffer(buf, events)
     local block = existing_by_uid[ev.uid]
     if block then
       local current_title = block.lines[1]
-      if not current_title:match("~~.*~~") and current_title ~= formatted_title then
+      -- Always restore a cancelled (strikethrough) event or update a changed title
+      if current_title:match("~~.*~~") or current_title ~= formatted_title then
         block.lines[1] = formatted_title
       end
       for _, line in ipairs(block.lines) do

@@ -52,8 +52,8 @@ def fetch_and_parse(urls):
                     "is_allday": is_allday
                 })
         except Exception as e:
-            # Feiler stille i Python, Lua-skriptet vil fange opp om det mangler data
-            pass
+            import sys
+            print(f"[ical_parser] Error fetching {url}: {e}", file=sys.stderr)
 
     # Sorter: Heldags først, deretter på tid
     events_out.sort(key=lambda x: (not x["is_allday"], x["time_str"]))
