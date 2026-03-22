@@ -3,11 +3,51 @@ local M = {}
 function M.setup_buf(bufnr)
   local timer_id = nil
 
+  -- Before writing, check if the file on disk has lines appended externally
+  -- (e.g. by termux-url-opener) that aren't in the buffer yet. If the file's
+  -- content up to len(buffer) matches the buffer exactly, pull the extra lines
+  -- in so autosave doesn't overwrite them.
+  local function merge_external_appends()
+    local filepath = vim.api.nvim_buf_get_name(bufnr)
+    if filepath == "" then return end
+
+    local f = io.open(filepath, "r")
+    if not f then return end
+    local file_content = f:read("*all")
+    f:close()
+
+    -- Split file into lines
+    local file_lines = {}
+    for line in (file_content .. "\n"):gmatch("([^\n]*)\n") do
+      table.insert(file_lines, line)
+    end
+    while #file_lines > 0 and file_lines[#file_lines] == "" do
+      table.remove(file_lines)
+    end
+
+    local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+    -- Only act if file has strictly more lines than the buffer
+    if #file_lines <= #buf_lines then return end
+
+    -- Verify the buffer content matches the start of the file (clean append, no conflict)
+    for i = 1, #buf_lines do
+      if (file_lines[i] or "") ~= buf_lines[i] then return end
+    end
+
+    -- Append the extra lines from disk into the buffer
+    local extra = {}
+    for i = #buf_lines + 1, #file_lines do
+      table.insert(extra, file_lines[i])
+    end
+    vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, extra)
+  end
+
   -- The actual save execution
   local function execute_save()
     if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].modified then
+      merge_external_appends()
       vim.api.nvim_buf_call(bufnr, function()
-        -- Removed "silent!" so if Windows blocks the save, you will see the actual error
         pcall(function() vim.cmd("write") end)
       end)
     end

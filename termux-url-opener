@@ -1,11 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# termux-url-opener — queue shared URLs/text for Neovim to insert into the journal
+# termux-url-opener — append shared URLs/text to today's Logseq journal
 #
 # Termux calls this script with the shared URL as $1 whenever you share
 # anything to Termux from another app.
-#
-# Writes to an inbox file that Neovim merges into the journal buffer on next
-# focus, avoiding the race where Neovim's autosave overwrites external appends.
 #
 # Install: symlinked to ~/bin/termux-url-opener by termux_setup.sh
 
@@ -22,8 +19,35 @@ if [ -z "$URL" ]; then
 fi
 log "Received: $URL"
 
-# ── Write to inbox (Neovim merges this into the journal buffer) ───────────────
-INBOX="$HOME/.local/share/nvim/journal_inbox.md"
-printf '- %s\n' "$URL" >> "$INBOX"
-log "Queued to inbox: $INBOX"
-notify "Queued for journal: $(basename "$URL" | cut -c1-60)"
+# ── Resolve vault path ────────────────────────────────────────────────────────
+VAULT_PATH_FILE="$HOME/.local/share/nvim/logseq_vault"
+if [ ! -f "$VAULT_PATH_FILE" ]; then
+  log "ERROR: vault path file not found: $VAULT_PATH_FILE"
+  notify "Journal: vault not configured (run termux_setup.sh)"
+  exit 1
+fi
+
+VAULT=$(cat "$VAULT_PATH_FILE")
+if [ -z "$VAULT" ]; then
+  log "ERROR: vault path file is empty"
+  notify "Journal: vault path is empty"
+  exit 1
+fi
+
+# ── Today's journal file (matches journal_format = "%Y_%m_%d") ────────────────
+JOURNAL_DIR="$VAULT/journals"
+mkdir -p "$JOURNAL_DIR"
+TODAY=$(date +%Y_%m_%d)
+JOURNAL="$JOURNAL_DIR/${TODAY}.md"
+
+# ── Append entry ──────────────────────────────────────────────────────────────
+# Ensure file ends with a newline before appending.
+if [ -f "$JOURNAL" ] && [ -s "$JOURNAL" ]; then
+  if [ "$(tail -c 1 "$JOURNAL" | wc -l)" -eq 0 ]; then
+    printf '\n' >> "$JOURNAL"
+  fi
+fi
+
+printf '- %s\n' "$URL" >> "$JOURNAL"
+log "Appended to $JOURNAL"
+notify "Added to journal: $TODAY"
