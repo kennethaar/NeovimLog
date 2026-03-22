@@ -51,6 +51,45 @@ local function run_interactive_setup(opts, callback)
   end)
 end
 
+-- ── Inbox flush ───────────────────────────────────────────────────────────────
+-- termux-url-opener writes shared URLs here; Neovim merges them into the
+-- journal buffer so autosave never overwrites externally-appended content.
+local inbox_path = vim.fn.expand("~/.local/share/nvim/journal_inbox.md")
+
+local function flush_inbox(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+
+  -- Only merge into today's journal
+  local cfg = config.current
+  if not cfg or not cfg.vault_path then return end
+  local today_path = cfg.vault_path .. "/journals/" .. os.date(cfg.journal_format) .. ".md"
+  if util.normalize(vim.api.nvim_buf_get_name(bufnr)) ~= util.normalize(today_path) then return end
+
+  -- Atomically claim the inbox so concurrent writes are not lost
+  local tmp_path = inbox_path .. ".processing"
+  if not os.rename(inbox_path, tmp_path) then return end  -- nothing to do
+
+  local f = io.open(tmp_path, "r")
+  if not f then return end
+  local content = f:read("*all")
+  f:close()
+  os.remove(tmp_path)
+
+  local lines = {}
+  for line in (content .. "\n"):gmatch("([^\n]*)\n") do
+    table.insert(lines, line)
+  end
+  while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
+  if #lines == 0 then return end
+
+  vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, lines)
+  vim.notify("[logseq.nvim] " .. #lines .. " item(s) added from shared inbox.", vim.log.levels.INFO)
+end
+
+local function flush_inbox_current()
+  flush_inbox(vim.api.nvim_get_current_buf())
+end
+
 local function bootstrap(opts)
   if not config.setup(opts) then return end
 
@@ -200,6 +239,7 @@ local function bootstrap(opts)
         end)
       end
 
+      vim.schedule(function() flush_inbox(ev.buf) end)
       pcall(function() require("logseq.calendar").sync() end)
     end,
   })
@@ -215,11 +255,14 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Reload files changed externally (e.g. by termux-url-opener appending URLs)
+  -- Reload files changed externally; also flush shared-URL inbox on focus
   vim.o.autoread = true
   vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter" }, {
     group = group,
-    callback = function() vim.cmd("checktime") end,
+    callback = function()
+      vim.cmd("checktime")
+      flush_inbox_current()
+    end,
   })
 
   -- Clean up parser cache on buffer unload
