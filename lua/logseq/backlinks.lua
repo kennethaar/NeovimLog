@@ -169,6 +169,7 @@ function M.render_section(bufnr)
   -- Initial loading state
   local initial_bar = make_progress_bar(0, 100, 20)
   local loading_lines = { SEPARATOR, string.format("── Loading Linked References... %s ──", initial_bar) }
+  vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, loading_lines)
   vim.bo[bufnr].modified = was_modified
 
@@ -195,6 +196,7 @@ function M.render_section(bufnr)
       vim.list_extend(final_lines, display_lines)
 
       local was_mod_after = vim.bo[bufnr].modified
+      vim.bo[bufnr].modifiable = true
       vim.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, final_lines)
       vim.bo[bufnr].modified = was_mod_after
 
@@ -238,6 +240,7 @@ function M.render_section(bufnr)
       local text_line_0 = state.region.start_line -- 0-indexed position of the text after separator
 
       local was_mod = vim.bo[bufnr].modified
+      vim.bo[bufnr].modifiable = true
       pcall(vim.api.nvim_buf_set_lines, bufnr, text_line_0, text_line_0 + 1, false, { progress_text })
       vim.bo[bufnr].modified = was_mod
     end)
@@ -260,6 +263,7 @@ function M.remove_section(bufnr)
   end
 
   local was_modified = vim.bo[bufnr].modified
+  vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, start - 1, vim.api.nvim_buf_line_count(bufnr), false, {})
   vim.bo[bufnr].modified = was_modified
 
