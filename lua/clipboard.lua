@@ -33,6 +33,9 @@ function M.setup()
   -- `unnamedplus` is enough; Neovim's built-in win32 provider handles the rest.
   if vim.fn.has("win32") == 1 then
     vim.opt.clipboard = "unnamedplus"
+    -- Ctrl+C in visual mode copies to system clipboard so external tools
+    -- (e.g. AutoHotkey scripts using Send("^c") / ClipWait) get the selection.
+    vim.keymap.set("v", "<C-c>", '"+y', { desc = "Copy selection to system clipboard" })
     return
   end
 
@@ -58,6 +61,8 @@ function M.setup()
       cache_enabled = false,
     }
     vim.opt.clipboard = "unnamedplus"
+    -- Same Ctrl+C fix as Windows native (AHK runs on the Windows host).
+    vim.keymap.set("v", "<C-c>", '"+y', { desc = "Copy selection to system clipboard" })
     return
   end
 
