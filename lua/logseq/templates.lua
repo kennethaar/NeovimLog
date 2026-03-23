@@ -106,23 +106,27 @@ end
 
 function M.apply_template(bufnr)
   local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if not filepath or filepath == "" then return end
+
   local filename = vim.fn.fnamemodify(filepath, ":t")
-  
   local namespace = filename:match("^(.-)___")
 
-  if namespace and namespace ~= "Templates" then
-    local raw_content = get_template_content(namespace)
-    if raw_content then
-      process_placeholders(raw_content, function(processed_lines)
-        vim.schedule(function()
-          if vim.api.nvim_buf_is_valid(bufnr) then
-            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
-            vim.cmd("silent! w")
-          end
-        end)
-      end)
-    end
+  if not namespace or namespace == "Templates" then return end
+
+  local raw_content = get_template_content(namespace)
+  if not raw_content then
+    vim.notify("[logseq.nvim] No template found for namespace: " .. namespace, vim.log.levels.DEBUG)
+    return
   end
+
+  process_placeholders(raw_content, function(processed_lines)
+    vim.schedule(function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then return end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! w") end)
+      vim.notify("[logseq.nvim] Template applied: " .. namespace, vim.log.levels.INFO)
+    end)
+  end)
 end
 
 function M.setup_buf(bufnr)
