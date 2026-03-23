@@ -22,6 +22,7 @@ local function activate(bufnr)
     "logseq.autosave",
     "logseq.backlinks",
     "logseq.queries",
+    "logseq.namespace_tree",
   }
 
   for _, mod in ipairs(modules) do

@@ -168,6 +168,9 @@ function M.follow()
     if queries.navigate() then return end
   end
 
+  local nt_ok, ns_tree = pcall(require, "logseq.namespace_tree")
+  if nt_ok and ns_tree.in_region(bufnr, row) and ns_tree.navigate() then return end
+
   local link_type, value = M.link_under_cursor()
 
   if not link_type then
