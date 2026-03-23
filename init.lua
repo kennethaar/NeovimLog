@@ -1,6 +1,9 @@
 vim.g.mapleader = ","
 vim.o.mouse = "a"  -- enable mouse/touch so winbar click targets work
 
+-- System clipboard (Windows / WSL / Wayland / X11 / Termux)
+require("clipboard").setup()
+
 vim.opt.wrap = true
 vim.opt.linebreak = true
 vim.opt.breakindent = true
