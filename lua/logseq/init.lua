@@ -45,6 +45,9 @@ local function run_interactive_setup(opts, callback)
       return
     end
 
+    -- Strip surrounding quotes that users sometimes paste from Windows paths
+    vault_input = vault_input:match('^["\'](.+)["\']$') or vault_input
+
     opts.vault_path = vault_input
     config.save_to_disk(vault_input, nil)
     callback(opts)
@@ -273,7 +276,14 @@ end
 function M.setup(opts)
   opts = opts or {}
   if not opts.vault_path or opts.vault_path == "" then
-    run_interactive_setup(opts, bootstrap)
+    -- Try to restore vault path from global storage before prompting the user
+    local saved = config.load_global_vault_path()
+    if saved and saved ~= "" then
+      opts.vault_path = saved
+      bootstrap(opts)
+    else
+      run_interactive_setup(opts, bootstrap)
+    end
   else
     bootstrap(opts)
   end

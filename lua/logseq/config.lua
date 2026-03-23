@@ -49,6 +49,47 @@ M.defaults = {
   },
 }
 
+-- ── Global persistence (vault path) ──────────────────────────────────
+
+local function get_global_save_path()
+  return vim.fn.stdpath("data") .. "/logseq_nvim_global.json"
+end
+
+local function load_global_config()
+  local path = get_global_save_path()
+  if vim.fn.filereadable(path) ~= 1 then return {} end
+  local f = io.open(path, "r")
+  if not f then return {} end
+  local content = f:read("*a")
+  f:close()
+  local ok, data = pcall(vim.json.decode, content)
+  if ok and type(data) == "table" then return data end
+  return {}
+end
+
+local function save_global_config(data)
+  local path = get_global_save_path()
+  local f = io.open(path, "w")
+  if not f then return false end
+  f:write(vim.json.encode(data))
+  f:close()
+  return true
+end
+
+--- Return the last-used vault path from global storage, or nil.
+---@return string|nil
+function M.load_global_vault_path()
+  return load_global_config().vault_path or nil
+end
+
+--- Persist the vault path to global storage so it survives restarts.
+---@param vault_path string
+function M.save_global_vault_path(vault_path)
+  local data = load_global_config()
+  data.vault_path = vault_path
+  save_global_config(data)
+end
+
 -- ── Vault-local persistence ───────────────────────────────────────────
 
 local function get_save_path(vault_path)
@@ -163,6 +204,7 @@ function M.save_to_disk(vault_path, calendar_urls)
     data.calendar_urls = calendar_urls
   end
   save_data(vault_path, data)
+  M.save_global_vault_path(vault_path)
 end
 
 --- Initialize configuration. Returns false if vault_path is missing.
@@ -183,6 +225,8 @@ function M.setup(opts)
 
   if vim.fn.isdirectory(M.current.vault_path) == 0 then
     vim.notify("[logseq.nvim] Vault not found: " .. M.current.vault_path, vim.log.levels.WARN)
+  else
+    M.save_global_vault_path(M.current.vault_path)
   end
 
   return true
