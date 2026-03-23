@@ -171,26 +171,113 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
 end
 
 function M.open_help()
-  local src = debug.getinfo(1, "S").source:gsub("^@", "")
-  local help_file = vim.fn.fnamemodify(src, ":p:h:h") .. "/README.md"
+  local km = require("logseq.config").current.keymaps or {}
 
-  if vim.fn.filereadable(help_file) == 1 then
-    vim.cmd("vsplit " .. vim.fn.fnameescape(help_file))
-    return
+  local function k(name, default)
+    return km[name] or default or "?"
   end
 
-  vim.notify(
-    "Logseq Mode Active!\n" ..
-    "• Folding: za\n" ..
-    "• Move Block: <Alt-Up/Down>\n" ..
-    "• Indent: Tab / Shift-Tab\n" ..
-    "• Search Link: [[\n" ..
-    "• Add link by selecting text and hitting enter\n" ..
-    "• Cycle TODO state by hitting Ctrl + T\n" ..
-    "• Trigger calsync with :Calsync\n" ..
-    string.format("(Could not locate README at %s)", help_file),
-    vim.log.levels.INFO
-  )
+  local lines = {
+    "  Logseq.nvim Help",
+    " ──────────────────────────────────────────────────────",
+    "",
+    "  COMMANDS",
+    "   :LogseqToday          Open (or create) today's journal",
+    "   :LogseqNewPage [name] Create or open a page",
+    "   :LogseqConfig         Open shortcuts & UI config window",
+    "   :Calsync              Manually sync calendar to journal",
+    "   :Caladd               Add an ICS calendar feed URL",
+    "   :CalEdit              View / add / remove calendar URLs",
+    "   :Calremind            Set reminder lead time in minutes",
+    "",
+    "  NAVIGATION",
+    "   " .. k("next_sibling","<leader>j") .. "   Next sibling block",
+    "   " .. k("prev_sibling","<leader>k") .. "   Previous sibling block",
+    "   " .. k("first_child","<leader>J") .. "   First child block",
+    "   " .. k("parent","<leader>K") .. "   Parent block",
+    "",
+    "  BLOCK EDITING",
+    "   o                     New sibling block below (normal mode)",
+    "   O                     New sibling block above (normal mode)",
+    "   <CR>  (insert)        Smart Enter: new sibling or split",
+    "   <S-CR> (insert)       Property / continuation line",
+    "   " .. k("demote",">>") .. "   Demote / indent block (with subtree)",
+    "   " .. k("promote","<<") .. "   Promote / outdent block (with subtree)",
+    "   <Tab>   (normal)      Indent block (alias for >>)",
+    "   <S-Tab> (normal)      Outdent block (alias for <<)",
+    "   <Tab>   (insert)      Indent block via parser",
+    "   <S-Tab> (insert)      Outdent block via parser",
+    "   " .. k("move_down","<A-Down>") .. "   Move block down (swap with next sibling)",
+    "   " .. k("move_up","<A-Up>") .. "   Move block up (swap with previous sibling)",
+    "",
+    "  LINKS & REFERENCES",
+    "   " .. k("follow_link","<CR>") .. "   Follow wikilink / block-ref / tag",
+    "   <CR>  (visual)        Wrap selection in [[...]] or unwrap",
+    "   [[                    Trigger fuzzy page-link completion",
+    "   " .. k("toggle_backlinks","<leader>b") .. "   Toggle backlinks / linked-references panel",
+    "   <leader>q             Toggle queries panel",
+    "   <leader>t             Apply template to current page",
+    "   " .. k("search_pages","<C-k>") .. "   Search pages / all files",
+    "",
+    "  FOLDING & TODO",
+    "   " .. k("fold_toggle","za") .. "   Toggle fold at cursor",
+    "   " .. k("todo_cycle","<C-t>") .. "   Cycle TODO state (normal & insert)",
+    "   TODO states:  (none) → TODO → DOING → DONE → CANCELLED → WAITING → (none)",
+    "",
+    "  HELP & CONFIG",
+    "   " .. k("help","hh") .. "   Show this help window",
+    "   :LogseqConfig         Remap any hotkey or toggle UI buttons",
+    "",
+    "  CONFIG UI KEYS  (inside :LogseqConfig window)",
+    "   j / k                 Navigate items",
+    "   <CR>                  Edit selected keymap",
+    "   <Space>               Toggle winbar / bottombar button",
+    "   w                     Save changes",
+    "   r                     Reset to defaults",
+    "   q / <Esc>             Close without saving",
+    "   <Tab>                 Jump to next section",
+    "",
+    "  Press  q  or  <Esc>  to close this window",
+    "",
+  }
+
+  -- Width: longest line + 2 padding
+  local max_w = 0
+  for _, l in ipairs(lines) do
+    if #l > max_w then max_w = #l end
+  end
+  local width  = math.min(max_w + 2, vim.o.columns - 4)
+  local height = math.min(#lines, vim.o.lines - 4)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden  = "wipe"
+  vim.bo[buf].filetype   = "logseq_help"
+
+  local row = math.floor((vim.o.lines   - height) / 2)
+  local col = math.floor((vim.o.columns - width)  / 2)
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    row      = row,
+    col      = col,
+    width    = width,
+    height   = height,
+    style    = "minimal",
+    border   = "rounded",
+    title    = " Logseq.nvim Help ",
+    title_pos = "center",
+  })
+
+  vim.wo[win].wrap      = false
+  vim.wo[win].cursorline = true
+
+  local close = function()
+    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+  end
+  vim.keymap.set("n", "q",     close, { buffer = buf, nowait = true, silent = true })
+  vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true, silent = true })
 end
 
 -- ── Syntax Setup ─────────────────────────────────────────────────────
