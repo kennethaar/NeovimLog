@@ -1,6 +1,8 @@
 --- logseq.nvim namespace tree view
 --- Auto-displays a clickable tree of all pages in the same namespace at the
 --- bottom of the buffer whenever the current file belongs to a namespace.
+--- The tree section is purely read-only: it is never saved to disk and all
+--- edits within it are blocked via the buffer's 'modifiable' flag.
 
 local config = require("logseq.config")
 local util   = require("logseq.util")
@@ -53,6 +55,32 @@ local function find_header_line(bufnr)
   return nil
 end
 
+--- Properly reset the modified flag without triggering autocmds.
+local function clear_modified(bufnr)
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.cmd("noautocmd setlocal nomodified")
+  end)
+end
+
+--- Set buf modifiable flag. Used to lock/unlock the tree region.
+local function set_modifiable(bufnr, value)
+  if vim.bo[bufnr].modifiable ~= value then
+    vim.bo[bufnr].modifiable = value
+  end
+end
+
+--- Lock or unlock editing based on whether the cursor is inside the tree.
+local function update_modifiable(bufnr)
+  local state = get_state(bufnr)
+  if not state.visible or not state.region then
+    set_modifiable(bufnr, true)
+    return
+  end
+  local ok, pos = pcall(vim.api.nvim_win_get_cursor, 0)
+  if not ok then return end
+  set_modifiable(bufnr, pos[1] < state.region.start_line)
+end
+
 -- ── Page Scanner ──────────────────────────────────────────────────────
 
 --- Collect all pages whose name starts with ns_root or equals ns_root.
@@ -80,7 +108,7 @@ end
 
 --- Parse a page list into a nested tree.
 --- Returns a root node: { children = { [label] = node, ... } }
---- Each leaf node: { label, _file, _name, children }
+--- Each leaf node: { label, _file, _name, children, _order }
 local function build_tree(pages)
   local root = { children = {}, _order = {} }
 
@@ -117,20 +145,19 @@ local function render_node(node, current_page, display, smap, prefix_parts)
     local child   = node.children[key]
     local is_last = (idx == #keys)
 
-    local connector   = is_last and "└── " or "├── "
-    local child_pfx   = is_last and "    " or "│   "
+    local connector = is_last and "└── " or "├── "
+    local child_pfx = is_last and "    " or "│   "
 
-    local indent      = table.concat(prefix_parts, "")
-    local is_current  = (child._name == current_page)
-    local label       = child.label .. (is_current and " ←" or "")
-    local line        = indent .. connector .. label
+    local indent     = table.concat(prefix_parts, "")
+    local is_current = (child._name == current_page)
+    local label      = child.label .. (is_current and " ←" or "")
+    local line       = indent .. connector .. label
 
     table.insert(display, line)
     if child._file then
       smap[#display] = { file = child._file, line = 1 }
     end
 
-    -- Recurse into children
     local next_pfx = {}
     for _, p in ipairs(prefix_parts) do table.insert(next_pfx, p) end
     table.insert(next_pfx, child_pfx)
@@ -169,35 +196,39 @@ function M.render_section(bufnr)
 
   local display_lines, smap = build_display(pages, ns_root, page_name)
 
-  local state        = get_state(bufnr)
-  local was_modified = vim.bo[bufnr].modified
-  local line_count   = vim.api.nvim_buf_line_count(bufnr)
+  local state         = get_state(bufnr)
+  local line_count    = vim.api.nvim_buf_line_count(bufnr)
   local section_start = line_count + 1
 
   local final_lines = { SEPARATOR }
   vim.list_extend(final_lines, display_lines)
 
+  -- Ensure writable while we mutate, then lock + clear modified
+  set_modifiable(bufnr, true)
   vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, final_lines)
-  vim.bo[bufnr].modified = was_modified
+  clear_modified(bufnr)
 
-  state.region    = { start_line = section_start, end_line = section_start + #final_lines - 1 }
-  state.visible   = true
+  state.region     = { start_line = section_start, end_line = section_start + #final_lines - 1 }
+  state.visible    = true
   state.source_map = {}
 
   for rel_line, info in pairs(smap) do
     state.source_map[section_start + rel_line] = info
   end
 
+  -- Lock editing in the tree region based on current cursor position
+  update_modifiable(bufnr)
+
   -- Highlights
   local ns = vim.api.nvim_create_namespace("logseq_ns_tree")
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
-  -- Header (display[1] → buffer line section_start + 1)
+  -- Header line is display[1] → buffer line section_start + 1 (0-indexed: section_start)
   vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", section_start, 0, -1)
 
   for abs_line, _ in pairs(state.source_map) do
-    local line_0  = abs_line - 1
-    local txt     = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
+    local line_0 = abs_line - 1
+    local txt    = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
     if txt:match(" ←$") then
       vim.api.nvim_buf_add_highlight(bufnr, ns, "Bold", line_0, 0, -1)
     else
@@ -213,6 +244,7 @@ function M.remove_section(bufnr)
     state.visible    = false
     state.region     = nil
     state.source_map = nil
+    set_modifiable(bufnr, true)
     return false
   end
 
@@ -222,9 +254,11 @@ function M.remove_section(bufnr)
     if maybe_sep and maybe_sep:match("^%s*$") then start = header_line - 1 end
   end
 
+  -- Must be writable to remove lines; preserve modified state of real content
+  set_modifiable(bufnr, true)
   local was_modified = vim.bo[bufnr].modified
   vim.api.nvim_buf_set_lines(bufnr, start - 1, vim.api.nvim_buf_line_count(bufnr), false, {})
-  vim.bo[bufnr].modified = was_modified
+  if not was_modified then clear_modified(bufnr) end
 
   state.visible    = false
   state.region     = nil
@@ -268,7 +302,13 @@ function M.setup_buf(bufnr)
 
   local group = vim.api.nvim_create_augroup("LogseqNsTree_" .. bufnr, { clear = true })
 
-  -- Guard: namespace tree is read-only
+  -- Lock / unlock based on cursor position (blocks dd, x, r, etc. in tree)
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+    group = group, buffer = bufnr,
+    callback = function(ev) update_modifiable(ev.buf) end,
+  })
+
+  -- Friendly message when trying to enter insert mode inside the tree
   vim.api.nvim_create_autocmd("InsertEnter", {
     group = group, buffer = bufnr,
     callback = function(ev)
@@ -280,18 +320,19 @@ function M.setup_buf(bufnr)
     end,
   })
 
-  -- Remove before write, restore after
+  -- Strip tree before write so it is never saved to disk
   vim.api.nvim_create_autocmd("BufWritePre", {
     group = group, buffer = bufnr,
     callback = function(ev)
       local state = get_state(ev.buf)
       if state.visible then
         state._had_tree = true
-        M.remove_section(ev.buf)
+        M.remove_section(ev.buf)   -- also sets modifiable=true
       end
     end,
   })
 
+  -- Restore tree after write
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = group, buffer = bufnr,
     callback = function(ev)
@@ -307,7 +348,10 @@ function M.setup_buf(bufnr)
 
   vim.api.nvim_create_autocmd("BufUnload", {
     group = group, buffer = bufnr,
-    callback = function(ev) M._state[ev.buf] = nil end,
+    callback = function(ev)
+      set_modifiable(ev.buf, true)  -- safety: restore on unload
+      M._state[ev.buf] = nil
+    end,
   })
 
   -- Auto-show when the page is namespaced
