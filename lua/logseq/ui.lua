@@ -6,6 +6,9 @@ local M = {}
 M._state = {
   saved_buffers = {},
   highlights_set = false,
+  tabline_active = false,
+  orig_showtabline = nil,
+  orig_tabline = nil,
 }
 
 -- ── Helpers ───────────────────────────────────────────────────────────
@@ -85,6 +88,77 @@ function M.winbar()
   end
   
   return " " .. title_btn .. nav_btns .. close_btn
+end
+
+-- ── Page/Journal Tabline (above winbar) ──────────────────────────────
+
+local _month_names = {
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+}
+local _day_names = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" }
+
+--- Format a journal filename date (e.g. "2026_03_24") into a readable label.
+local function format_journal_date(filename)
+  local y, m, d = filename:match("^(%d%d%d%d)[_%-](%d%d)[_%-](%d%d)")
+  if not y then return nil end
+  local ts  = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+  local dow = _day_names[tonumber(os.date("%w", ts)) + 1]
+  return dow .. " " .. tonumber(d) .. " " .. _month_names[tonumber(m)] .. " " .. y
+end
+
+--- Build the tabline string shown above the winbar.
+function M.tabline()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not vim.b[bufnr].logseq_active then return "" end
+
+  local ok_cfg, config = pcall(require, "logseq.config")
+  if not ok_cfg then return "" end
+  if (config.current.winbar_buttons or {}).page_tabline == false then return "" end
+
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then return "" end
+
+  local ok_util, util = pcall(require, "logseq.util")
+  if not ok_util then return "" end
+
+  local vault        = config.current.vault_path or ""
+  local norm_path    = util.normalize(filepath)
+  local journals_dir = util.normalize(vault .. "/journals")
+  local filename     = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", "")
+
+  local icon, kind, label
+  if norm_path:find(journals_dir, 1, true) then
+    icon  = "📅"
+    kind  = "journal"
+    label = format_journal_date(filename) or util.decode_filename(filename)
+  else
+    icon  = "📄"
+    kind  = "page"
+    label = util.decode_filename(filename)
+  end
+
+  local safe_label = label:gsub("%%", "%%%%")
+  return "%#TabLineSel# " .. icon .. "  " .. safe_label
+       .. " %#TabLine#%=%#Comment#[" .. kind .. "] "
+end
+
+--- Activate the custom tabline (called when entering a logseq buffer).
+function M.enable_tabline()
+  if M._state.tabline_active then return end
+  M._state.tabline_active  = true
+  M._state.orig_showtabline = vim.o.showtabline
+  M._state.orig_tabline     = vim.o.tabline
+  vim.opt.showtabline = 2
+  vim.opt.tabline     = "%{%v:lua.require('logseq.ui').tabline()%}"
+end
+
+--- Restore the original tabline (called when leaving all logseq buffers).
+function M.disable_tabline()
+  if not M._state.tabline_active then return end
+  M._state.tabline_active = false
+  vim.opt.showtabline = M._state.orig_showtabline or 1
+  vim.opt.tabline     = M._state.orig_tabline     or ""
 end
 
 function M.trigger_save_indicator(bufnr)
@@ -237,6 +311,9 @@ function M.open_help()
     "   " .. k("help","hh") .. "   Show this help window",
     "   :LogseqConfig         Remap any hotkey or toggle UI buttons",
     "",
+    "  NOTE: The page/journal name bar above the winbar can be toggled",
+    "        via :LogseqConfig → winbar buttons → 📄/📅",
+    "",
     "  CONFIG UI KEYS  (inside :LogseqConfig window)",
     "   j / k                 Navigate items",
     "   <CR>                  Edit selected keymap",
@@ -379,12 +456,27 @@ function M.setup_buf(bufnr)
   setup_syntax(bufnr)
   setup_highlights()
 
-  -- Active-event highlight on buffer enter
+  -- Active-event highlight + tabline on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
     group = grp,
     buffer = bufnr,
     callback = function()
+      M.enable_tabline()
       pcall(function() require("logseq.reminders").update_highlight() end)
+    end,
+  })
+
+  -- Restore tabline when leaving this buffer if no other logseq buffer is visible
+  vim.api.nvim_create_autocmd("BufLeave", {
+    group = grp,
+    buffer = bufnr,
+    callback = function()
+      vim.schedule(function()
+        local new_buf = vim.api.nvim_get_current_buf()
+        if not vim.b[new_buf].logseq_active then
+          M.disable_tabline()
+        end
+      end)
     end,
   })
 end

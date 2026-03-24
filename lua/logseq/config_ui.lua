@@ -26,12 +26,13 @@ local KEYMAP_DEFS = {
 }
 
 local WINBAR_DEFS = {
-  { key = "rename",    label = "rn📝",    desc = "Rename page" },
-  { key = "search",    label = "^k🔍",   desc = "Search pages / all files" },
-  { key = "backlinks", label = "b🖇️",    desc = "Toggle backlinks" },
-  { key = "queries",   label = "q❔",     desc = "Toggle queries" },
-  { key = "calsync",   label = "c🗓️",    desc = "Calendar sync" },
-  { key = "close",     label = ":wq❌",   desc = "Close window" },
+  { key = "page_tabline", label = "📄/📅",   desc = "Page/journal name bar (above winbar)" },
+  { key = "rename",       label = "rn📝",    desc = "Rename page" },
+  { key = "search",       label = "^k🔍",   desc = "Search pages / all files" },
+  { key = "backlinks",    label = "b🖇️",    desc = "Toggle backlinks" },
+  { key = "queries",      label = "q❔",     desc = "Toggle queries" },
+  { key = "calsync",      label = "c🗓️",    desc = "Calendar sync" },
+  { key = "close",        label = ":wq❌",   desc = "Close window" },
 }
 
 local BOTTOMBAR_DEFS = {
