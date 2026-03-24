@@ -70,8 +70,12 @@ local function extract_context(block, lines)
   local ancestors = {}
   local cur = block.parent
   while cur do
-    table.insert(ancestors, 1, cur)
+    table.insert(ancestors, cur)
     cur = cur.parent
+  end
+  for i = 1, #ancestors // 2 do
+    local j = #ancestors - i + 1
+    ancestors[i], ancestors[j] = ancestors[j], ancestors[i]
   end
 
   local result = {}
@@ -110,10 +114,10 @@ end
 local function build_needles(page_name)
   local needles = { "[[" .. page_name .. "]]" }
   local tag_flat = page_name:gsub("%s+", "_"):gsub("/", "_")
-  if not tag_flat:match("[^%w_%-]") then table.insert(needles, "#" .. tag_flat) end
+  if tag_flat:match("^[%w_%-]+$") then table.insert(needles, "#" .. tag_flat) end
   if page_name:match("/") then
     local tag_hier = page_name:gsub("%s+", "_")
-    if not tag_hier:match("[^%w_%-/]") then table.insert(needles, "#" .. tag_hier) end
+    if tag_hier:match("^[%w_%-/]+$") then table.insert(needles, "#" .. tag_hier) end
   end
   return needles
 end
