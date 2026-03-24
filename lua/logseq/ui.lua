@@ -138,9 +138,9 @@ function M.tabline()
   end
 
   local safe_label = label:gsub("%%", "%%%%")
-  local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@rn📝%X%#TabLine#"
+  local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝rn%X%#TabLine#"
   local close_btn  = "%#Comment#%@v:lua.logseq_close_win@:wq❌%X%#TabLine#"
-  return " " .. rename_btn .. " %#TabLineSel# " .. safe_label
+  return " " .. rename_btn .. "%=%#TabLineSel# " .. safe_label
        .. " %#TabLine#%=" .. close_btn .. " "
 end
 
