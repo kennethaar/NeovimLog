@@ -148,9 +148,9 @@ end
 function M.encode_filename(page_name)
   return page_name
     :gsub("/", "___")
-    -- CRITICAL FIX: Allow spaces (' ') and dots ('%.') to pass through unencoded.
-    -- Logseq natively preserves spaces in filenames. Encoding them to %20 breaks compatibility.
-    :gsub("([^%w_%-%. ])", function(c)
+    -- Only encode characters that are unsafe on common filesystems (Windows: \:*?"<>|).
+    -- Logseq preserves everything else (spaces, +, dots, etc.) literally in filenames.
+    :gsub('([\\:*?"<>|%z])', function(c)
       return string.format("%%%02X", c:byte())
     end) .. ".md"
 end
