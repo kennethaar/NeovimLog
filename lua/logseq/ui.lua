@@ -138,9 +138,11 @@ function M.tabline()
   end
 
   local safe_label = label:gsub("%%", "%%%%")
-  local rename_btn = "%@v:lua.logseq_rename_page@rn📝%X"
-  return "%#TabLineSel# " .. safe_label
-       .. " %#TabLine#%=" .. rename_btn .. " "
+  local rename_btn = "%@v:lua.logseq_rename_page@ rn📝 %X"
+  -- rename button on left, filename centered via twin %=, blank separator row
+  return "%#TabLine#" .. rename_btn
+       .. "%=%#TabLineSel# " .. safe_label .. " %#TabLine#%="
+       .. "\n "
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
@@ -379,6 +381,13 @@ end
 local function update_block_virt_lines(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
   vim.api.nvim_buf_clear_namespace(bufnr, BLOCK_NS, 0, -1)
+
+  -- Blank line between winbar and first content line
+  vim.api.nvim_buf_set_extmark(bufnr, BLOCK_NS, 0, 0, {
+    virt_lines       = { { { "", "Normal" } } },
+    virt_lines_above = true,
+  })
+
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for i, line in ipairs(lines) do
     local lnum = i - 1
@@ -401,7 +410,12 @@ local function setup_syntax(bufnr)
     pcall(vim.fn.matchadd, "LogseqTime", [[(Heldags)]])
 
     -- Conceal [[wikilinks]]
-    pcall(vim.cmd, [[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
+    -- Use explicit contained matches for the brackets so they conceal reliably
+    -- even inside bold/italic root-block matches (matchgroup+concealends can
+    -- be overridden by the outer syntax match in those cases).
+    pcall(vim.cmd, [[syntax region LogseqLink start=/\[\[/ end=/\]\]/ contains=LogseqLinkOpen,LogseqLinkClose,LogseqLinkNS oneline]])
+    pcall(vim.cmd, [[syntax match LogseqLinkOpen /\[\[/ conceal contained]])
+    pcall(vim.cmd, [[syntax match LogseqLinkClose /\]\]/ conceal contained]])
     pcall(vim.cmd, "syntax match LogseqLinkNS /.*\\// contained conceal")
 
     -- Conceal ((block-refs))
