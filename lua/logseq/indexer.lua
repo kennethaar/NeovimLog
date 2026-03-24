@@ -35,7 +35,9 @@ function M.page_name_from_file(filepath)
   local rel = norm_file:sub(#norm_vault + 2)
 
   local journal_name = rel:match("^journals/(.+)%.md$")
-  if journal_name then return journal_name end
+  if journal_name then
+    return util.format_journal_date(journal_name, vault) or journal_name
+  end
 
   local page_name = rel:match("^pages/(.+)%.md$")
   if page_name then return util.decode_filename(page_name) end
@@ -45,16 +47,21 @@ end
 
 -- ── Effective refs computation ────────────────────────────────────────
 
-local function compute_all_refs(flat, page_name)
+-- Journal filenames use _ (2024_01_15) but Logseq page titles use - (2024-01-15).
+-- Normalise all ISO-date refs to dashes so both link styles are matched.
+local function norm_link(link)
+  return (link:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3"))
+end
+
+local function compute_all_refs(flat)
   local memo = {}
   for _, block in ipairs(flat) do
     local refs = {}
-    for _, link in ipairs(block.links) do refs[link] = true end
+    for _, link in ipairs(block.links) do refs[norm_link(link)] = true end
     for _, tag in ipairs(block.tags) do refs[tag] = true end
     if block.parent and memo[block.parent] then
       for ref in pairs(memo[block.parent]) do refs[ref] = true end
     end
-    refs[page_name] = true
     memo[block] = refs
   end
   return memo
@@ -70,8 +77,12 @@ local function extract_context(block, lines)
   local ancestors = {}
   local cur = block.parent
   while cur do
-    table.insert(ancestors, 1, cur)
+    table.insert(ancestors, cur)
     cur = cur.parent
+  end
+  for i = 1, math.floor(#ancestors / 2) do
+    local j = #ancestors - i + 1
+    ancestors[i], ancestors[j] = ancestors[j], ancestors[i]
   end
 
   local result = {}
@@ -109,11 +120,15 @@ end
 
 local function build_needles(page_name)
   local needles = { "[[" .. page_name .. "]]" }
+  -- Journal page title uses dashes (2024-01-15) but files are often named with underscores
+  -- (2024_01_15).  Include both forms so content_matches catches either link style.
+  local alt = page_name:gsub("^(%d%d%d%d)-(%d%d)-(%d%d)$", "%1_%2_%3")
+  if alt ~= page_name then table.insert(needles, "[[" .. alt .. "]]") end
   local tag_flat = page_name:gsub("%s+", "_"):gsub("/", "_")
-  if not tag_flat:match("[^%w_%-]") then table.insert(needles, "#" .. tag_flat) end
+  if tag_flat:match("^[%w_%-]+$") then table.insert(needles, "#" .. tag_flat) end
   if page_name:match("/") then
     local tag_hier = page_name:gsub("%s+", "_")
-    if not tag_hier:match("[^%w_%-/]") then table.insert(needles, "#" .. tag_hier) end
+    if tag_hier:match("^[%w_%-/]+$") then table.insert(needles, "#" .. tag_hier) end
   end
   return needles
 end
@@ -125,10 +140,19 @@ local function content_matches(haystack, needles)
   return false
 end
 
-local function list_md_files(dirs)
+local function list_md_files(dirs, uv)
   local files = {}
   for _, dir in ipairs(dirs) do
-    vim.list_extend(files, vim.fn.glob(dir .. "/*.md", true, true))
+    local handle = uv.fs_scandir(dir)
+    if handle then
+      while true do
+        local name, ftype = uv.fs_scandir_next(handle)
+        if not name then break end
+        if name:sub(-3) == ".md" and ftype ~= "directory" then
+          table.insert(files, dir .. "/" .. name)
+        end
+      end
+    end
   end
   return files
 end
@@ -156,12 +180,12 @@ local function load_file(filepath, norm, needles, uv)
     return cached.lines, cached.parsed
   end
 
-  local f = io.open(filepath, "r")
-  if not f then return nil end
-  local content = f:read("*a")
-  f:close()
+  local fd = uv.fs_open(filepath, "r", 438)
+  if not fd then return nil end
+  local content = stat and uv.fs_read(fd, stat.size, 0) or nil
+  uv.fs_close(fd)
 
-  if not content_matches(content, needles) then return nil end
+  if not content or not content_matches(content, needles) then return nil end
 
   local lines = vim.split(content, "\n", { plain = true })
   if #lines > 0 and lines[#lines] == "" then table.remove(lines) end
@@ -179,7 +203,7 @@ local function process_file(filepath, norm, page_name, needles, uv, results)
   if source_page == page_name then return end
 
   local flat      = parser.flatten(parsed.blocks)
-  local all_refs  = compute_all_refs(flat, source_page)
+  local all_refs  = compute_all_refs(flat)
   local matched   = {}  -- line_start → true for already-added blocks
 
   for _, block in ipairs(flat) do
@@ -212,13 +236,13 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
 
   local norm_exclude = exclude_file and util.normalize(exclude_file) or nil
   local needles   = build_needles(page_name)
-  local all_files = list_md_files(search_dirs)
+  local uv        = vim.uv or vim.loop
+  local all_files = list_md_files(search_dirs, uv)
   local results   = {}
 
   if #all_files == 0 then return on_complete({}) end
 
-  local i  = 1
-  local uv = vim.uv or vim.loop
+  local i = 1
 
   local function process_chunk()
     local chunk_end = math.min(i + 49, #all_files)
@@ -235,7 +259,7 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
 
     if chunk_end < #all_files then
       i = chunk_end + 1
-      vim.defer_fn(process_chunk, 5)
+      vim.schedule(process_chunk)
     else
       table.sort(results, function(a, b) return a.source_page < b.source_page end)
       on_complete(results)

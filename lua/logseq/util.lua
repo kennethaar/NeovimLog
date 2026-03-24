@@ -60,6 +60,87 @@ function M.decode_filename(filename)
   return name
 end
 
+-- ── Journal Date Formatting ───────────────────────────────────────────
+
+local _journal_fmt_cache = {}  -- vault_path → string | false ("checked, not found")
+
+--- Read :journal/page-title-format from logseq's config.edn, or nil.
+--- Result is cached per vault_path so repeated calls (one per scanned file) are free.
+---@param vault_path string
+---@return string|nil
+function M.read_logseq_journal_fmt(vault_path)
+  local cached = _journal_fmt_cache[vault_path]
+  if cached ~= nil then return cached or nil end  -- false → nil, string → string
+  local path = vault_path .. "/.logseq/config.edn"
+  local f = io.open(path, "r")
+  if not f then
+    _journal_fmt_cache[vault_path] = false
+    return nil
+  end
+  local content = f:read("*a")
+  f:close()
+  local result = content:match(':journal/page%-title%-format%s+"([^"]+)"')
+  _journal_fmt_cache[vault_path] = result or false
+  return result
+end
+
+--- Apply a Logseq/Java-style date format string to a timestamp.
+---@param fmt string
+---@param ts integer
+---@return string
+function M.apply_logseq_fmt(fmt, ts)
+  local day = tonumber(os.date("%d", ts))
+  local mon = tonumber(os.date("%m", ts))
+  local dow = tonumber(os.date("%w", ts)) + 1
+
+  local function ord(n)
+    if n == 11 or n == 12 or n == 13 then return n .. "th" end
+    local r = n % 10
+    if r == 1 then return n .. "st" elseif r == 2 then return n .. "nd"
+    elseif r == 3 then return n .. "rd" else return n .. "th" end
+  end
+
+  local ML = {"January","February","March","April","May","June","July","August","September","October","November","December"}
+  local MS = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"}
+  local DL = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"}
+  local DS = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"}
+
+  local tokens = {
+    {"MMMM", ML[mon]}, {"MMM", MS[mon]}, {"MM", string.format("%02d", mon)},
+    {"EEEE", DL[dow]}, {"EEE", DS[dow]},
+    {"yyyy", os.date("%Y", ts)}, {"yy", os.date("%y", ts)},
+    {"do", ord(day)}, {"dd", string.format("%02d", day)}, {"d", tostring(day)},
+  }
+
+  local out, i = {}, 1
+  while i <= #fmt do
+    local matched = false
+    for _, tok in ipairs(tokens) do
+      if fmt:sub(i, i + #tok[1] - 1) == tok[1] then
+        out[#out + 1] = tok[2]; i = i + #tok[1]; matched = true; break
+      end
+    end
+    if not matched then out[#out + 1] = fmt:sub(i, i); i = i + 1 end
+  end
+  return table.concat(out)
+end
+
+--- Convert a journal filename stem to the page title used in wiki links.
+--- e.g. "2024_01_15" → "2024-01-15"  (or "Jan 15th, 2024" depending on vault config)
+--- Returns nil if the stem is not a recognisable date.
+---@param filename string  stem without .md
+---@param vault_path string|nil
+---@return string|nil
+function M.format_journal_date(filename, vault_path)
+  local y, m, d = filename:match("^(%d%d%d%d)[_%-](%d%d)[_%-](%d%d)")
+  if not y then return nil end
+  local ts  = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+  local fmt = (vault_path and M.read_logseq_journal_fmt(vault_path)) or "yyyy-MM-dd"
+  return M.apply_logseq_fmt(fmt, ts)
+end
+
+-- ── Filename Encoding/Decoding ────────────────────────────────────────
+
 --- Encode a page name to its on-disk filename.
 --- "BJJ/Techniques/Triangle" → "BJJ___Techniques___Triangle.md"
 ---@param page_name string
