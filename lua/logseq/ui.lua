@@ -164,7 +164,7 @@ function M.tabline()
   local safe_label = label:gsub("%%", "%%%%")
   local rename_btn = "%@v:lua.logseq_rename_page@rn📝%X"
   return "%#TabLineSel# " .. safe_label
-       .. " %#TabLine#%=%#Comment#" .. kind .. "  " .. rename_btn .. " "
+       .. " %#TabLine#%=" .. rename_btn .. " "
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
