@@ -73,7 +73,7 @@ local function extract_context(block, lines)
     table.insert(ancestors, cur)
     cur = cur.parent
   end
-  for i = 1, #ancestors // 2 do
+  for i = 1, math.floor(#ancestors / 2) do
     local j = #ancestors - i + 1
     ancestors[i], ancestors[j] = ancestors[j], ancestors[i]
   end
