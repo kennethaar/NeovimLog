@@ -185,6 +185,9 @@ function M.render_section(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
   vim.api.nvim_buf_add_highlight(bufnr, NS, "Title", section_start - 1, 0, -1)
 
+  local uv = vim.uv or vim.loop
+  local last_redraw_ns = uv.hrtime()
+
   indexer.find_backlinks(page_name, filepath,
     -- ON COMPLETE
     function(results)
@@ -239,6 +242,14 @@ function M.render_section(bufnr)
       with_modifiable(bufnr, function()
         pcall(vim.api.nvim_buf_set_lines, bufnr, text_line_0, text_line_0 + 1, false, { progress_text })
       end)
+
+      -- Force a screen flush at most every 80 ms so the bar animates smoothly
+      -- without hammering the renderer on large cached vaults.
+      local now = uv.hrtime()
+      if now - last_redraw_ns >= 80e6 then
+        last_redraw_ns = now
+        vim.cmd("redraw")
+      end
     end)
 end
 
