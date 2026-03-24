@@ -62,16 +62,26 @@ end
 
 -- ── Journal Date Formatting ───────────────────────────────────────────
 
+local _journal_fmt_cache = {}  -- vault_path → string | false ("checked, not found")
+
 --- Read :journal/page-title-format from logseq's config.edn, or nil.
+--- Result is cached per vault_path so repeated calls (one per scanned file) are free.
 ---@param vault_path string
 ---@return string|nil
 function M.read_logseq_journal_fmt(vault_path)
+  local cached = _journal_fmt_cache[vault_path]
+  if cached ~= nil then return cached or nil end  -- false → nil, string → string
   local path = vault_path .. "/.logseq/config.edn"
   local f = io.open(path, "r")
-  if not f then return nil end
+  if not f then
+    _journal_fmt_cache[vault_path] = false
+    return nil
+  end
   local content = f:read("*a")
   f:close()
-  return content:match(':journal/page%-title%-format%s+"([^"]+)"')
+  local result = content:match(':journal/page%-title%-format%s+"([^"]+)"')
+  _journal_fmt_cache[vault_path] = result or false
+  return result
 end
 
 --- Apply a Logseq/Java-style date format string to a timestamp.

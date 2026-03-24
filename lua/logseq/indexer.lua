@@ -47,16 +47,21 @@ end
 
 -- ── Effective refs computation ────────────────────────────────────────
 
-local function compute_all_refs(flat, page_name)
+-- Journal filenames use _ (2024_01_15) but Logseq page titles use - (2024-01-15).
+-- Normalise all ISO-date refs to dashes so both link styles are matched.
+local function norm_link(link)
+  return (link:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3"))
+end
+
+local function compute_all_refs(flat)
   local memo = {}
   for _, block in ipairs(flat) do
     local refs = {}
-    for _, link in ipairs(block.links) do refs[link] = true end
+    for _, link in ipairs(block.links) do refs[norm_link(link)] = true end
     for _, tag in ipairs(block.tags) do refs[tag] = true end
     if block.parent and memo[block.parent] then
       for ref in pairs(memo[block.parent]) do refs[ref] = true end
     end
-    refs[page_name] = true
     memo[block] = refs
   end
   return memo
@@ -115,6 +120,10 @@ end
 
 local function build_needles(page_name)
   local needles = { "[[" .. page_name .. "]]" }
+  -- Journal page title uses dashes (2024-01-15) but files are often named with underscores
+  -- (2024_01_15).  Include both forms so content_matches catches either link style.
+  local alt = page_name:gsub("^(%d%d%d%d)-(%d%d)-(%d%d)$", "%1_%2_%3")
+  if alt ~= page_name then table.insert(needles, "[[" .. alt .. "]]") end
   local tag_flat = page_name:gsub("%s+", "_"):gsub("/", "_")
   if tag_flat:match("^[%w_%-]+$") then table.insert(needles, "#" .. tag_flat) end
   if page_name:match("/") then
@@ -194,7 +203,7 @@ local function process_file(filepath, norm, page_name, needles, uv, results)
   if source_page == page_name then return end
 
   local flat      = parser.flatten(parsed.blocks)
-  local all_refs  = compute_all_refs(flat, source_page)
+  local all_refs  = compute_all_refs(flat)
   local matched   = {}  -- line_start → true for already-added blocks
 
   for _, block in ipairs(flat) do
