@@ -11,6 +11,8 @@ M._state = {
   orig_tabline = nil,
 }
 
+local BLOCK_NS = vim.api.nvim_create_namespace("logseq_block_ui")
+
 -- ── Helpers ───────────────────────────────────────────────────────────
 
 --- Safely escapes magic characters for Lua's string.gsub pattern matching
@@ -381,6 +383,22 @@ end
 
 -- ── Syntax Setup ─────────────────────────────────────────────────────
 
+--- Refresh virtual empty lines above every root-level block (indent = 0).
+local function update_block_virt_lines(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  vim.api.nvim_buf_clear_namespace(bufnr, BLOCK_NS, 0, -1)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for i, line in ipairs(lines) do
+    local lnum = i - 1
+    if lnum > 0 and line:match("^%- ") then
+      vim.api.nvim_buf_set_extmark(bufnr, BLOCK_NS, lnum, 0, {
+        virt_lines       = { { { "", "Normal" } } },
+        virt_lines_above = true,
+      })
+    end
+  end
+end
+
 local function setup_syntax(bufnr)
   vim.api.nvim_buf_call(bufnr, function()
     -- Hide id:: property lines entirely
@@ -405,6 +423,11 @@ local function setup_syntax(bufnr)
 
     -- Strikethrough for ~~cancelled~~ text
     pcall(vim.cmd, [[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
+
+    -- Block-level formatting: root=bold, level2=italic, level3+=normal
+    -- contains=ALL lets nested items (links, tags) still apply their own highlight
+    pcall(vim.cmd, [[syntax match LogseqLevel2Block /^\t- .*$/ contains=ALL]])
+    pcall(vim.cmd, [[syntax match LogseqRootBlock /^- .*$/ contains=ALL]])
   end)
 end
 
@@ -421,6 +444,10 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqStrikeDelim", { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqLinkDelim", { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqBlockRefDelim", { link = "Conceal" })
+
+  -- Block-level formatting
+  vim.api.nvim_set_hl(0, "LogseqRootBlock",   { bold = true })
+  vim.api.nvim_set_hl(0, "LogseqLevel2Block", { italic = true })
   
   -- Custom dark statusline group used via winhl (survives colorscheme reloads)
   vim.api.nvim_set_hl(0, "LogseqStatusLine", { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
@@ -470,6 +497,14 @@ function M.setup_buf(bufnr)
   vim.opt_local.conceallevel = 2
   setup_syntax(bufnr)
   setup_highlights()
+  update_block_virt_lines(bufnr)
+
+  -- Refresh virtual spacing after edits
+  vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" }, {
+    group = grp,
+    buffer = bufnr,
+    callback = function() update_block_virt_lines(bufnr) end,
+  })
 
   -- Active-event highlight + tabline on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
