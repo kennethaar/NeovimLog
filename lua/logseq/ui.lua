@@ -94,7 +94,7 @@ function M.winbar()
   if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
 
   local nav_btns  = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
-  local close_btn = wb.close ~= false and "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#" or ""
+  local close_btn = ""
 
   if M._state.saved_buffers[bufnr] then
     return " " .. WINBAR_LEFT .. "  ✓ Saved" .. nav_btns .. close_btn
@@ -139,8 +139,9 @@ function M.tabline()
 
   local safe_label = label:gsub("%%", "%%%%")
   local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@rn📝%X%#TabLine#"
-  return "%#TabLineSel# " .. safe_label
-       .. " %#TabLine#%=" .. rename_btn .. " "
+  local close_btn  = "%#Comment#%@v:lua.logseq_close_win@:wq❌%X%#TabLine#"
+  return " " .. rename_btn .. " %#TabLineSel# " .. safe_label
+       .. " %#TabLine#%=" .. close_btn .. " "
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
