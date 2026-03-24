@@ -8,6 +8,7 @@ M.current = {} -- populated by M.setup(); exists here so require-time reads don'
 M.defaults = {
   vault_path = nil,
   calendar_urls = {},
+  favorites = {},
   reminder_minutes = 3,
   journal_format = "%Y_%m_%d",
   indent_size = 2,
@@ -186,6 +187,40 @@ function M.setup(opts)
   end
 
   return true
+end
+
+--- Toggle a page name in the favorites list.
+--- Returns true if added, false if removed.
+---@param name string
+---@return boolean
+function M.toggle_favorite(name)
+  if not M.current.vault_path then return false end
+  local data = load_from_vault(M.current.vault_path)
+  data.favorites = data.favorites or M.current.favorites or {}
+
+  local found_idx
+  for i, f in ipairs(data.favorites) do
+    if f == name then found_idx = i; break end
+  end
+
+  local added
+  if found_idx then
+    table.remove(data.favorites, found_idx)
+    added = false
+  else
+    table.insert(data.favorites, name)
+    added = true
+  end
+
+  M.current.favorites = data.favorites
+  save_data(M.current.vault_path, data)
+  return added
+end
+
+--- Return the current favorites list.
+---@return string[]
+function M.get_favorites()
+  return M.current.favorites or {}
 end
 
 return M

@@ -2,6 +2,7 @@
 --- Winbar, statusline, save indicator, syntax concealment, and highlights.
 
 local M = {}
+local util = require("logseq.util")
 
 M._saved_buffers = {}
 
@@ -16,6 +17,10 @@ _G.logseq_sl_search    = function() require("logseq.file_search").open() end
 _G.logseq_sl_backlinks = function() require("logseq.backlinks").toggle() end
 _G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
+-- journal navigation
+_G.logseq_nav_today     = function() require("logseq.journal_nav").open_today() end
+_G.logseq_nav_tomorrow  = function() require("logseq.journal_nav").open_tomorrow() end
+_G.logseq_nav_yesterday = function() require("logseq.journal_nav").open_yesterday() end
 -- statusline buttons (editing/cursor)
 _G.logseq_sl_follow    = function() require("logseq.links").follow() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
@@ -25,6 +30,23 @@ _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
 _G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
 _G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
 
+local function is_journal_path(filepath)
+  local cfg   = require("logseq.config")
+  local vault = cfg.current.vault_path
+  if not vault or vault == "" then return false end
+  local jdir = util.normalize(vault .. "/journals")
+  return util.normalize(filepath):sub(1, #jdir + 1) == jdir .. "/"
+end
+
+--- Decode a filename to a human-readable display title.
+--- Applies full decode (URL-encoding, namespace separators) then converts
+--- digit_digit date separators to dashes so 2026_03_23 → 2026-03-23.
+local function decode_display_title(filename)
+  local name = util.decode_filename(filename)   -- strips .md, ___→/, %XX→char
+  name = name:gsub("(%d)_(%d)", "%1-%2")        -- 2026_03_23 → 2026-03-23
+  return name
+end
+
 function M.winbar()
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
   local bufnr = vim.api.nvim_win_get_buf(winid)
@@ -33,11 +55,21 @@ function M.winbar()
   local name = vim.fn.fnamemodify(filepath, ":t")
   if name == "" then return "" end
 
-  local title = name:gsub("%.md$", ""):gsub("---", "/")
-  -- Escape any literal % in the title so statusline doesn't mis-interpret them
-  local safe_title = title:gsub("%%", "%%%%")
+  local safe_title = decode_display_title(name):gsub("%%", "%%%%")
 
   local wb = (require("logseq.config").current.winbar_buttons) or {}
+
+  -- Nav prefix: ◀ 📅 ▶ for journals, just 📅 for regular pages
+  local nav_prefix
+  if is_journal_path(filepath) then
+    nav_prefix = "%#Comment#"
+      .. "%@v:lua.logseq_nav_yesterday@◀%X "
+      .. "%@v:lua.logseq_nav_today@📅%X "
+      .. "%@v:lua.logseq_nav_tomorrow@▶%X"
+      .. "%#Normal# "
+  else
+    nav_prefix = "%#Comment#%@v:lua.logseq_nav_today@📅%X%#Normal# "
+  end
 
   -- Title + optional rename hint
   local title_btn
@@ -69,18 +101,18 @@ function M.winbar()
     or ""
 
   if M._saved_buffers[bufnr] then
-    return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. nav_prefix .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. nav_prefix .. title_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
     end
   end
 
-  return " " .. title_btn .. nav_btns .. close_btn
+  return " " .. nav_prefix .. title_btn .. nav_btns .. close_btn
 end
 
 function M.trigger_save_indicator(bufnr)
@@ -270,6 +302,20 @@ function M.setup_buf(bufnr)
     end, { buffer = bufnr, desc = "Logseq Search Pages" })
   end
 
+  -- Favorites picker (ff) and recent picker (rr)
+  vim.keymap.set("n", "ff", function()
+    require("logseq.favorites").open()
+  end, { buffer = bufnr, nowait = true, desc = "Logseq Favorites" })
+
+  vim.keymap.set("n", "rr", function()
+    require("logseq.recent").open()
+  end, { buffer = bufnr, nowait = true, desc = "Logseq Recent" })
+
+  -- Toggle favorite for the current page
+  vim.keymap.set("n", "<leader>f", function()
+    require("logseq.favorites").toggle_current()
+  end, { buffer = bufnr, desc = "Logseq Toggle Favorite" })
+
   -- Save indicator
   vim.api.nvim_create_autocmd("BufWritePost", {
     buffer = bufnr,
@@ -281,10 +327,15 @@ function M.setup_buf(bufnr)
   setup_syntax(bufnr)
   setup_highlights()
 
-  -- Active-event highlight on buffer enter
+  -- Active-event highlight + OS window title on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
     buffer = bufnr,
     callback = function()
+      vim.opt.title = true
+      local fn = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t")
+      if fn ~= "" then
+        vim.opt.titlestring = decode_display_title(fn)
+      end
       pcall(function() require("logseq.reminders").update_highlight() end)
     end,
   })
