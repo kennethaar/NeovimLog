@@ -151,10 +151,9 @@ function M.tabline()
     close_btn = "%#Comment#%@v:lua.logseq_close_win@ :wq❌ %X"
   end
 
-  -- rename left, label left-adjacent, close right-aligned; separator row below
+  -- rename left, label left-adjacent, close right-aligned
   return "%#TabLine#" .. rename_btn .. " %#TabLineSel#" .. safe_label .. "%#TabLine# %="
-       .. close_btn
-       .. "\n%#StatusLine#%="
+       .. close_btn .. "%#TabLineFill#"
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
