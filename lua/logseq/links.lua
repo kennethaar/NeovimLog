@@ -86,21 +86,49 @@ local function open_or_create(filepath, display_name)
   end)
 end
 
+--- Scan a directory for a .md file whose decoded name matches page_name.
+--- Returns the full path, or nil if not found.
+---@param dir string
+---@param page_name string
+---@return string|nil
+local function scan_for_page(dir, page_name)
+  for _, file in ipairs(vim.fn.glob(dir .. "/*.md", true, true)) do
+    local basename = vim.fn.fnamemodify(file, ":t")
+    if M.filename_to_page(basename) == page_name then
+      return file
+    end
+  end
+end
+
 --- Follow a [[wikilink]] — tries pages/ then journals/, creates if missing.
 local function follow_wikilink(vault, value)
-  local filepath = vault .. "/pages/" .. M.page_to_filename(value)
+  local pages_dir = vault .. "/pages"
+  local filepath = pages_dir .. "/" .. M.page_to_filename(value)
+
+  -- Direct encoded lookup.
   if vim.fn.filereadable(filepath) == 1 then
     vim.cmd("edit " .. vim.fn.fnameescape(filepath))
     return
   end
 
+  -- Scan fallback: handles files created by Logseq or with a different encoding.
+  if vim.fn.isdirectory(pages_dir) == 1 then
+    local found = scan_for_page(pages_dir, value)
+    if found then
+      vim.cmd("edit " .. vim.fn.fnameescape(found))
+      return
+    end
+  end
+
+  -- Try journal entries (direct, dash↔underscore variants, then digit-based fuzzy match).
   local journal_dir = vault .. "/journals"
   if vim.fn.isdirectory(journal_dir) == 1 then
-    local tried = {}
-    for _, name in ipairs({ value .. ".md", value:gsub("%-", "_") .. ".md", value:gsub("_", "-") .. ".md" }) do
-      if not tried[name] then
-        tried[name] = true
-        local p = journal_dir .. "/" .. name
+    local variants = { value, value:gsub("%-", "_"), value:gsub("_", "-") }
+    local seen = {}
+    for _, name in ipairs(variants) do
+      if not seen[name] then
+        seen[name] = true
+        local p = journal_dir .. "/" .. name .. ".md"
         if vim.fn.filereadable(p) == 1 then
           vim.cmd("edit " .. vim.fn.fnameescape(p))
           return
@@ -110,8 +138,9 @@ local function follow_wikilink(vault, value)
 
     local digits = value:gsub("[^%d]", "")
     if #digits >= 8 then
-      local matches = vim.fn.glob(journal_dir
-        .. "/*" .. digits:sub(1,4) .. "*" .. digits:sub(5,6) .. "*" .. digits:sub(7,8) .. "*.md", true, true)
+      local pattern = journal_dir
+        .. "/*" .. digits:sub(1, 4) .. "*" .. digits:sub(5, 6) .. "*" .. digits:sub(7, 8) .. "*.md"
+      local matches = vim.fn.glob(pattern, true, true)
       if #matches == 1 then
         vim.cmd("edit " .. vim.fn.fnameescape(matches[1]))
         return
