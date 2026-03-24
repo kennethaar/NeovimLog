@@ -435,6 +435,7 @@ function M.setup_buf(bufnr)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
   vim.opt_local.statusline = M.build_statusline()
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
+  M.enable_tabline()
 
   local km = require("logseq.config").current.keymaps
   vim.keymap.set("n", km.help or "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
