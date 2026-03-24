@@ -125,10 +125,19 @@ local function content_matches(haystack, needles)
   return false
 end
 
-local function list_md_files(dirs)
+local function list_md_files(dirs, uv)
   local files = {}
   for _, dir in ipairs(dirs) do
-    vim.list_extend(files, vim.fn.glob(dir .. "/*.md", true, true))
+    local handle = uv.fs_scandir(dir)
+    if handle then
+      while true do
+        local name, ftype = uv.fs_scandir_next(handle)
+        if not name then break end
+        if name:sub(-3) == ".md" and ftype ~= "directory" then
+          table.insert(files, dir .. "/" .. name)
+        end
+      end
+    end
   end
   return files
 end
@@ -156,12 +165,12 @@ local function load_file(filepath, norm, needles, uv)
     return cached.lines, cached.parsed
   end
 
-  local f = io.open(filepath, "r")
-  if not f then return nil end
-  local content = f:read("*a")
-  f:close()
+  local fd = uv.fs_open(filepath, "r", 438)
+  if not fd then return nil end
+  local content = stat and uv.fs_read(fd, stat.size, 0) or nil
+  uv.fs_close(fd)
 
-  if not content_matches(content, needles) then return nil end
+  if not content or not content_matches(content, needles) then return nil end
 
   local lines = vim.split(content, "\n", { plain = true })
   if #lines > 0 and lines[#lines] == "" then table.remove(lines) end
@@ -212,13 +221,13 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
 
   local norm_exclude = exclude_file and util.normalize(exclude_file) or nil
   local needles   = build_needles(page_name)
-  local all_files = list_md_files(search_dirs)
+  local uv        = vim.uv or vim.loop
+  local all_files = list_md_files(search_dirs, uv)
   local results   = {}
 
   if #all_files == 0 then return on_complete({}) end
 
-  local i  = 1
-  local uv = vim.uv or vim.loop
+  local i = 1
 
   local function process_chunk()
     local chunk_end = math.min(i + 49, #all_files)
@@ -235,7 +244,7 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
 
     if chunk_end < #all_files then
       i = chunk_end + 1
-      vim.defer_fn(process_chunk, 5)
+      vim.schedule(process_chunk)
     else
       table.sort(results, function(a, b) return a.source_page < b.source_page end)
       on_complete(results)
