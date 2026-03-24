@@ -5,11 +5,12 @@ local M = {}
 
 M._state = {
   saved_buffers = {},
-  highlights_set = false,
   tabline_active = false,
   orig_showtabline = nil,
   orig_tabline = nil,
 }
+
+local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
 
 local BLOCK_NS = vim.api.nvim_create_namespace("logseq_block_ui")
 
@@ -80,76 +81,59 @@ function M.winbar()
   local bufnr = vim.api.nvim_win_get_buf(winid)
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   local name = vim.fn.fnamemodify(filepath, ":t")
-  
+
   if name == "" then return "" end
 
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
-  -- Left: journal day navigation
-  local left_btn = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
-
-  -- Right-side nav buttons
   local nav_parts = {}
-  if wb.search ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
+  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
   if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
-  if wb.queries ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
-  if wb.calsync ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
-  if wb.ns_tree ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
-  
-  local nav_btns = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
+  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
+  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
+  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+
+  local nav_btns  = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
   local close_btn = wb.close ~= false and "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#" or ""
 
-  -- Fast path for save indicator
   if M._state.saved_buffers[bufnr] then
-    return " " .. left_btn .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. WINBAR_LEFT .. "  ✓ Saved" .. nav_btns .. close_btn
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. left_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. WINBAR_LEFT .. "%<  │  " .. event_text .. nav_btns .. close_btn
     end
   end
-  
-  return " " .. left_btn .. nav_btns .. close_btn
+
+  return " " .. WINBAR_LEFT .. nav_btns .. close_btn
 end
 
 -- ── Page/Journal Tabline (above winbar) ──────────────────────────────
-
---- Format a journal filename date (e.g. "2026_03_24") using the logseq date format.
-local function format_journal_date(filename, vault_path)
-  return require("logseq.util").format_journal_date(filename, vault_path)
-end
 
 --- Build the tabline string shown above the winbar.
 function M.tabline()
   local bufnr = vim.api.nvim_get_current_buf()
   if not vim.b[bufnr].logseq_active then return "" end
 
-  local ok_cfg, config = pcall(require, "logseq.config")
-  if not ok_cfg then return "" end
+  local config = require("logseq.config")
   if (config.current.winbar_buttons or {}).page_tabline == false then return "" end
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if filepath == "" then return "" end
 
-  local ok_util, util = pcall(require, "logseq.util")
-  if not ok_util then return "" end
-
+  local util         = require("logseq.util")
   local vault        = config.current.vault_path or ""
   local norm_path    = util.normalize(filepath)
   local journals_dir = util.normalize(vault .. "/journals")
   local filename     = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", "")
 
-  local icon, kind, label
+  local label
   if norm_path:find(journals_dir, 1, true) then
-    icon  = "📅"
-    kind  = "journal"
-    label = format_journal_date(filename, vault) or util.decode_filename(filename)
+    label = util.format_journal_date(filename, vault) or util.decode_filename(filename)
   else
-    icon  = "📄"
-    kind  = "page"
     label = util.decode_filename(filename)
   end
 
@@ -179,15 +163,13 @@ end
 
 function M.trigger_save_indicator(bufnr)
   M._state.saved_buffers[bufnr] = true
-  vim.cmd("redrawstatus") -- Prevent screen flicker
+  vim.cmd("redrawstatus")
 
   vim.defer_fn(function()
     M._state.saved_buffers[bufnr] = nil
-    vim.schedule(function()
-      if vim.api.nvim_buf_is_valid(bufnr) then
-        vim.cmd("redrawstatus")
-      end
-    end)
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      vim.cmd("redrawstatus")
+    end
   end, 1500)
 end
 
@@ -197,33 +179,42 @@ end
 
 -- ── Page Renaming ─────────────────────────────────────────────────────
 
+--- Rewrite [[old_name]] → [[new_name]] in a single file.
+--- Returns true if the file was changed.
+local function rewrite_file_links(file, old_pat, new_link)
+  local rf, err_r = io.open(file, "r")
+  if not rf then
+    vim.notify("Could not read " .. file .. ": " .. (err_r or "unknown"), vim.log.levels.WARN)
+    return false
+  end
+  local content = rf:read("*a")
+  rf:close()
+
+  local new_content = content:gsub(old_pat, new_link)
+  if new_content == content then return false end
+
+  local wf, err_w = io.open(file, "w")
+  if not wf then
+    vim.notify("Could not write " .. file .. ": " .. (err_w or "unknown"), vim.log.levels.WARN)
+    return false
+  end
+  wf:write(new_content)
+  wf:close()
+  return true
+end
+
 --- Replace all [[old_name]] → [[new_name]] in every .md file under vault.
 --- Returns the count of files changed.
 local function rewrite_links(vault, old_name, new_name)
-  -- Properly escape Lua pattern to prevent crashes on hyphens/parentheses
-  local old_pat = "%[%[" .. escape_lua_pattern(old_name) .. "%]%]"
+  local old_pat  = "%[%[" .. escape_lua_pattern(old_name) .. "%]%]"
   local new_link = "[[" .. new_name .. "]]"
-  local updated = 0
+  local updated  = 0
 
   for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
     if vim.fn.isdirectory(dir) == 1 then
       for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
-        local f = io.open(file, "r")
-        if f then
-          local content = f:read("*a")
-          f:close()
-
-          if content then
-            local new_content = content:gsub(old_pat, new_link)
-            if new_content ~= content then
-              local fw = io.open(file, "w")
-              if fw then
-                fw:write(new_content)
-                fw:close()
-                updated = updated + 1
-              end
-            end
-          end
+        if rewrite_file_links(file, old_pat, new_link) then
+          updated = updated + 1
         end
       end
     end
@@ -252,18 +243,19 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
     if not new_name or new_name == "" or new_name == old_name then return end
 
     local new_filepath = pages_dir .. "/" .. util.encode_filename(new_name)
-    local updated = rewrite_links(vault, old_name, new_name)
 
     if vim.bo[bufnr].modified then
       vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
     end
 
+    -- Rename the file first; only rewrite links if that succeeds.
     local ok, err = os.rename(filepath, new_filepath)
     if not ok then
       vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
       return
     end
 
+    local updated = rewrite_links(vault, old_name, new_name)
     vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
     vim.api.nvim_buf_delete(bufnr, { force = true })
     vim.notify(string.format("Renamed to '%s'. %d file(s) updated.", new_name, updated), vim.log.levels.INFO)
@@ -381,7 +373,7 @@ function M.open_help()
   vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true, silent = true })
 end
 
--- ── Syntax Setup ─────────────────────────────────────────────────────
+-- ── Block Display ─────────────────────────────────────────────────────
 
 --- Refresh virtual empty lines above every root-level block (indent = 0).
 local function update_block_virt_lines(bufnr)
@@ -405,10 +397,8 @@ local function setup_syntax(bufnr)
     pcall(vim.cmd, [[syntax match LogseqUID /^\s*id::.*$/ conceal]])
 
     -- Calendar time slots
-    pcall(function()
-      vim.fn.matchadd("LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
-      vim.fn.matchadd("LogseqTime", [[(Heldags)]])
-    end)
+    pcall(vim.fn.matchadd, "LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
+    pcall(vim.fn.matchadd, "LogseqTime", [[(Heldags)]])
 
     -- Conceal [[wikilinks]]
     pcall(vim.cmd, [[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
@@ -431,26 +421,28 @@ local function setup_syntax(bufnr)
   end)
 end
 
+local _hl_autocmd_set = false
+
 local function setup_highlights()
-  -- Only inject global highlights once per session
-  if M._state.highlights_set then return end
-  M._state.highlights_set = true
+  vim.api.nvim_set_hl(0, "LogseqTime",         { fg = "#e06c60", ctermfg = 167 })
+  vim.api.nvim_set_hl(0, "LogseqLink",         { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqBlockRef",     { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true, italic = true } })
+  vim.api.nvim_set_hl(0, "LogseqTag",          { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrike",       { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrikeDelim",  { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqLinkDelim",    { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim",{ link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqRootBlock",    { bold = true })
+  vim.api.nvim_set_hl(0, "LogseqLevel2Block",  { italic = true })
+  vim.api.nvim_set_hl(0, "LogseqStatusLine",   { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
 
-  vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60", ctermfg = 167 })
-  vim.api.nvim_set_hl(0, "LogseqLink", { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqBlockRef", { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqTag", { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrike", { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrikeDelim", { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqLinkDelim", { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim", { link = "Conceal" })
-
-  -- Block-level formatting
-  vim.api.nvim_set_hl(0, "LogseqRootBlock",   { bold = true })
-  vim.api.nvim_set_hl(0, "LogseqLevel2Block", { italic = true })
-  
-  -- Custom dark statusline group used via winhl (survives colorscheme reloads)
-  vim.api.nvim_set_hl(0, "LogseqStatusLine", { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
+  if not _hl_autocmd_set then
+    _hl_autocmd_set = true
+    vim.api.nvim_create_autocmd("ColorScheme", {
+      group    = vim.api.nvim_create_augroup("LogseqHighlights", { clear = true }),
+      callback = setup_highlights,
+    })
+  end
 end
 
 --- Build the statusline string respecting bottombar_buttons visibility config.
