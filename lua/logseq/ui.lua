@@ -31,6 +31,37 @@ _G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
 _G.logseq_sl_nstree    = function() require("logseq.namespace_tree").toggle() end
 
+-- Journal day navigation
+local function _open_journal_day(offset)
+  local config = require("logseq.config").current
+  local vault  = config.vault_path or ""
+  local fmt    = config.journal_format or "%Y_%m_%d"
+  local dir    = vim.fs.joinpath(vault, "journals")
+
+  -- Try to parse current buffer's date; fall back to today
+  local filepath = vim.api.nvim_buf_get_name(0)
+  local stem     = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", "")
+  local y, mo, d = stem:match("^(%d%d%d%d)[_%-](%d%d)[_%-](%d%d)")
+  local base_ts
+  if y then
+    base_ts = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 })
+  else
+    base_ts = os.time()
+  end
+
+  local target_ts   = base_ts + offset * 86400
+  local target_name = os.date(fmt, target_ts) .. ".md"
+  local target_path = vim.fs.joinpath(dir, target_name)
+
+  if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
+  if vim.bo.modified then vim.cmd("write") end
+  vim.cmd("edit " .. vim.fn.fnameescape(target_path))
+end
+
+_G.logseq_sl_prev_day = function() _open_journal_day(-1) end
+_G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
+_G.logseq_sl_next_day = function() _open_journal_day(1) end
+
 -- Statusline buttons (editing/cursor)
 _G.logseq_sl_follow    = function() require("logseq.links").follow() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
@@ -50,18 +81,10 @@ function M.winbar()
   
   if name == "" then return "" end
 
-  local title = name:gsub("%.md$", ""):gsub("---", "/")
-  -- Escape any literal % in the title so statusline doesn't mis-interpret them
-  local safe_title = title:gsub("%%", "%%%%")
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
-  -- Title + optional rename hint
-  local title_btn
-  if wb.rename ~= false then
-    title_btn = "%@v:lua.logseq_rename_page@" .. safe_title .. " %#Comment#rn📝%#Normal#%X"
-  else
-    title_btn = safe_title
-  end
+  -- Left: journal day navigation
+  local left_btn = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
 
   -- Right-side nav buttons
   local nav_parts = {}
@@ -76,18 +99,18 @@ function M.winbar()
 
   -- Fast path for save indicator
   if M._state.saved_buffers[bufnr] then
-    return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. left_btn .. "  ✓ Saved" .. nav_btns .. close_btn
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. left_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
     end
   end
   
-  return " " .. title_btn .. nav_btns .. close_btn
+  return " " .. left_btn .. nav_btns .. close_btn
 end
 
 -- ── Page/Journal Tabline (above winbar) ──────────────────────────────
@@ -139,8 +162,9 @@ function M.tabline()
   end
 
   local safe_label = label:gsub("%%", "%%%%")
+  local rename_btn = "%@v:lua.logseq_rename_page@rn📝%X"
   return "%#TabLineSel# " .. icon .. "  " .. safe_label
-       .. " %#TabLine#%=%#Comment#[" .. kind .. "] "
+       .. " %#TabLine#%=%#Comment#[" .. kind .. "]  " .. rename_btn .. " "
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
