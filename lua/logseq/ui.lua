@@ -87,28 +87,27 @@ function M.winbar()
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
   local nav_parts = {}
-  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
-  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
-  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
-  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
-  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@  ^k🔍  %X") end
+  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@  b🖇️  %X") end
+  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@  q❔  %X") end
+  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@  c🗓️  %X") end
+  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@  n🌳  %X") end
 
-  local nav_btns  = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
-  local close_btn = wb.close ~= false and "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#" or ""
+  local nav_btns = "%=%#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
 
   if M._state.saved_buffers[bufnr] then
-    return " " .. WINBAR_LEFT .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. WINBAR_LEFT .. "  ✓ Saved" .. nav_btns
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. WINBAR_LEFT .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. WINBAR_LEFT .. "%<  │  " .. event_text .. nav_btns
     end
   end
 
-  return " " .. WINBAR_LEFT .. nav_btns .. close_btn
+  return " " .. WINBAR_LEFT .. nav_btns
 end
 
 -- ── Page/Journal Tabline (above winbar) ──────────────────────────────
@@ -138,11 +137,14 @@ function M.tabline()
   end
 
   local safe_label = label:gsub("%%", "%%%%")
-  local rename_btn = "%@v:lua.logseq_rename_page@ rn📝 %X"
-  -- rename button on left, filename centered via twin %=, blank separator row
+  local wb = (config.current.winbar_buttons) or {}
+  local rename_btn  = "%@v:lua.logseq_rename_page@ 📝rn %X"
+  local close_btn   = wb.close ~= false and "%#Comment#%@v:lua.logseq_close_win@ :wq❌ %X%#TabLine#" or ""
+  -- rename on left, filename centered, close on right; separator row below
   return "%#TabLine#" .. rename_btn
        .. "%=%#TabLineSel# " .. safe_label .. " %#TabLine#%="
-       .. "\n "
+       .. close_btn
+       .. "\n%#WinSeparator#%="
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
