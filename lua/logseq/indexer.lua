@@ -35,7 +35,9 @@ function M.page_name_from_file(filepath)
   local rel = norm_file:sub(#norm_vault + 2)
 
   local journal_name = rel:match("^journals/(.+)%.md$")
-  if journal_name then return journal_name end
+  if journal_name then
+    return util.format_journal_date(journal_name, vault) or journal_name
+  end
 
   local page_name = rel:match("^pages/(.+)%.md$")
   if page_name then return util.decode_filename(page_name) end
