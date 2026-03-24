@@ -6,6 +6,9 @@ local M = {}
 M._state = {
   saved_buffers = {},
   highlights_set = false,
+  tabline_active = false,
+  orig_showtabline = nil,
+  orig_tabline = nil,
 }
 
 -- ── Helpers ───────────────────────────────────────────────────────────
@@ -28,6 +31,37 @@ _G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
 _G.logseq_sl_nstree    = function() require("logseq.namespace_tree").toggle() end
 
+-- Journal day navigation
+local function _open_journal_day(offset)
+  local config = require("logseq.config").current
+  local vault  = config.vault_path or ""
+  local fmt    = config.journal_format or "%Y_%m_%d"
+  local dir    = vim.fs.joinpath(vault, "journals")
+
+  -- Try to parse current buffer's date; fall back to today
+  local filepath = vim.api.nvim_buf_get_name(0)
+  local stem     = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", "")
+  local y, mo, d = stem:match("^(%d%d%d%d)[_%-](%d%d)[_%-](%d%d)")
+  local base_ts
+  if y then
+    base_ts = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 })
+  else
+    base_ts = os.time()
+  end
+
+  local target_ts   = base_ts + offset * 86400
+  local target_name = os.date(fmt, target_ts) .. ".md"
+  local target_path = vim.fs.joinpath(dir, target_name)
+
+  if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
+  if vim.bo.modified then vim.cmd("write") end
+  vim.cmd("edit " .. vim.fn.fnameescape(target_path))
+end
+
+_G.logseq_sl_prev_day = function() _open_journal_day(-1) end
+_G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
+_G.logseq_sl_next_day = function() _open_journal_day(1) end
+
 -- Statusline buttons (editing/cursor)
 _G.logseq_sl_follow    = function() require("logseq.links").follow() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
@@ -47,18 +81,10 @@ function M.winbar()
   
   if name == "" then return "" end
 
-  local title = name:gsub("%.md$", ""):gsub("---", "/")
-  -- Escape any literal % in the title so statusline doesn't mis-interpret them
-  local safe_title = title:gsub("%%", "%%%%")
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
-  -- Title + optional rename hint
-  local title_btn
-  if wb.rename ~= false then
-    title_btn = "%@v:lua.logseq_rename_page@" .. safe_title .. " %#Comment#rn📝%#Normal#%X"
-  else
-    title_btn = safe_title
-  end
+  -- Left: journal day navigation
+  local left_btn = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
 
   -- Right-side nav buttons
   local nav_parts = {}
@@ -73,18 +99,136 @@ function M.winbar()
 
   -- Fast path for save indicator
   if M._state.saved_buffers[bufnr] then
-    return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. left_btn .. "  ✓ Saved" .. nav_btns .. close_btn
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. title_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. left_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
     end
   end
   
-  return " " .. title_btn .. nav_btns .. close_btn
+  return " " .. left_btn .. nav_btns .. close_btn
+end
+
+-- ── Page/Journal Tabline (above winbar) ──────────────────────────────
+
+--- Read :journal/page-title-format from logseq's config.edn, or nil if not found.
+local function read_logseq_journal_fmt(vault_path)
+  local path = vault_path .. "/.logseq/config.edn"
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local content = f:read("*a")
+  f:close()
+  return content:match(':journal/page%-title%-format%s+"([^"]+)"')
+end
+
+--- Apply a logseq/Java-style date format string to a timestamp.
+local function apply_logseq_fmt(fmt, ts)
+  local day  = tonumber(os.date("%d", ts))
+  local mon  = tonumber(os.date("%m", ts))
+  local dow  = tonumber(os.date("%w", ts)) + 1
+
+  local function ord(n)
+    if n == 11 or n == 12 or n == 13 then return n .. "th" end
+    local r = n % 10
+    if r == 1 then return n .. "st" elseif r == 2 then return n .. "nd"
+    elseif r == 3 then return n .. "rd" else return n .. "th" end
+  end
+
+  local ML = {"January","February","March","April","May","June","July","August","September","October","November","December"}
+  local MS = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"}
+  local DL = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"}
+  local DS = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"}
+
+  -- Ordered token table (longest/most-specific first to avoid partial matches)
+  local tokens = {
+    {"MMMM", ML[mon]}, {"MMM", MS[mon]}, {"MM", string.format("%02d", mon)},
+    {"EEEE", DL[dow]}, {"EEE", DS[dow]},
+    {"yyyy", os.date("%Y", ts)}, {"yy", os.date("%y", ts)},
+    {"do", ord(day)}, {"dd", string.format("%02d", day)}, {"d", tostring(day)},
+  }
+
+  local out, i = {}, 1
+  while i <= #fmt do
+    local matched = false
+    for _, tok in ipairs(tokens) do
+      if fmt:sub(i, i + #tok[1] - 1) == tok[1] then
+        out[#out + 1] = tok[2]
+        i = i + #tok[1]
+        matched = true
+        break
+      end
+    end
+    if not matched then out[#out + 1] = fmt:sub(i, i); i = i + 1 end
+  end
+  return table.concat(out)
+end
+
+--- Format a journal filename date (e.g. "2026_03_24") using the logseq date format.
+local function format_journal_date(filename, vault_path)
+  local y, m, d = filename:match("^(%d%d%d%d)[_%-](%d%d)[_%-](%d%d)")
+  if not y then return nil end
+  local ts  = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+  local fmt = (vault_path and read_logseq_journal_fmt(vault_path)) or "yyyy-MM-dd"
+  return apply_logseq_fmt(fmt, ts)
+end
+
+--- Build the tabline string shown above the winbar.
+function M.tabline()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not vim.b[bufnr].logseq_active then return "" end
+
+  local ok_cfg, config = pcall(require, "logseq.config")
+  if not ok_cfg then return "" end
+  if (config.current.winbar_buttons or {}).page_tabline == false then return "" end
+
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then return "" end
+
+  local ok_util, util = pcall(require, "logseq.util")
+  if not ok_util then return "" end
+
+  local vault        = config.current.vault_path or ""
+  local norm_path    = util.normalize(filepath)
+  local journals_dir = util.normalize(vault .. "/journals")
+  local filename     = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", "")
+
+  local icon, kind, label
+  if norm_path:find(journals_dir, 1, true) then
+    icon  = "📅"
+    kind  = "journal"
+    label = format_journal_date(filename, vault) or util.decode_filename(filename)
+  else
+    icon  = "📄"
+    kind  = "page"
+    label = util.decode_filename(filename)
+  end
+
+  local safe_label = label:gsub("%%", "%%%%")
+  local rename_btn = "%@v:lua.logseq_rename_page@rn📝%X"
+  return "%#TabLineSel# " .. safe_label
+       .. " %#TabLine#%=" .. rename_btn .. " "
+end
+
+--- Activate the custom tabline (called when entering a logseq buffer).
+function M.enable_tabline()
+  if M._state.tabline_active then return end
+  M._state.tabline_active  = true
+  M._state.orig_showtabline = vim.o.showtabline
+  M._state.orig_tabline     = vim.o.tabline
+  vim.opt.showtabline = 2
+  vim.opt.tabline     = "%{%v:lua.require('logseq.ui').tabline()%}"
+end
+
+--- Restore the original tabline (called when leaving all logseq buffers).
+function M.disable_tabline()
+  if not M._state.tabline_active then return end
+  M._state.tabline_active = false
+  vim.opt.showtabline = M._state.orig_showtabline or 1
+  vim.opt.tabline     = M._state.orig_tabline     or ""
 end
 
 function M.trigger_save_indicator(bufnr)
@@ -237,6 +381,9 @@ function M.open_help()
     "   " .. k("help","hh") .. "   Show this help window",
     "   :LogseqConfig         Remap any hotkey or toggle UI buttons",
     "",
+    "  NOTE: The page/journal name bar above the winbar can be toggled",
+    "        via :LogseqConfig → winbar buttons → 📄/📅",
+    "",
     "  CONFIG UI KEYS  (inside :LogseqConfig window)",
     "   j / k                 Navigate items",
     "   <CR>                  Edit selected keymap",
@@ -358,6 +505,7 @@ function M.setup_buf(bufnr)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
   vim.opt_local.statusline = M.build_statusline()
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
+  M.enable_tabline()
 
   local km = require("logseq.config").current.keymaps
   vim.keymap.set("n", km.help or "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })
@@ -379,12 +527,27 @@ function M.setup_buf(bufnr)
   setup_syntax(bufnr)
   setup_highlights()
 
-  -- Active-event highlight on buffer enter
+  -- Active-event highlight + tabline on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
     group = grp,
     buffer = bufnr,
     callback = function()
+      M.enable_tabline()
       pcall(function() require("logseq.reminders").update_highlight() end)
+    end,
+  })
+
+  -- Restore tabline when leaving this buffer if no other logseq buffer is visible
+  vim.api.nvim_create_autocmd("BufLeave", {
+    group = grp,
+    buffer = bufnr,
+    callback = function()
+      vim.schedule(function()
+        local new_buf = vim.api.nvim_get_current_buf()
+        if not vim.b[new_buf].logseq_active then
+          M.disable_tabline()
+        end
+      end)
     end,
   })
 end
