@@ -87,11 +87,11 @@ function M.winbar()
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
   local nav_parts = {}
-  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@  ^k🔍  %X") end
-  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@  b🖇️  %X") end
-  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@  q❔  %X") end
-  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@  c🗓️  %X") end
-  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@  n🌳  %X") end
+  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ ^k🔍 %X") end
+  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ b🖇️ %X") end
+  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@ q❔ %X") end
+  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@ c🗓️ %X") end
+  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ n🌳 %X") end
 
   local nav_btns = ""
   if #nav_parts > 0 then
