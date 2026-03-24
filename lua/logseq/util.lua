@@ -6,24 +6,35 @@ local M = {}
 
 -- ── Path Normalization (audit #8) ─────────────────────────────────────
 
+--- Normalize a path: expand ~, resolve symlinks, standardize slashes, and handle OS case-sensitivity.
 ---@param p string|nil
 ---@return string
 function M.normalize(p)
   if not p or p == "" then return "" end
+  
   local resolved = vim.fn.resolve(vim.fn.expand(p)):gsub("\\", "/")
-  if vim.fn.has("win32") == 1 then resolved = resolved:lower() end
+  
+  -- Windows paths are case-insensitive, so we normalize to lowercase to prevent mismatch bugs
+  if vim.fn.has("win32") == 1 then 
+    resolved = resolved:lower() 
+  end
+  
+  -- Strip trailing slash for consistent directory comparisons
   return resolved:gsub("/$", "")
 end
 
---- Check if bufpath is inside vault_path with proper boundary check (audit #6, #7).
+--- Check if bufpath is safely inside vault_path.
 ---@param bufpath string
 ---@param vault_path string
 ---@return boolean
 function M.is_vault_file(bufpath, vault_path)
   if not vault_path or vault_path == "" then return false end
+  
   local norm_buf = M.normalize(bufpath)
   local norm_vault = M.normalize(vault_path)
-  return norm_buf:sub(1, #norm_vault + 1) == norm_vault .. "/"
+  
+  -- Use Neovim's native string matching instead of manual sub() math
+  return vim.startswith(norm_buf, norm_vault .. "/")
 end
 
 -- ── TODO States (audit #27) ──────────────────────────────────────────
@@ -40,23 +51,28 @@ M.active_todo_states = { "TODO", "DOING", "WAITING" }
 function M.decode_filename(filename)
   local name = filename:gsub("%.md$", "")
   name = name:gsub("___", "/")
+  
+  -- Decode percent-encoded characters
   name = name:gsub("%%(%x%x)", function(hex)
     return string.char(tonumber(hex, 16))
   end)
+  
   return name
 end
 
 --- Encode a page name to its on-disk filename.
 --- "BJJ/Techniques/Triangle" → "BJJ___Techniques___Triangle.md"
---- Special characters (spaces, colons, etc.) are percent-encoded to match
---- what decode_filename expects and to produce valid filenames on all platforms.
 ---@param page_name string
 ---@return string
 function M.encode_filename(page_name)
   return page_name
     :gsub("/", "___")
-    :gsub("([^%w_%-])", function(c) return string.format("%%%02X", c:byte()) end)
-    .. ".md"
+    -- CRITICAL FIX: Allow spaces (' ') and dots ('%.') to pass through unencoded.
+    -- Logseq natively preserves spaces in filenames. Encoding them to %20 breaks compatibility.
+    :gsub("([^%w_%-%. ])", function(c)
+      return string.format("%%%02X", c:byte())
+    end) .. ".md"
 end
 
 return M
+

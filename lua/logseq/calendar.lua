@@ -8,6 +8,8 @@ local M = {}
 -- ── Buffer manipulation ───────────────────────────────────────────────
 
 local function apply_events_to_buffer(buf, events)
+  if not vim.api.nvim_buf_is_valid(buf) then return end
+
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local cal_start_idx = nil
 
@@ -19,6 +21,7 @@ local function apply_events_to_buffer(buf, events)
   end
 
   if not cal_start_idx then
+    -- Append header if missing
     vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "- # Calendar" })
     cal_start_idx = #lines + 2
     lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -107,6 +110,7 @@ local function apply_events_to_buffer(buf, events)
     end
   end
 
+  -- 0-indexed API update
   vim.api.nvim_buf_set_lines(buf, cal_start_idx, cal_end_idx - 1, false, new_calendar_lines)
 end
 
@@ -118,7 +122,8 @@ function M.sync(force)
   local cfg = require("logseq.config").current
 
   local today_filename = os.date(cfg.journal_format) .. ".md"
-  local today_filepath = cfg.vault_path .. "/journals/" .. today_filename
+  -- Use joinpath to prevent double-slash issues
+  local today_filepath = vim.fs.joinpath(cfg.vault_path, "journals", today_filename)
 
   local norm_current = util.normalize(current_file)
   local norm_today = util.normalize(today_filepath)
@@ -134,88 +139,86 @@ function M.sync(force)
   -- URL check
   local urls = cfg.calendar_urls
   if not urls or #urls == 0 then
-    vim.schedule(function()
-      local function ask_for_url(count)
-        local prompt_msg = count == 0
-          and "No calendars. Paste ICS URL (empty to cancel): "
-          or string.format("Saved %d! Paste another URL (empty to sync): ", count)
-
-        vim.ui.input({ prompt = prompt_msg }, function(input)
-          if not input or input == "" then
-            if count > 0 then
-              vim.notify(string.format("[logseq.nvim] %d calendars saved! Starting sync...", count), vim.log.levels.INFO)
-              M.sync(force)
-            else
-              vim.notify("[logseq.nvim] Sync aborted. No URL provided.", vim.log.levels.WARN)
-            end
-            return
-          end
-
-          if require("logseq.config").add_calendar_url(input) then
-            ask_for_url(count + 1)
-          else
-            vim.notify("[logseq.nvim] URL already exists or failed to save.", vim.log.levels.WARN)
-            ask_for_url(count)
-          end
-        end)
-      end
-      ask_for_url(0)
-    end)
+    -- Only prompt if the user explicitly called the command. Don't prompt on BufReadPost.
+    if force then
+      vim.cmd("LogseqCalAdd")
+    end
     return
   end
 
   -- Python check
   local py_bin = vim.fn.executable("python3") == 1 and "python3" or "python"
   if vim.fn.executable(py_bin) == 0 then
-    vim.notify("[logseq.nvim] Python is required for calendar sync.", vim.log.levels.ERROR)
+    if force then vim.notify("[logseq.nvim] Python is required for calendar sync.", vim.log.levels.ERROR) end
     return
   end
 
-  local py_script_path = vim.fn.resolve(vim.fn.expand(vim.fn.stdpath("config") .. "/lua/logseq/ical_parser.py"))
+  -- Safely resolve script path regardless of plugin manager
+  local py_script_paths = vim.api.nvim_get_runtime_file("lua/logseq/ical_parser.py", false)
+  if #py_script_paths == 0 then
+    vim.notify("[logseq.nvim] Could not locate ical_parser.py", vim.log.levels.ERROR)
+    return
+  end
+  local py_script_path = py_script_paths[1]
 
-  if is_today_journal then
+  if is_today_journal and force then
     vim.notify("[logseq.nvim] Fetching calendar data...", vim.log.levels.INFO)
   end
 
   local urls_json = vim.json.encode(urls)
+  local stdout_output = {}
+  local stderr_output = {}
 
+  -- Detangled and fixed jobstart block
   vim.fn.jobstart({ py_bin, py_script_path, urls_json }, {
     stdout_buffered = true,
     stderr_buffered = true,
     on_stdout = function(_, data)
-      if not data or not data[1] or data[1] == "" then return end
-
-      local ok, events = pcall(vim.json.decode, table.concat(data, ""))
-      if not ok or not events then
-        vim.schedule(function() vim.notify("Failed reading valid JSON from Python.", vim.log.levels.ERROR) end)
-        return
+      if data then
+        for _, line in ipairs(data) do table.insert(stdout_output, line) end
       end
-
-      vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(target_bufnr) then return end
-
-        apply_events_to_buffer(target_bufnr, events)
-
-        local rok, reminders = pcall(require, "logseq.reminders")
-        if rok then reminders.schedule(events) end
-
-        if is_today_journal then
-          vim.notify("[logseq.nvim] Calendar synced successfully!", vim.log.levels.INFO)
-        end
-      end)
     end,
     on_stderr = function(_, data)
-      local err_str = table.concat(data, "\n")
-      if err_str:match("%S") then
-        vim.schedule(function() vim.notify("Python Error:\n" .. err_str, vim.log.levels.ERROR) end)
+      if data then
+        for _, line in ipairs(data) do table.insert(stderr_output, line) end
       end
     end,
     on_exit = function(_, code)
+      -- Handle errors first
       if code ~= 0 then
-        vim.schedule(function() vim.notify("[logseq.nvim] Python script exited with error code: " .. code, vim.log.levels.ERROR) end)
+        local err_str = table.concat(stderr_output, "\n")
+        if err_str:match("%S") then
+          vim.notify("Python Error:\n" .. err_str, vim.log.levels.ERROR)
+        else
+          vim.notify("[logseq.nvim] Python script exited with error code: " .. code, vim.log.levels.ERROR)
+        end
+        return
       end
+
+      -- If successful, process the data safely
+      local raw_json = table.concat(stdout_output, "")
+      if raw_json == "" then return end
+
+      local ok, events = pcall(vim.json.decode, raw_json)
+      if not ok or not events then
+        vim.notify("Failed reading valid JSON from Python.", vim.log.levels.ERROR)
+        return
+      end
+
+      -- Update UI on the main thread
+      vim.schedule(function()
+        apply_events_to_buffer(target_bufnr, events)
+        
+        local rok, reminders = pcall(require, "logseq.reminders")
+        if rok then reminders.schedule(events) end
+        
+        if is_today_journal and force then
+          vim.notify("[logseq.nvim] Calendar synced successfully!", vim.log.levels.INFO)
+        end
+      end)
     end,
   })
 end
 
 return M
+

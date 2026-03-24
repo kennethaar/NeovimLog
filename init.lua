@@ -1,51 +1,82 @@
+-- ============================================================================
+-- 1. General Settings
+-- ============================================================================
 vim.g.mapleader = ","
-vim.o.mouse = "a"  -- enable mouse/touch so winbar click targets work
+vim.opt.mouse = "a"
 
--- System clipboard (Windows / WSL / Wayland / X11 / Termux)
-require("clipboard").setup()
+-- Note: Native Neovim can usually handle clipboard via `vim.opt.clipboard = "unnamedplus"`.
+-- Wrapping your custom module in a pcall ensures Neovim doesn't break if it's missing.
+local ok_clip, clipboard = pcall(require, "clipboard")
+if ok_clip then clipboard.setup() end
 
+-- Grouping UI options
 vim.opt.wrap = true
 vim.opt.linebreak = true
 vim.opt.breakindent = true
 vim.opt.breakindentopt = "shift:2"
 
--- Machine-specific overrides: create local.lua (gitignored) to override anything.
--- Example local.lua:
---   return { vault_path = "D:/Notes/MyVault" }
-local local_ok, local_cfg = pcall(require, "local")
-local overrides = local_ok and local_cfg or {}
+-- ============================================================================
+-- 2. Vault Path Resolution
+-- ============================================================================
+local vault_path = nil
 
--- Resolve vault path: local.lua wins, then the stored path file (written by setup scripts),
--- then nil (which triggers interactive setup inside the plugin).
-local vault = overrides.vault_path
-if not vault then
+-- Check local overrides first
+local ok_local, local_cfg = pcall(require, "local")
+if ok_local and type(local_cfg) == "table" then
+  vault_path = local_cfg.vault_path
+end
+
+-- Fallback: Read stored path using native Neovim APIs
+if not vault_path then
   local vault_file = vim.fn.stdpath("data") .. "/logseq_vault"
-  local f = io.open(vault_file, "r")
-  if f then
-    vault = f:read("*l")
-    f:close()
+  if vim.fn.filereadable(vault_file) == 1 then
+    -- readfile() is safer and more idiomatic in Neovim than standard io.open
+    local lines = vim.fn.readfile(vault_file)
+    if lines and #lines > 0 then
+      vault_path = lines[1]
+    end
   end
 end
 
-require("logseq").setup({
-  vault_path = vault,  -- nil triggers interactive setup in Neovim if file not found
-})
+-- ============================================================================
+-- 3. Plugin Initialization
+-- ============================================================================
+local ok_logseq, logseq = pcall(require, "logseq")
+if ok_logseq then
+  logseq.setup({
+    vault_path = vault_path,
+  })
+else
+  -- Warn gracefully instead of crashing the startup
+  vim.notify("Logseq plugin not found or failed to load.", vim.log.levels.WARN)
+end
+
+-- ============================================================================
+-- 4. Autocommands
+-- ============================================================================
+-- Create an augroup to clear existing autocmds on config reload (:source %)
+local logseq_grp = vim.api.nvim_create_augroup("LogseqStartup", { clear = true })
 
 -- Start Logseq og kalender automatisk når du åpner nvim
 vim.api.nvim_create_autocmd("VimEnter", {
+  group = logseq_grp,
   callback = function()
-    if vim.fn.argc() == 0 then
-      vim.cmd("LogseqToday")
+    -- Only run if opening Neovim without specific file arguments
+    if vim.fn.argc() ~= 0 then return end
 
-      -- Vent et halvt sekund så fila er klar, og kjør kalenderen fra logseq-mappa
-      vim.defer_fn(function()
-        local ok, cal = pcall(require, "logseq.calendar")
-        if ok then
-          cal.sync()
-        else
-          print("FEIL: Fant ikke lua/logseq/calendar.lua!")
-        end
-      end, 500)
-    end
+    vim.cmd("LogseqToday")
+
+    -- Replace arbitrary 500ms wait with vim.schedule.
+    -- This queues the function to run as soon as the Neovim event loop is idle, 
+    -- ensuring the UI isn't blocked and avoiding race conditions.
+    vim.schedule(function()
+      local ok_cal, cal = pcall(require, "logseq.calendar")
+      if ok_cal then
+        cal.sync()
+      else
+        vim.notify("FEIL: Fant ikke lua/logseq/calendar.lua!", vim.log.levels.ERROR)
+      end
+    end)
   end,
 })
+

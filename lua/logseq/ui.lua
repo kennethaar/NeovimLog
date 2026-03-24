@@ -3,21 +3,32 @@
 
 local M = {}
 
-M._saved_buffers = {}
+M._state = {
+  saved_buffers = {},
+  highlights_set = false,
+}
 
--- ── Winbar ────────────────────────────────────────────────────────────
+-- ── Helpers ───────────────────────────────────────────────────────────
 
--- Global shims so %@v:lua.X@ works without complex require() expressions
+--- Safely escapes magic characters for Lua's string.gsub pattern matching
+local function escape_lua_pattern(str)
+  return str:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
+end
+
+-- ── Global Shims for Winbar/Statusline Click Targets ──────────────────
 -- (statusline %@ function names must be simple Lua global references)
+
 _G.logseq_rename_page  = function(...) M.rename_page(...) end
 _G.logseq_close_win    = function(...) M.close_win(...) end
--- winbar buttons (file/nav)
+
+-- Winbar buttons (file/nav)
 _G.logseq_sl_search    = function() require("logseq.file_search").open() end
 _G.logseq_sl_backlinks = function() require("logseq.backlinks").toggle() end
 _G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
 _G.logseq_sl_nstree    = function() require("logseq.namespace_tree").toggle() end
--- statusline buttons (editing/cursor)
+
+-- Statusline buttons (editing/cursor)
 _G.logseq_sl_follow    = function() require("logseq.links").follow() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
@@ -26,53 +37,42 @@ _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
 _G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
 _G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
 
+-- ── UI Components ─────────────────────────────────────────────────────
+
 function M.winbar()
   local winid = vim.g.statusline_winid or vim.api.nvim_get_current_win()
   local bufnr = vim.api.nvim_win_get_buf(winid)
-
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   local name = vim.fn.fnamemodify(filepath, ":t")
+  
   if name == "" then return "" end
 
   local title = name:gsub("%.md$", ""):gsub("---", "/")
   -- Escape any literal % in the title so statusline doesn't mis-interpret them
   local safe_title = title:gsub("%%", "%%%%")
-
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
   -- Title + optional rename hint
   local title_btn
   if wb.rename ~= false then
-    title_btn = "%@v:lua.logseq_rename_page@" .. safe_title
-                .. " %#Comment#rn📝%#Normal#%X"
+    title_btn = "%@v:lua.logseq_rename_page@" .. safe_title .. " %#Comment#rn📝%#Normal#%X"
   else
     title_btn = safe_title
   end
 
   -- Right-side nav buttons
   local nav_parts = {}
-  if wb.search ~= false then
-    table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X")
-  end
-  if wb.backlinks ~= false then
-    table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X")
-  end
-  if wb.queries ~= false then
-    table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X")
-  end
-  if wb.calsync ~= false then
-    table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X")
-  end
-  if wb.ns_tree ~= false then
-    table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X")
-  end
+  if wb.search ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
+  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
+  if wb.queries ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
+  if wb.calsync ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
+  if wb.ns_tree ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+  
   local nav_btns = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
+  local close_btn = wb.close ~= false and "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#" or ""
 
-  local close_btn = wb.close ~= false
-    and "  %#Comment#%@v:lua.logseq_close_win@:wq❌%X%#Normal#"
-    or ""
-
-  if M._saved_buffers[bufnr] then
+  -- Fast path for save indicator
+  if M._state.saved_buffers[bufnr] then
     return " " .. title_btn .. "  ✓ Saved" .. nav_btns .. close_btn
   end
 
@@ -83,19 +83,19 @@ function M.winbar()
       return " " .. title_btn .. "%<  │  " .. event_text .. nav_btns .. close_btn
     end
   end
-
+  
   return " " .. title_btn .. nav_btns .. close_btn
 end
 
 function M.trigger_save_indicator(bufnr)
-  M._saved_buffers[bufnr] = true
-  vim.cmd("redraw!")
+  M._state.saved_buffers[bufnr] = true
+  vim.cmd("redrawstatus") -- Prevent screen flicker
 
   vim.defer_fn(function()
-    M._saved_buffers[bufnr] = nil
+    M._state.saved_buffers[bufnr] = nil
     vim.schedule(function()
       if vim.api.nvim_buf_is_valid(bufnr) then
-        vim.cmd("redraw!")
+        vim.cmd("redrawstatus")
       end
     end)
   end, 1500)
@@ -105,33 +105,39 @@ function M.close_win(_minwid, _clicks, _button, _mods)
   vim.cmd("wq")
 end
 
---- Rename the current page and update all [[OldName]] links in the vault.
---- Triggered by clicking the title in the winbar.
+-- ── Page Renaming ─────────────────────────────────────────────────────
+
 --- Replace all [[old_name]] → [[new_name]] in every .md file under vault.
 --- Returns the count of files changed.
 local function rewrite_links(vault, old_name, new_name)
-  local old_pat  = "%[%[" .. vim.pesc(old_name) .. "%]%]"
+  -- Properly escape Lua pattern to prevent crashes on hyphens/parentheses
+  local old_pat = "%[%[" .. escape_lua_pattern(old_name) .. "%]%]"
   local new_link = "[[" .. new_name .. "]]"
-  local updated  = 0
+  local updated = 0
 
   for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
-    if vim.fn.isdirectory(dir) == 0 then goto next_dir end
-    for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
-      local f = io.open(file, "r")
-      if not f then goto next_file end
-      local ok, content = pcall(function() return f:read("*a") end)
-      f:close()
-      if not ok then goto next_file end
-      local new_content = content:gsub(old_pat, new_link)
-      if new_content ~= content then
-        local fw = io.open(file, "w")
-        if fw then fw:write(new_content); fw:close(); updated = updated + 1 end
-      end
-      ::next_file::
-    end
-    ::next_dir::
-  end
+    if vim.fn.isdirectory(dir) == 1 then
+      for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
+        local f = io.open(file, "r")
+        if f then
+          local content = f:read("*a")
+          f:close()
 
+          if content then
+            local new_content = content:gsub(old_pat, new_link)
+            if new_content ~= content then
+              local fw = io.open(file, "w")
+              if fw then
+                fw:write(new_content)
+                fw:close()
+                updated = updated + 1
+              end
+            end
+          end
+        end
+      end
+    end
+  end
   return updated
 end
 
@@ -141,8 +147,8 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
   if filepath == "" then return end
 
   local config = require("logseq.config")
-  local util   = require("logseq.util")
-  local vault  = config.current.vault_path
+  local util = require("logseq.util")
+  local vault = config.current.vault_path
   local pages_dir = util.normalize(vault .. "/pages")
 
   if not util.normalize(filepath):find(pages_dir, 1, true) then
@@ -174,12 +180,11 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
   end)
 end
 
+-- ── Floating Help Window ──────────────────────────────────────────────
+
 function M.open_help()
   local km = require("logseq.config").current.keymaps or {}
-
-  local function k(name, default)
-    return km[name] or default or "?"
-  end
+  local function k(name, default) return km[name] or default or "?" end
 
   local lines = {
     "  Logseq.nvim Help",
@@ -189,10 +194,10 @@ function M.open_help()
     "   :LogseqToday          Open (or create) today's journal",
     "   :LogseqNewPage [name] Create or open a page",
     "   :LogseqConfig         Open shortcuts & UI config window",
-    "   :Calsync              Manually sync calendar to journal",
-    "   :Caladd               Add an ICS calendar feed URL",
-    "   :CalEdit              View / add / remove calendar URLs",
-    "   :Calremind            Set reminder lead time in minutes",
+    "   :LogseqCalSync        Manually sync calendar to journal",
+    "   :LogseqCalAdd         Add an ICS calendar feed URL",
+    "   :LogseqCalEdit        View / add / remove calendar URLs",
+    "   :LogseqCalRemind      Set reminder lead time in minutes",
     "",
     "  NAVIGATION",
     "   " .. k("next_sibling","<leader>j") .. "   Next sibling block",
@@ -245,48 +250,45 @@ function M.open_help()
     "",
   }
 
-  -- Width: longest line + 2 padding
   local max_w = 0
   for _, l in ipairs(lines) do
     if #l > max_w then max_w = #l end
   end
-  local width  = math.min(max_w + 2, vim.o.columns - 4)
+  local width = math.min(max_w + 2, vim.o.columns - 4)
   local height = math.min(#lines, vim.o.lines - 4)
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
-  vim.bo[buf].bufhidden  = "wipe"
-  vim.bo[buf].filetype   = "logseq_help"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].filetype = "logseq_help"
 
-  local row = math.floor((vim.o.lines   - height) / 2)
-  local col = math.floor((vim.o.columns - width)  / 2)
+  local row = math.floor((vim.o.lines - height) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
 
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
-    row      = row,
-    col      = col,
-    width    = width,
-    height   = height,
-    style    = "minimal",
-    border   = "rounded",
-    title    = " Logseq.nvim Help ",
+    row = row,
+    col = col,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = "rounded",
+    title = " Logseq.nvim Help ",
     title_pos = "center",
   })
 
-  vim.wo[win].wrap      = false
+  vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
 
   local close = function()
     if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
   end
-  vim.keymap.set("n", "q",     close, { buffer = buf, nowait = true, silent = true })
+  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, silent = true })
   vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true, silent = true })
 end
 
 -- ── Syntax Setup ─────────────────────────────────────────────────────
--- (audit #30) Each syntax rule is individually pcall-wrapped so one
--- failure doesn't prevent the rest from loading.
 
 local function setup_syntax(bufnr)
   vim.api.nvim_buf_call(bufnr, function()
@@ -316,14 +318,19 @@ local function setup_syntax(bufnr)
 end
 
 local function setup_highlights()
-  vim.api.nvim_set_hl(0, "LogseqTime",         { fg = "#e06c60", ctermfg = 167 })
-  vim.api.nvim_set_hl(0, "LogseqLink",         { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqBlockRef",     { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqTag",          { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrike",       { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrikeDelim",  { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqLinkDelim",    { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim",{ link = "Conceal" })
+  -- Only inject global highlights once per session
+  if M._state.highlights_set then return end
+  M._state.highlights_set = true
+
+  vim.api.nvim_set_hl(0, "LogseqTime", { fg = "#e06c60", ctermfg = 167 })
+  vim.api.nvim_set_hl(0, "LogseqLink", { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqBlockRef", { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqTag", { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrike", { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrikeDelim", { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqLinkDelim", { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqBlockRefDelim", { link = "Conceal" })
+  
   -- Custom dark statusline group used via winhl (survives colorscheme reloads)
   vim.api.nvim_set_hl(0, "LogseqStatusLine", { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
 end
@@ -333,6 +340,7 @@ end
 function M.build_statusline()
   local bb = (require("logseq.config").current.bottombar_buttons) or {}
   local parts = {}
+  
   if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗↩️%X") end
   if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡za%X") end
   if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅^t%X") end
@@ -340,16 +348,14 @@ function M.build_statusline()
   if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@<<%X") end
   if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@alt⬆️%X") end
   if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@alt⬇️%X") end
+  
   return table.concat(parts, "  ")
 end
 
 -- ── Buffer Setup ─────────────────────────────────────────────────────
 
 function M.setup_buf(bufnr)
-  -- Winbar (audit #15: v:lua.require pattern is safe in opt_local)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
-
-  -- Statusline row 2: editing/cursor actions (file/nav buttons are in winbar row 1)
   vim.opt_local.statusline = M.build_statusline()
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
 
@@ -362,18 +368,20 @@ function M.setup_buf(bufnr)
   end
 
   -- Save indicator
+  local grp = vim.api.nvim_create_augroup("LogseqUI_" .. bufnr, { clear = true })
   vim.api.nvim_create_autocmd("BufWritePost", {
+    group = grp,
     buffer = bufnr,
     callback = function(ev) M.trigger_save_indicator(ev.buf) end,
   })
 
-  -- Syntax
   vim.opt_local.conceallevel = 2
   setup_syntax(bufnr)
   setup_highlights()
 
   -- Active-event highlight on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
+    group = grp,
     buffer = bufnr,
     callback = function()
       pcall(function() require("logseq.reminders").update_highlight() end)
@@ -382,3 +390,4 @@ function M.setup_buf(bufnr)
 end
 
 return M
+

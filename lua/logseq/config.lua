@@ -3,7 +3,8 @@
 
 local M = {}
 
-M.current = {} -- populated by M.setup(); exists here so require-time reads don't error
+-- Populated by M.setup(); exists here so require-time reads don't error
+M.current = {} 
 
 M.defaults = {
   vault_path = nil,
@@ -52,16 +53,19 @@ M.defaults = {
 -- ── Global persistence (vault path) ──────────────────────────────────
 
 local function get_global_save_path()
-  return vim.fn.stdpath("data") .. "/logseq_nvim_global.json"
+  return vim.fs.joinpath(vim.fn.stdpath("data"), "logseq_nvim_global.json")
 end
 
 local function load_global_config()
   local path = get_global_save_path()
   if vim.fn.filereadable(path) ~= 1 then return {} end
+
   local f = io.open(path, "r")
   if not f then return {} end
+  
   local content = f:read("*a")
   f:close()
+
   local ok, data = pcall(vim.json.decode, content)
   if ok and type(data) == "table" then return data end
   return {}
@@ -69,9 +73,14 @@ end
 
 local function save_global_config(data)
   local path = get_global_save_path()
+  
+  -- Encode before opening file to prevent leaving an open file descriptor on error
+  local ok, json_str = pcall(vim.json.encode, data)
+  if not ok then return false end
+
   local f = io.open(path, "w")
   if not f then return false end
-  f:write(vim.json.encode(data))
+  f:write(json_str)
   f:close()
   return true
 end
@@ -93,7 +102,7 @@ end
 -- ── Vault-local persistence ───────────────────────────────────────────
 
 local function get_save_path(vault_path)
-  return vault_path .. "/.logseq_nvim.json"
+  return vim.fs.joinpath(vault_path, ".logseq_nvim.json")
 end
 
 local function load_from_vault(vault_path)
@@ -102,7 +111,7 @@ local function load_from_vault(vault_path)
 
   local f = io.open(path, "r")
   if not f then return {} end
-
+  
   local content = f:read("*a")
   f:close()
 
@@ -113,9 +122,13 @@ end
 
 local function save_data(vault_path, data)
   local path = get_save_path(vault_path)
+  
+  local ok, json_str = pcall(vim.json.encode, data)
+  if not ok then return false end
+
   local f = io.open(path, "w")
   if not f then return false end
-  f:write(vim.json.encode(data))
+  f:write(json_str)
   f:close()
   return true
 end
@@ -130,14 +143,16 @@ function M.add_calendar_url(url)
   if not M.current.vault_path then return false end
 
   local data = load_from_vault(M.current.vault_path)
-  data.calendar_urls = data.calendar_urls or M.current.calendar_urls or {}
+  -- Deepcopy prevents cross-pollution of memory references
+  data.calendar_urls = vim.deepcopy(data.calendar_urls or M.current.calendar_urls or {})
 
   for _, existing_url in ipairs(data.calendar_urls) do
     if existing_url == url then return false end
   end
 
   table.insert(data.calendar_urls, url)
-  M.current.calendar_urls = data.calendar_urls
+  M.current.calendar_urls = vim.deepcopy(data.calendar_urls)
+  
   return save_data(M.current.vault_path, data)
 end
 
@@ -149,10 +164,11 @@ function M.remove_calendar_url(url)
   if not M.current.vault_path then return false end
 
   local data = load_from_vault(M.current.vault_path)
-  data.calendar_urls = data.calendar_urls or M.current.calendar_urls or {}
+  data.calendar_urls = vim.deepcopy(data.calendar_urls or M.current.calendar_urls or {})
 
   local found = false
   local new_urls = {}
+  
   for _, existing_url in ipairs(data.calendar_urls) do
     if existing_url == url then
       found = true
@@ -162,12 +178,14 @@ function M.remove_calendar_url(url)
   end
 
   if not found then return false end
+  
   data.calendar_urls = new_urls
-  M.current.calendar_urls = new_urls
+  M.current.calendar_urls = vim.deepcopy(new_urls)
+  
   return save_data(M.current.vault_path, data)
 end
 
---- Persist and update reminder lead time (audit #1: was missing entirely).
+--- Persist and update reminder lead time.
 ---@param mins integer
 function M.set_reminder_minutes(mins)
   M.current.reminder_minutes = mins
@@ -184,14 +202,16 @@ end
 ---@param bottombar_buttons table
 function M.save_keymaps_and_ui(keymaps, winbar_buttons, bottombar_buttons)
   M.current.keymaps = vim.tbl_deep_extend("force", M.current.keymaps or {}, keymaps)
-  M.current.winbar_buttons = winbar_buttons
-  M.current.bottombar_buttons = bottombar_buttons
+  M.current.winbar_buttons = vim.deepcopy(winbar_buttons)
+  M.current.bottombar_buttons = vim.deepcopy(bottombar_buttons)
 
   if not M.current.vault_path then return end
+  
   local data = load_from_vault(M.current.vault_path)
   data.keymaps = M.current.keymaps
   data.winbar_buttons = M.current.winbar_buttons
   data.bottombar_buttons = M.current.bottombar_buttons
+  
   save_data(M.current.vault_path, data)
 end
 
@@ -201,8 +221,9 @@ end
 function M.save_to_disk(vault_path, calendar_urls)
   local data = load_from_vault(vault_path)
   if calendar_urls then
-    data.calendar_urls = calendar_urls
+    data.calendar_urls = vim.deepcopy(calendar_urls)
   end
+  
   save_data(vault_path, data)
   M.save_global_vault_path(vault_path)
 end
@@ -233,3 +254,4 @@ function M.setup(opts)
 end
 
 return M
+

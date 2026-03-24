@@ -1,17 +1,13 @@
 --- logseq.nvim backlinks (Linked References)
-
 local config = require("logseq.config")
 local indexer = require("logseq.indexer")
 
 local M = {}
-
 -- ── Constants ─────────────────────────────────────────────────────────
-
 local HEADER_PATTERN = "^── .*Linked References?.* ──$"
 local SEPARATOR = ""
 
 -- ── State (audit #21: single table per buffer) ────────────────────────
-
 M._state = {} -- bufnr → { visible, region, source_map, page_name, had_backlinks }
 
 local function get_state(bufnr)
@@ -28,7 +24,6 @@ local function get_state(bufnr)
 end
 
 -- ── Helpers ───────────────────────────────────────────────────────────
-
 local function get_page_name(bufnr)
   local state = get_state(bufnr)
   if state.page_name then return state.page_name end
@@ -100,7 +95,6 @@ local function make_progress_bar(current, total, width)
 end
 
 -- ── Display Builder ───────────────────────────────────────────────────
-
 local function build_display(results)
   local display = {}
   local smap = {}
@@ -154,7 +148,6 @@ local function build_display(results)
 end
 
 -- ── Rendering ─────────────────────────────────────────────────────────
-
 function M.render_section(bufnr)
   local page_name = get_page_name(bufnr)
   if not page_name then return end
@@ -163,22 +156,26 @@ function M.render_section(bufnr)
   local state = get_state(bufnr)
 
   local was_modified = vim.bo[bufnr].modified
+  local was_modifiable = vim.bo[bufnr].modifiable
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   local section_start = line_count + 1
 
   -- Initial loading state
   local initial_bar = make_progress_bar(0, 100, 20)
   local loading_lines = { SEPARATOR, string.format("── Loading Linked References... %s ──", initial_bar) }
+  
+  vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, loading_lines)
   vim.bo[bufnr].modified = was_modified
+  vim.bo[bufnr].modifiable = was_modifiable
 
   state.region = { start_line = section_start, end_line = section_start + 1 }
   state.visible = true
 
   local ns = vim.api.nvim_create_namespace("logseq_backlinks")
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-  -- Highlight the loading text (0-indexed: section_start is 1-indexed, the text is on line section_start+1-1=section_start)
-  vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", section_start, 0, -1)
+  -- Highlight the loading text (0-indexed fix applied)
+  vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", section_start - 1, 0, -1)
 
   indexer.find_backlinks(page_name, filepath,
     -- ON COMPLETE
@@ -186,7 +183,6 @@ function M.render_section(bufnr)
       if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
 
       M.remove_section(bufnr)
-
       local display_lines, smap, match_lines = build_display(results)
       local new_line_count = vim.api.nvim_buf_line_count(bufnr)
       local new_section_start = new_line_count + 1
@@ -195,13 +191,16 @@ function M.render_section(bufnr)
       vim.list_extend(final_lines, display_lines)
 
       local was_mod_after = vim.bo[bufnr].modified
+      local was_mod_able = vim.bo[bufnr].modifiable
+      vim.bo[bufnr].modifiable = true
       vim.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, final_lines)
       vim.bo[bufnr].modified = was_mod_after
+      vim.bo[bufnr].modifiable = was_mod_able
 
       state.region = { start_line = new_section_start, end_line = new_section_start + #final_lines - 1 }
       state.visible = true
-
       state.source_map = {}
+
       local abs_match_lines = {}
       for rel_line, info in pairs(smap) do
         local abs = new_section_start + rel_line
@@ -210,7 +209,8 @@ function M.render_section(bufnr)
       end
 
       vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-      vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", new_section_start, 0, -1)
+      -- 0-indexed fix applied here
+      vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", new_section_start - 1, 0, -1)
 
       for abs_line, _ in pairs(state.source_map) do
         local line_0 = abs_line - 1
@@ -224,22 +224,21 @@ function M.render_section(bufnr)
         vim.api.nvim_buf_add_highlight(bufnr, ns, "Bold", line_0, 0, -1)
       end
     end,
-    -- ON PROGRESS (audit #16: fix off-by-one)
+    -- ON PROGRESS
     function(current, total)
-      if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
-      if not state.region then return end
+      if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible or not state.region then return end
 
       local bar = make_progress_bar(current, total, 20)
       local progress_text = string.format("── Loading Linked References... %s ──", bar)
 
-      -- The loading text line: region.start_line is 1-indexed.
-      -- The separator is at start_line, the actual text is at start_line + 1.
-      -- nvim_buf_set_lines is 0-indexed, so the text line is at (start_line + 1) - 1 = start_line.
-      local text_line_0 = state.region.start_line -- 0-indexed position of the text after separator
-
+      local text_line_0 = state.region.start_line
       local was_mod = vim.bo[bufnr].modified
+      local was_mod_able = vim.bo[bufnr].modifiable
+      
+      vim.bo[bufnr].modifiable = true
       pcall(vim.api.nvim_buf_set_lines, bufnr, text_line_0, text_line_0 + 1, false, { progress_text })
       vim.bo[bufnr].modified = was_mod
+      vim.bo[bufnr].modifiable = was_mod_able
     end)
 end
 
@@ -260,8 +259,12 @@ function M.remove_section(bufnr)
   end
 
   local was_modified = vim.bo[bufnr].modified
+  local was_modifiable = vim.bo[bufnr].modifiable
+  
+  vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, start - 1, vim.api.nvim_buf_line_count(bufnr), false, {})
   vim.bo[bufnr].modified = was_modified
+  vim.bo[bufnr].modifiable = was_modifiable
 
   state.visible = false
   state.region = nil
@@ -330,7 +333,7 @@ function M.setup_buf(bufnr)
   vim.api.nvim_create_autocmd("BufWritePre", { group = group, buffer = bufnr, callback = function(ev) on_write_pre(ev.buf) end })
   vim.api.nvim_create_autocmd("BufWritePost", { group = group, buffer = bufnr, callback = function(ev) on_write_post(ev.buf) end })
   vim.api.nvim_create_autocmd("InsertEnter", { group = group, buffer = bufnr, callback = function(ev) guard_readonly(ev.buf) end })
-
+  
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = group, buffer = bufnr, callback = function(ev)
       local state = get_state(ev.buf)
@@ -355,16 +358,22 @@ function M.setup_global()
     callback = function(ev)
       local vault = config.current.vault_path
       if not vault or not util.is_vault_file(ev.file, vault) then return end
+
       for other_bufnr, state in pairs(M._state) do
-        if other_bufnr ~= ev.buf and state.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
-          vim.schedule(function()
-            local s = M._state[other_bufnr]
-            if s and s.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
-              M.remove_section(other_bufnr)
-              M.render_section(other_bufnr)
-            end
-          end)
+        -- Flattened logic using guard clauses
+        if other_bufnr == ev.buf or not state.visible or not vim.api.nvim_buf_is_valid(other_bufnr) then
+          goto continue
         end
+
+        vim.schedule(function()
+          local s = M._state[other_bufnr]
+          if not (s and s.visible and vim.api.nvim_buf_is_valid(other_bufnr)) then return end
+
+          M.remove_section(other_bufnr)
+          M.render_section(other_bufnr)
+        end)
+
+        ::continue::
       end
     end,
   })
