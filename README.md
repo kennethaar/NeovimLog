@@ -22,7 +22,7 @@
 - Namespace template system with interactive placeholders
 - Clickable winbar and statusline (rename, sync, backlinks, navigation)
 - Full concealment of `[[`, `]]`, `id::` and namespace prefixes
-- TODO cycling: `TODO` → `DOING` → `DONE` → `CANCELLED` → `WAITING`
+- TODO cycling: `TODO` → `WAITING` → `DOING` → `DONE` → `CANCELLED`
 - Cross-platform clipboard — Windows, WSL, Termux, Wayland, X11
 
 ---

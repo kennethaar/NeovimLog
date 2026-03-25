@@ -448,7 +448,7 @@ function M.open_help()
     "  FOLDING & TODO",
     "   " .. k("fold_toggle","za") .. "   Toggle fold at cursor",
     "   " .. k("todo_cycle","<C-t>") .. "   Cycle TODO state (normal & insert)",
-    "   TODO states:  (none) → TODO → DOING → DONE → CANCELLED → WAITING → (none)",
+    "   TODO states:  (none) → TODO → WAITING → DOING → DONE → CANCELLED → (none)",
     "",
     "  HELP & CONFIG",
     "   " .. k("help","hh") .. "   Show this help window",

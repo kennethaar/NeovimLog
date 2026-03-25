@@ -277,8 +277,8 @@ Indent / outdent~
   In insert mode `<Tab>`/`<S-Tab>` do the same thing.
 
 TODO cycling~
-  `todo_cycle` rotates through: (none) → `TODO` → `DOING` → `DONE` →
-  `CANCELLED` → `WAITING` → (none again).
+  `todo_cycle` rotates through: (none) → `TODO` → `WAITING` → `DOING` →
+  `DONE` → `CANCELLED` → (none again).
 
 Cursor snapping~
   After vertical movement (normal or insert mode), the cursor is snapped
