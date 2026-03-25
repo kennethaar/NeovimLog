@@ -104,13 +104,45 @@ local function process_placeholders(content, callback)
   process_from(1)
 end
 
+local function write_template(bufnr, raw_content, label)
+  process_placeholders(raw_content, function(processed_lines)
+    vim.schedule(function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then return end
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! w") end)
+      vim.notify("[logseq.nvim] Template applied: " .. label, vim.log.levels.INFO)
+    end)
+  end)
+end
+
 function M.apply_template(bufnr)
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if not filepath or filepath == "" then return end
 
   local filename = vim.fn.fnamemodify(filepath, ":t")
-  local namespace = filename:match("^(.-)___")
 
+  -- Journal file: 2026_03_25.md → stack year + month templates
+  local year, month = filename:match("^(%d%d%d%d)_(%d%d)_%d%d%.md$")
+  if year then
+    local year_content  = get_template_content(year)
+    local month_content = get_template_content(year .. "_" .. month)
+
+    if not year_content and not month_content then return end
+
+    local parts = {}
+    if year_content  then parts[#parts + 1] = year_content  end
+    if month_content then parts[#parts + 1] = month_content end
+
+    local label = year_content and month_content
+      and (year .. " + " .. year .. "_" .. month)
+      or  (year_content and year or (year .. "_" .. month))
+
+    write_template(bufnr, table.concat(parts, "\n"), label)
+    return
+  end
+
+  -- Namespace page: Project___Page.md → single template
+  local namespace = filename:match("^(.-)___")
   if not namespace or namespace == "Templates" then return end
 
   local raw_content = get_template_content(namespace)
@@ -119,14 +151,7 @@ function M.apply_template(bufnr)
     return
   end
 
-  process_placeholders(raw_content, function(processed_lines)
-    vim.schedule(function()
-      if not vim.api.nvim_buf_is_valid(bufnr) then return end
-      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
-      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! w") end)
-      vim.notify("[logseq.nvim] Template applied: " .. namespace, vim.log.levels.INFO)
-    end)
-  end)
+  write_template(bufnr, raw_content, namespace)
 end
 
 function M.setup_buf(bufnr)
