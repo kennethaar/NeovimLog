@@ -108,12 +108,15 @@ local function write_template(bufnr, raw_content, label)
   process_placeholders(raw_content, function(processed_lines)
     vim.schedule(function()
       if not vim.api.nvim_buf_is_valid(bufnr) then return end
-      local existing = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-      local is_empty = #existing == 0 or (#existing == 1 and existing[1] == "")
-      if is_empty then
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
+      local row, line_text
+      vim.api.nvim_buf_call(bufnr, function()
+        row = vim.api.nvim_win_get_cursor(0)[1]
+        line_text = vim.api.nvim_get_current_line()
+      end)
+      if vim.trim(line_text) == "" then
+        vim.api.nvim_buf_set_lines(bufnr, row - 1, row, false, processed_lines)
       else
-        vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, processed_lines)
+        vim.api.nvim_buf_set_lines(bufnr, row, row, false, processed_lines)
       end
       vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! w") end)
       vim.notify("[logseq.nvim] Template applied: " .. label, vim.log.levels.INFO)
