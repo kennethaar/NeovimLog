@@ -23,6 +23,7 @@ local KEYMAP_DEFS = {
   { key = "todo_cycle",       desc = "Cycle TODO state" },
   { key = "help",             desc = "Show help" },
   { key = "search_pages",     desc = "Search pages / all files" },
+  { key = "rename_page",      desc = "Rename page" },
 }
 
 local WINBAR_DEFS = {
