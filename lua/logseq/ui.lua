@@ -329,9 +329,8 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
             vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
             return
           end
-          vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
+          vim.cmd("silent edit " .. vim.fn.fnameescape(new_filepath))
           vim.api.nvim_buf_delete(bufnr, { force = true })
-          vim.notify("Merged into '" .. new_name .. "'. Updating references…", vim.log.levels.INFO)
           vim.schedule(function()
             local updated = rewrite_links(vault, old_name, new_name)
             vim.notify(("Merged into '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
@@ -366,9 +365,8 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
               vim.notify("Merge failed: " .. merge_err, vim.log.levels.ERROR)
               return
             end
-            vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
+            vim.cmd("silent edit " .. vim.fn.fnameescape(new_filepath))
             vim.api.nvim_buf_delete(bufnr, { force = true })
-            vim.notify("Renamed to '" .. new_name .. "'. Updating references…", vim.log.levels.INFO)
             vim.schedule(function()
               local updated = rewrite_links(vault, old_name, new_name)
                             + rewrite_links(vault, sim_name, new_name)
@@ -382,9 +380,8 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
               vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
               return
             end
-            vim.cmd("edit " .. vim.fn.fnameescape(sim_path))
+            vim.cmd("silent edit " .. vim.fn.fnameescape(sim_path))
             vim.api.nvim_buf_delete(bufnr, { force = true })
-            vim.notify("Merged into '" .. sim_name .. "'. Updating references…", vim.log.levels.INFO)
             vim.schedule(function()
               local updated = rewrite_links(vault, old_name, sim_name)
               vim.notify(("Merged into '%s'. %d file(s) updated."):format(sim_name, updated), vim.log.levels.INFO)
@@ -401,9 +398,8 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
       vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
       return
     end
-    vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
+    vim.cmd("silent edit " .. vim.fn.fnameescape(new_filepath))
     vim.api.nvim_buf_delete(bufnr, { force = true })
-    vim.notify("Renamed to '" .. new_name .. "'. Updating references…", vim.log.levels.INFO)
     vim.schedule(function()
       local updated = rewrite_links(vault, old_name, new_name)
       vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
