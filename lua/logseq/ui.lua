@@ -329,10 +329,13 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
             vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
             return
           end
-          local updated = rewrite_links(vault, old_name, new_name)
           vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
           vim.api.nvim_buf_delete(bufnr, { force = true })
-          vim.notify(("Merged into '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+          vim.notify("Merged into '" .. new_name .. "'. Updating references…", vim.log.levels.INFO)
+          vim.schedule(function()
+            local updated = rewrite_links(vault, old_name, new_name)
+            vim.notify(("Merged into '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+          end)
         end
       )
       return
@@ -363,12 +366,15 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
               vim.notify("Merge failed: " .. merge_err, vim.log.levels.ERROR)
               return
             end
-            local updated = rewrite_links(vault, old_name, new_name)
-                          + rewrite_links(vault, sim_name, new_name)
             vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
             vim.api.nvim_buf_delete(bufnr, { force = true })
-            vim.notify(("Renamed to '%s', merged '%s'. %d file(s) updated.")
-              :format(new_name, sim_name, updated), vim.log.levels.INFO)
+            vim.notify("Renamed to '" .. new_name .. "'. Updating references…", vim.log.levels.INFO)
+            vim.schedule(function()
+              local updated = rewrite_links(vault, old_name, new_name)
+                            + rewrite_links(vault, sim_name, new_name)
+              vim.notify(("Renamed to '%s', merged '%s'. %d file(s) updated.")
+                :format(new_name, sim_name, updated), vim.log.levels.INFO)
+            end)
           else
             -- sim_name wins: merge current file into similar, delete current
             local err = merge_into(sim_path, filepath)
@@ -376,10 +382,13 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
               vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
               return
             end
-            local updated = rewrite_links(vault, old_name, sim_name)
             vim.cmd("edit " .. vim.fn.fnameescape(sim_path))
             vim.api.nvim_buf_delete(bufnr, { force = true })
-            vim.notify(("Merged into '%s'. %d file(s) updated."):format(sim_name, updated), vim.log.levels.INFO)
+            vim.notify("Merged into '" .. sim_name .. "'. Updating references…", vim.log.levels.INFO)
+            vim.schedule(function()
+              local updated = rewrite_links(vault, old_name, sim_name)
+              vim.notify(("Merged into '%s'. %d file(s) updated."):format(sim_name, updated), vim.log.levels.INFO)
+            end)
           end
         end
       )
@@ -392,10 +401,13 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
       vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
       return
     end
-    local updated = rewrite_links(vault, old_name, new_name)
     vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
     vim.api.nvim_buf_delete(bufnr, { force = true })
-    vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+    vim.notify("Renamed to '" .. new_name .. "'. Updating references…", vim.log.levels.INFO)
+    vim.schedule(function()
+      local updated = rewrite_links(vault, old_name, new_name)
+      vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+    end)
     end) -- vim.schedule
   end)
 end
