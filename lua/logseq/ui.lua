@@ -223,14 +223,79 @@ local function rewrite_links(vault, old_name, new_name)
   return updated
 end
 
+--- Extract the leaf segment of a (possibly namespaced) page name.
+--- "Math/Calculus" → "Calculus",  "Foo Bar" → "Foo Bar"
+local function leaf_name(name)
+  return name:match("[^/]+$") or name
+end
+
+--- Build a set of lowercase words from a string.
+local function word_set(str)
+  local s = {}
+  for w in str:lower():gmatch("%S+") do s[w] = true end
+  return s
+end
+
+--- Jaccard similarity between two word sets (0.0–1.0).
+local function jaccard(a, b)
+  local inter, union = 0, 0
+  for w in pairs(a) do
+    union = union + 1
+    if b[w] then inter = inter + 1 end
+  end
+  for w in pairs(b) do
+    if not a[w] then union = union + 1 end
+  end
+  return union == 0 and 1.0 or (inter / union)
+end
+
+--- Scan pages_dir for a page whose leaf name is ≥80% word-Jaccard similar
+--- to new_name's leaf. Requires ≥2 words to avoid single-word false positives.
+--- Returns (decoded_name, filepath) of the first match, or nil.
+local function find_similar_page(pages_dir, new_name, util)
+  local target_leaf  = leaf_name(new_name)
+  local target_words = word_set(target_leaf)
+  local n = 0
+  for _ in pairs(target_words) do n = n + 1 end
+  if n < 2 then return nil end
+
+  for _, file in ipairs(vim.fn.glob(pages_dir .. "/*.md", false, true)) do
+    local decoded = util.decode_filename(vim.fn.fnamemodify(file, ":t"))
+    if decoded ~= new_name then
+      if jaccard(target_words, word_set(leaf_name(decoded))) >= 0.8 then
+        return decoded, file
+      end
+    end
+  end
+end
+
+--- Append source file's content below target's with a blank-line + --- divider.
+--- Deletes source on success. Returns an error string on failure, or nil.
+local function merge_into(target_path, source_path)
+  local tf = io.open(target_path, "r")
+  if not tf then return "Cannot read " .. target_path end
+  local tc = tf:read("*a"); tf:close()
+
+  local sf = io.open(source_path, "r")
+  if not sf then return "Cannot read " .. source_path end
+  local sc = sf:read("*a"); sf:close()
+
+  local wf = io.open(target_path, "w")
+  if not wf then return "Cannot write " .. target_path end
+  wf:write(tc:gsub("%s+$", "") .. "\n\n---\n\n" .. sc)
+  wf:close()
+
+  os.remove(source_path)
+end
+
 function M.rename_page(_minwid, _clicks, _button, _mods)
-  local bufnr = vim.api.nvim_get_current_buf()
+  local bufnr    = vim.api.nvim_get_current_buf()
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if filepath == "" then return end
 
-  local config = require("logseq.config")
-  local util = require("logseq.util")
-  local vault = config.current.vault_path
+  local config    = require("logseq.config")
+  local util      = require("logseq.util")
+  local vault     = config.current.vault_path
   local pages_dir = util.normalize(vault .. "/pages")
 
   if not util.normalize(filepath):find(pages_dir, 1, true) then
@@ -249,17 +314,85 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
       vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
     end
 
-    -- Rename the file first; only rewrite links if that succeeds.
+    -- ── Case 1: exact target file already exists → merge dialog ───────
+    if vim.fn.filereadable(new_filepath) == 1 then
+      vim.ui.select(
+        { "Merge into '" .. new_name .. "' (appends current file below ---)", "Cancel" },
+        { prompt = "'" .. new_name .. "' already exists:" },
+        function(_, idx)
+          if idx ~= 1 then return end
+          local err = merge_into(new_filepath, filepath)
+          if err then
+            vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
+            return
+          end
+          local updated = rewrite_links(vault, old_name, new_name)
+          vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
+          vim.api.nvim_buf_delete(bufnr, { force = true })
+          vim.notify(("Merged into '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+        end
+      )
+      return
+    end
+
+    -- ── Case 2: similarly-named file exists → choice dialog ───────────
+    local sim_name, sim_path = find_similar_page(pages_dir, new_name, util)
+    if sim_name then
+      vim.ui.select(
+        {
+          "Keep '" .. new_name .. "' (merge '" .. sim_name .. "' below it)",
+          "Keep '" .. sim_name .. "' (merge current file below it)",
+          "Cancel",
+        },
+        { prompt = "Similar page '" .. sim_name .. "' found:" },
+        function(_, idx)
+          if not idx or idx == 3 then return end
+
+          if idx == 1 then
+            -- new_name wins: rename current file, then merge similar into it
+            local ok, err = os.rename(filepath, new_filepath)
+            if not ok then
+              vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+              return
+            end
+            local merge_err = merge_into(new_filepath, sim_path)
+            if merge_err then
+              vim.notify("Merge failed: " .. merge_err, vim.log.levels.ERROR)
+              return
+            end
+            local updated = rewrite_links(vault, old_name, new_name)
+                          + rewrite_links(vault, sim_name, new_name)
+            vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
+            vim.api.nvim_buf_delete(bufnr, { force = true })
+            vim.notify(("Renamed to '%s', merged '%s'. %d file(s) updated.")
+              :format(new_name, sim_name, updated), vim.log.levels.INFO)
+          else
+            -- sim_name wins: merge current file into similar, delete current
+            local err = merge_into(sim_path, filepath)
+            if err then
+              vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
+              return
+            end
+            local updated = rewrite_links(vault, old_name, sim_name)
+            vim.cmd("edit " .. vim.fn.fnameescape(sim_path))
+            vim.api.nvim_buf_delete(bufnr, { force = true })
+            vim.notify(("Merged into '%s'. %d file(s) updated."):format(sim_name, updated), vim.log.levels.INFO)
+          end
+        end
+      )
+      return
+    end
+
+    -- ── Case 3: no conflict → plain rename + rewrite refs ─────────────
     local ok, err = os.rename(filepath, new_filepath)
     if not ok then
       vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
       return
     end
-
     local updated = rewrite_links(vault, old_name, new_name)
     vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
     vim.api.nvim_buf_delete(bufnr, { force = true })
-    vim.notify(string.format("Renamed to '%s'. %d file(s) updated.", new_name, updated), vim.log.levels.INFO)
+    vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
   end)
 end
 
@@ -306,6 +439,7 @@ function M.open_help()
     "   " .. k("follow_link","<CR>") .. "   Follow wikilink / block-ref / tag",
     "   <CR>  (visual)        Wrap selection in [[...]] or unwrap",
     "   [[                    Trigger fuzzy page-link completion",
+    "   " .. k("rename_page","<leader>rn") .. "   Rename page (+ merge if target exists)",
     "   " .. k("toggle_backlinks","<leader>b") .. "   Toggle backlinks / linked-references panel",
     "   <leader>q             Toggle queries panel",
     "   <leader>t             Apply template to current page",
@@ -477,6 +611,9 @@ function M.setup_buf(bufnr)
     vim.keymap.set("n", km.search_pages, function()
       require("logseq.file_search").open()
     end, { buffer = bufnr, desc = "Logseq Search Pages" })
+  end
+  if km.rename_page then
+    vim.keymap.set("n", km.rename_page, M.rename_page, { buffer = bufnr, desc = "Logseq Rename Page" })
   end
 
   -- Save indicator

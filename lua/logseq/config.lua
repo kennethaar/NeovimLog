@@ -30,6 +30,7 @@ M.defaults = {
     todo_cycle       = "<C-t>",
     help             = "hh",
     search_pages     = "<C-k>",
+    rename_page      = "<leader>rn",
   },
   winbar_buttons = {
     rename       = true,
