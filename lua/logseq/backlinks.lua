@@ -123,9 +123,10 @@ local function build_display(results)
   local group_order = {}
   for _, r in ipairs(results) do
     if not groups[r.source_page] then
-      groups[r.source_page] = { source_file = r.source_file, entries = {} }
+      groups[r.source_page] = { source_file = r.source_file, entries = {}, is_scheduled = false }
       table.insert(group_order, r.source_page)
     end
+    if r.is_scheduled then groups[r.source_page].is_scheduled = true end
     table.insert(groups[r.source_page].entries, r)
   end
 

@@ -130,6 +130,11 @@ local function build_needles(page_name)
     local tag_hier = page_name:gsub("%s+", "_")
     if tag_hier:match("^[%w_%-/]+$") then table.insert(needles, "#" .. tag_hier) end
   end
+  -- Org-mode / Logseq SCHEDULED and DEADLINE timestamps: <2026-04-01 Wed>
+  -- Only ISO-format dates (the default journal page-name format) are supported here.
+  if page_name:match("^%d%d%d%d-%d%d-%d%d$") then
+    table.insert(needles, "<" .. page_name)
+  end
   return needles
 end
 
@@ -216,6 +221,7 @@ local function process_file(filepath, norm, page_name, needles, uv, results)
         source_page    = source_page,
         source_file    = filepath,
         context_blocks = extract_context(block, file_lines),
+        is_scheduled   = block.properties.SCHEDULED ~= nil or block.properties.DEADLINE ~= nil,
       })
     end
   end
@@ -266,7 +272,11 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
       i = chunk_end + 1
       vim.schedule(process_chunk)
     else
-      table.sort(results, function(a, b) return a.source_page < b.source_page end)
+      table.sort(results, function(a, b)
+        -- Scheduled/deadline blocks surface first; ties broken alphabetically
+        if a.is_scheduled ~= b.is_scheduled then return a.is_scheduled end
+        return a.source_page < b.source_page
+      end)
       on_complete(results)
     end
   end
