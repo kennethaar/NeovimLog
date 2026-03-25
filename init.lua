@@ -39,25 +39,24 @@ if not vault_path then
 end
 
 -- ============================================================================
--- 3. Plugin Manager (lazy.nvim)
+-- 3. which-key (self-installing, independent of logseq plugin code)
 -- ============================================================================
--- Bootstrap lazy.nvim on first run by cloning it into the Neovim data
--- directory. Subsequent starts skip this block entirely (fs_stat check).
--- Plugins themselves live in lua/plugins/ — one file per plugin or group.
-local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
-if not vim.uv.fs_stat(lazypath) then
+-- which-key shows a popup of available keybindings when you pause mid-chord.
+-- We install it via Neovim's built-in package system (pack/*/start/) rather
+-- than lazy.nvim, because lazy's setup() overrides laststatus and statusline
+-- globally — exactly the UI state that logseq.nvim manages per-buffer.
+local wk_path = vim.fn.stdpath("data") .. "/site/pack/plugins/start/which-key.nvim"
+if not vim.uv.fs_stat(wk_path) then
   vim.fn.system({
-    "git", "clone", "--filter=blob:none",
-    "https://github.com/folke/lazy.nvim.git",
-    "--branch=stable",
-    lazypath,
+    "git", "clone", "--filter=blob:none", "--depth=1",
+    "https://github.com/folke/which-key.nvim.git",
+    wk_path,
   })
+  -- On first clone, pack/*/start/ wasn't scanned yet this session,
+  -- so add it to rtp manually. Subsequent startups auto-load it.
+  vim.opt.rtp:append(wk_path)
 end
-vim.opt.rtp:prepend(lazypath)
-require("lazy").setup("plugins", {
-  -- Keep the lockfile in the repo so clones get identical plugin versions.
-  lockfile = vim.fn.stdpath("config") .. "/lazy-lock.json",
-})
+pcall(function() require("which-key").setup({}) end)
 
 -- ============================================================================
 -- 4. Plugin Initialization
@@ -75,6 +74,7 @@ end
 -- ============================================================================
 -- 5. Autocommands
 -- ============================================================================
+
 -- Create an augroup to clear existing autocmds on config reload (:source %)
 local logseq_grp = vim.api.nvim_create_augroup("LogseqStartup", { clear = true })
 
