@@ -1,0 +1,7 @@
+# Python dependencies for lua/logseq/ical_parser.py (calendar sync feature)
+# Install with: pip install -r requirements.txt
+# Only needed if you use :LogseqCalAdd to sync ICS calendar feeds.
+
+pytz
+icalendar
+recurring_ical_events

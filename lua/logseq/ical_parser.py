@@ -29,23 +29,27 @@ def fetch_and_parse(urls):
                 # 4 characters provides 65,536 combinations, perfectly safe for ~10 events/day
                 uid = hashlib.md5(raw_uid.encode('utf-8')).hexdigest()[:4] if raw_uid else "0000"
 
-                summary = str(event.get("SUMMARY", "(Uten tittel)"))
-                
+                summary = str(event.get("SUMMARY", "(Untitled)"))
+
                 start_prop = event.get("DTSTART")
                 if not start_prop:
                     continue  # Skip events with no start time
-                    
+
                 start = start_prop.dt
                 end_prop = event.get("DTEND")
                 end_dt = end_prop.dt if end_prop else None
 
-                # Sjekk om det er en heldagshendelse
+                # All-day events have a date object, not a datetime — that's
+                # how the iCalendar spec signals "no specific time".
                 is_allday = not isinstance(start, datetime)
 
                 if is_allday:
                     time_str = "Heldags"
                 else:
-                    # Sikre at start-tidspunktet har en tidssone før vi konverterer
+                    # Naive datetimes from some providers have no tzinfo.
+                    # Treat them as UTC rather than silently using local system
+                    # time, which would produce wrong results on any machine
+                    # not in UTC.
                     if start.tzinfo is None:
                         start = pytz.utc.localize(start)
                     start_local = start.astimezone(local_tz)
@@ -66,10 +70,12 @@ def fetch_and_parse(urls):
                 })
 
         except Exception as e:
-            # Sender feil til Neovim for visning i stedet for å feile stille
+            # Write to stderr so Neovim's jobstart can surface it via
+            # on_stderr without polluting the JSON written to stdout.
             print(f"Error fetching/parsing {url}: {str(e)}", file=sys.stderr)
 
-    # Sorter: Heldags først, deretter på tid
+    # All-day events first so they don't interrupt the chronological flow
+    # of timed events when rendered in the journal.
     events_out.sort(key=lambda x: (not x["is_allday"], x["time_str"]))
     
     print(json.dumps(events_out))

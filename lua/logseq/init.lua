@@ -38,6 +38,40 @@ local function activate(bufnr)
   if config.current.enable_link_search then
     pcall(function() require("logseq.page_search").setup_buf(bufnr) end)
   end
+
+  -- Register keymaps with which-key if it is installed, so the user can
+  -- discover every binding via the popup without reading the source or help.
+  -- The pcall means this is a no-op on configs that don't have which-key.
+  local ok_wk, wk = pcall(require, "which-key")
+  if ok_wk then
+    local km = config.current.keymaps
+    wk.add({
+      -- Block navigation
+      { km.next_sibling,     desc = "Next sibling block",              buffer = bufnr, mode = "n" },
+      { km.prev_sibling,     desc = "Previous sibling block",          buffer = bufnr, mode = "n" },
+      { km.first_child,      desc = "First child block",               buffer = bufnr, mode = "n" },
+      { km.parent,           desc = "Parent block",                    buffer = bufnr, mode = "n" },
+      -- Block movement
+      { km.move_down,        desc = "Move block down (with subtree)",  buffer = bufnr, mode = "n" },
+      { km.move_up,          desc = "Move block up (with subtree)",    buffer = bufnr, mode = "n" },
+      { km.promote,          desc = "Outdent block (with subtree)",    buffer = bufnr, mode = "n" },
+      { km.demote,           desc = "Indent block (with subtree)",     buffer = bufnr, mode = "n" },
+      -- Editing
+      { km.new_sibling,      desc = "New sibling block below",         buffer = bufnr, mode = "n" },
+      { km.todo_cycle,       desc = "Cycle TODO state",                buffer = bufnr, mode = "n" },
+      -- Links and search
+      { km.follow_link,      desc = "Follow link / open page",         buffer = bufnr, mode = "n" },
+      { km.search_pages,     desc = "Search vault pages",              buffer = bufnr, mode = "n" },
+      -- Panels and UI
+      { km.toggle_backlinks, desc = "Toggle backlinks panel",          buffer = bufnr, mode = "n" },
+      { km.fold_toggle,      desc = "Toggle fold",                     buffer = bufnr, mode = "n" },
+      { km.help,             desc = "Open Logseq help",                buffer = bufnr, mode = "n" },
+      -- Fixed keymaps (not user-configurable but still worth showing)
+      { "O",                 desc = "New sibling block above",         buffer = bufnr, mode = "n" },
+      { "<Tab>",             desc = "Indent block",                    buffer = bufnr, mode = "n" },
+      { "<S-Tab>",           desc = "Outdent block",                   buffer = bufnr, mode = "n" },
+    })
+  end
 end
 
 local function run_interactive_setup(opts, callback)

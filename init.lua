@@ -39,7 +39,27 @@ if not vault_path then
 end
 
 -- ============================================================================
--- 3. Plugin Initialization
+-- 3. which-key (self-installing, independent of logseq plugin code)
+-- ============================================================================
+-- which-key shows a popup of available keybindings when you pause mid-chord.
+-- We install it via Neovim's built-in package system (pack/*/start/) rather
+-- than lazy.nvim, because lazy's setup() overrides laststatus and statusline
+-- globally — exactly the UI state that logseq.nvim manages per-buffer.
+local wk_path = vim.fn.stdpath("data") .. "/site/pack/plugins/start/which-key.nvim"
+if not vim.uv.fs_stat(wk_path) then
+  vim.fn.system({
+    "git", "clone", "--filter=blob:none", "--depth=1",
+    "https://github.com/folke/which-key.nvim.git",
+    wk_path,
+  })
+  -- On first clone, pack/*/start/ wasn't scanned yet this session,
+  -- so add it to rtp manually. Subsequent startups auto-load it.
+  vim.opt.rtp:append(wk_path)
+end
+pcall(function() require("which-key").setup({}) end)
+
+-- ============================================================================
+-- 4. Plugin Initialization
 -- ============================================================================
 local ok_logseq, logseq = pcall(require, "logseq")
 if ok_logseq then
@@ -52,12 +72,14 @@ else
 end
 
 -- ============================================================================
--- 4. Autocommands
+-- 5. Autocommands
 -- ============================================================================
+
 -- Create an augroup to clear existing autocmds on config reload (:source %)
 local logseq_grp = vim.api.nvim_create_augroup("LogseqStartup", { clear = true })
 
--- Start Logseq og kalender automatisk når du åpner nvim
+-- Open today's journal and sync the calendar automatically when Neovim starts
+-- with no file arguments — the normal "just open your notes" launch path.
 vim.api.nvim_create_autocmd("VimEnter", {
   group = logseq_grp,
   callback = function()
@@ -66,15 +88,15 @@ vim.api.nvim_create_autocmd("VimEnter", {
 
     vim.cmd("LogseqToday")
 
-    -- Replace arbitrary 500ms wait with vim.schedule.
-    -- This queues the function to run as soon as the Neovim event loop is idle, 
-    -- ensuring the UI isn't blocked and avoiding race conditions.
+    -- vim.schedule defers until the event loop is idle rather than using an
+    -- arbitrary sleep, so the UI is never blocked and there are no race
+    -- conditions against BufReadPost autocmds fired by LogseqToday.
     vim.schedule(function()
       local ok_cal, cal = pcall(require, "logseq.calendar")
       if ok_cal then
         cal.sync()
       else
-        vim.notify("FEIL: Fant ikke lua/logseq/calendar.lua!", vim.log.levels.ERROR)
+        vim.notify("[logseq.nvim] calendar module not found — skipping sync.", vim.log.levels.WARN)
       end
     end)
   end,
