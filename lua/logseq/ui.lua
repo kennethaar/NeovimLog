@@ -251,8 +251,9 @@ end
 
 --- Scan pages_dir for a page whose leaf name is ≥80% word-Jaccard similar
 --- to new_name's leaf. Requires ≥2 words to avoid single-word false positives.
+--- Excludes new_name itself and the current page (old_name) from candidates.
 --- Returns (decoded_name, filepath) of the first match, or nil.
-local function find_similar_page(pages_dir, new_name, util)
+local function find_similar_page(pages_dir, new_name, old_name, util)
   local target_leaf  = leaf_name(new_name)
   local target_words = word_set(target_leaf)
   local n = 0
@@ -261,7 +262,7 @@ local function find_similar_page(pages_dir, new_name, util)
 
   for _, file in ipairs(vim.fn.glob(pages_dir .. "/*.md", false, true)) do
     local decoded = util.decode_filename(vim.fn.fnamemodify(file, ":t"))
-    if decoded ~= new_name then
+    if decoded ~= new_name and decoded ~= old_name then
       if jaccard(target_words, word_set(leaf_name(decoded))) >= 0.8 then
         return decoded, file
       end
@@ -307,7 +308,9 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
 
   vim.ui.input({ prompt = "Rename page: ", default = old_name }, function(new_name)
     if not new_name or new_name == "" or new_name == old_name then return end
-
+    -- vim.schedule ensures we run after the input prompt has fully closed,
+    -- which is required before opening any further UI (vim.ui.select / inputlist).
+    vim.schedule(function()
     local new_filepath = pages_dir .. "/" .. util.encode_filename(new_name)
 
     if vim.bo[bufnr].modified then
@@ -336,7 +339,7 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
     end
 
     -- ── Case 2: similarly-named file exists → choice dialog ───────────
-    local sim_name, sim_path = find_similar_page(pages_dir, new_name, util)
+    local sim_name, sim_path = find_similar_page(pages_dir, new_name, old_name, util)
     if sim_name then
       vim.ui.select(
         {
@@ -393,6 +396,7 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
     vim.cmd("edit " .. vim.fn.fnameescape(new_filepath))
     vim.api.nvim_buf_delete(bufnr, { force = true })
     vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+    end) -- vim.schedule
   end)
 end
 
