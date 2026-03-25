@@ -89,7 +89,8 @@ end
 local function extract_links(text)
   local links = {}
   for link in text:gmatch("%[%[(.-)%]%]") do
-    links[#links + 1] = link
+    -- Strip pipe alias: [[Page|Alias]] → "Page"
+    links[#links + 1] = link:match("^(.-)%|") or link
   end
   return links
 end

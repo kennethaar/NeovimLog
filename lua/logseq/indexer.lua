@@ -199,8 +199,10 @@ local function process_file(filepath, norm, page_name, needles, uv, results)
   local file_lines, parsed = load_file(filepath, norm, needles, uv)
   if not file_lines then return end
 
+  -- Self-reference by path is already excluded upstream via norm_exclude.
+  -- Do NOT also exclude by page-name: a journal file whose formatted date
+  -- matches a pages/ file of the same name would be wrongly skipped.
   local source_page = M.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
-  if source_page == page_name then return end
 
   local flat      = parser.flatten(parsed.blocks)
   local all_refs  = compute_all_refs(flat)
@@ -226,8 +228,11 @@ end
 ---@param on_complete function
 ---@param on_progress function|nil
 function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
-  local vault = config.current.vault_path
-  if not vault then return on_complete({}) end
+  local raw_vault = config.current.vault_path
+  if not raw_vault or raw_vault == "" then return on_complete({}) end
+  -- Normalize once: expands ~, resolves symlinks, strips trailing slash.
+  -- libuv (fs_scandir/fs_open) does NOT expand ~ on its own.
+  local vault = util.normalize(raw_vault)
 
   local search_dirs = {}
   if vim.fn.isdirectory(vault .. "/pages")   == 1 then table.insert(search_dirs, vault .. "/pages")   end
