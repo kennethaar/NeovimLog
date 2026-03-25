@@ -39,7 +39,28 @@ if not vault_path then
 end
 
 -- ============================================================================
--- 3. Plugin Initialization
+-- 3. Plugin Manager (lazy.nvim)
+-- ============================================================================
+-- Bootstrap lazy.nvim on first run by cloning it into the Neovim data
+-- directory. Subsequent starts skip this block entirely (fs_stat check).
+-- Plugins themselves live in lua/plugins/ — one file per plugin or group.
+local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
+if not vim.uv.fs_stat(lazypath) then
+  vim.fn.system({
+    "git", "clone", "--filter=blob:none",
+    "https://github.com/folke/lazy.nvim.git",
+    "--branch=stable",
+    lazypath,
+  })
+end
+vim.opt.rtp:prepend(lazypath)
+require("lazy").setup("plugins", {
+  -- Keep the lockfile in the repo so clones get identical plugin versions.
+  lockfile = vim.fn.stdpath("config") .. "/lazy-lock.json",
+})
+
+-- ============================================================================
+-- 4. Plugin Initialization
 -- ============================================================================
 local ok_logseq, logseq = pcall(require, "logseq")
 if ok_logseq then
@@ -52,7 +73,7 @@ else
 end
 
 -- ============================================================================
--- 4. Autocommands
+-- 5. Autocommands
 -- ============================================================================
 -- Create an augroup to clear existing autocmds on config reload (:source %)
 local logseq_grp = vim.api.nvim_create_augroup("LogseqStartup", { clear = true })
