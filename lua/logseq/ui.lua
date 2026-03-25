@@ -180,49 +180,6 @@ end
 
 -- ── Page Renaming ─────────────────────────────────────────────────────
 
---- Rewrite [[old_name]] → [[new_name]] in a single file.
---- Returns true if the file was changed.
-local function rewrite_file_links(file, old_pat, new_link)
-  local rf, err_r = io.open(file, "r")
-  if not rf then
-    vim.notify("Could not read " .. file .. ": " .. (err_r or "unknown"), vim.log.levels.WARN)
-    return false
-  end
-  local content = rf:read("*a")
-  rf:close()
-
-  local new_content = content:gsub(old_pat, new_link)
-  if new_content == content then return false end
-
-  local wf, err_w = io.open(file, "w")
-  if not wf then
-    vim.notify("Could not write " .. file .. ": " .. (err_w or "unknown"), vim.log.levels.WARN)
-    return false
-  end
-  wf:write(new_content)
-  wf:close()
-  return true
-end
-
---- Replace all [[old_name]] → [[new_name]] in every .md file under vault.
---- Returns the count of files changed.
-local function rewrite_links(vault, old_name, new_name)
-  local old_pat  = "%[%[" .. escape_lua_pattern(old_name) .. "%]%]"
-  local new_link = "[[" .. new_name .. "]]"
-  local updated  = 0
-
-  for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
-    if vim.fn.isdirectory(dir) == 1 then
-      for _, file in ipairs(vim.fn.glob(dir .. "/*.md", false, true)) do
-        if rewrite_file_links(file, old_pat, new_link) then
-          updated = updated + 1
-        end
-      end
-    end
-  end
-  return updated
-end
-
 --- Extract the leaf segment of a (possibly namespaced) page name.
 --- "Math/Calculus" → "Calculus",  "Foo Bar" → "Foo Bar"
 local function leaf_name(name)
@@ -270,23 +227,156 @@ local function find_similar_page(pages_dir, new_name, old_name, util)
   end
 end
 
---- Append source file's content below target's with a blank-line + --- divider.
---- Deletes source on success. Returns an error string on failure, or nil.
-local function merge_into(target_path, source_path)
-  local tf = io.open(target_path, "r")
-  if not tf then return "Cannot read " .. target_path end
-  local tc = tf:read("*a"); tf:close()
+--- Read a file's full content from disk. Returns the string, or nil on error.
+local function read_file(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local c = f:read("*a"); f:close()
+  return c
+end
 
-  local sf = io.open(source_path, "r")
-  if not sf then return "Cannot read " .. source_path end
-  local sc = sf:read("*a"); sf:close()
+--- Rewrite [[old]] → [[new]] for each {old,new} pair across all .md files in
+--- vault. Files are processed in batches so the UI stays responsive throughout.
+--- on_done(total_updated) is called when the scan is complete.
+local function rewrite_links_async(vault, rewrites, on_done)
+  local files = {}
+  for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
+    if vim.fn.isdirectory(dir) == 1 then
+      vim.list_extend(files, vim.fn.glob(dir .. "/*.md", false, true))
+    end
+  end
 
-  local wf = io.open(target_path, "w")
-  if not wf then return "Cannot write " .. target_path end
-  wf:write(tc:gsub("%s+$", "") .. "\n\n---\n\n" .. sc)
-  wf:close()
+  local patterns = {}
+  for _, r in ipairs(rewrites) do
+    patterns[#patterns + 1] = {
+      pat  = "%[%[" .. escape_lua_pattern(r[1]) .. "%]%]",
+      link = "[[" .. r[2] .. "]]",
+    }
+  end
 
-  os.remove(source_path)
+  local updated, i = 0, 0
+  local BATCH = 10
+
+  local function step()
+    for _ = 1, BATCH do
+      i = i + 1
+      if i > #files then on_done(updated); return end
+      local content = read_file(files[i])
+      if content then
+        local new_content = content
+        for _, p in ipairs(patterns) do
+          new_content = new_content:gsub(p.pat, p.link)
+        end
+        if new_content ~= content then
+          local wf = io.open(files[i], "w")
+          if wf then wf:write(new_content); wf:close(); updated = updated + 1 end
+        end
+      end
+    end
+    vim.schedule(step)
+  end
+  vim.schedule(step)
+end
+
+--- Switch to dest_path immediately so the user sees it at once, then in the next
+--- tick: append extra_path content below a --- divider (when merging), write the
+--- buffer, delete any listed paths, and rewrite vault references asynchronously.
+--- rewrites  = list of { old_name, new_name } pairs
+--- notify_fn = function(n_updated) called when the ref scan is complete
+local function finish(bufnr, dest_path, extra_path, to_delete, vault, rewrites, notify_fn)
+  vim.cmd("silent edit " .. vim.fn.fnameescape(dest_path))
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  vim.schedule(function()
+    if extra_path then
+      local src = read_file(extra_path)
+      if src then
+        local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+        while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
+        vim.list_extend(lines, { "", "---", "" })
+        vim.list_extend(lines, vim.split(src:gsub("%s+$", ""), "\n", { plain = true }))
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+        vim.cmd("silent write")
+      end
+    end
+
+    for _, path in ipairs(to_delete) do os.remove(path) end
+    rewrite_links_async(vault, rewrites, notify_fn)
+  end)
+end
+
+--- Core rename/merge logic. Runs inside a vim.schedule after vim.ui.input closes.
+local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, util)
+  local new_filepath = pages_dir .. "/" .. util.encode_filename(new_name)
+
+  if vim.bo[bufnr].modified then
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
+  end
+
+  -- Case 1: target already exists → offer to merge current below it
+  if vim.fn.filereadable(new_filepath) == 1 then
+    vim.ui.select(
+      { "Merge '" .. old_name .. "' below '" .. new_name .. "'", "Cancel" },
+      { prompt = "'" .. new_name .. "' already exists:" },
+      function(_, idx)
+        if idx ~= 1 then return end
+        finish(bufnr, new_filepath, filepath, { filepath }, vault,
+          { { old_name, new_name } },
+          function(n)
+            vim.notify(("Merged into '%s'. %d file(s) updated."):format(new_name, n), vim.log.levels.INFO)
+          end)
+      end)
+    return
+  end
+
+  -- Case 2: similar page found → choose which name to keep
+  local sim_name, sim_path = find_similar_page(pages_dir, new_name, old_name, util)
+  if sim_name then
+    vim.ui.select(
+      {
+        "Keep '" .. new_name .. "' (merge '" .. sim_name .. "' below)",
+        "Keep '" .. sim_name .. "' (merge '" .. old_name .. "' below)",
+        "Cancel",
+      },
+      { prompt = "Similar page '" .. sim_name .. "' found:" },
+      function(_, idx)
+        if not idx or idx == 3 then return end
+        if idx == 1 then
+          -- new_name wins: rename source to new_name, then append sim below
+          local ok, err = os.rename(filepath, new_filepath)
+          if not ok then
+            vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+            return
+          end
+          finish(bufnr, new_filepath, sim_path, { sim_path }, vault,
+            { { old_name, new_name }, { sim_name, new_name } },
+            function(n)
+              vim.notify(("Renamed to '%s', merged '%s'. %d file(s) updated.")
+                :format(new_name, sim_name, n), vim.log.levels.INFO)
+            end)
+        else
+          -- sim_name wins: open sim, append current source below it
+          finish(bufnr, sim_path, filepath, { filepath }, vault,
+            { { old_name, sim_name } },
+            function(n)
+              vim.notify(("Merged into '%s'. %d file(s) updated."):format(sim_name, n), vim.log.levels.INFO)
+            end)
+        end
+      end)
+    return
+  end
+
+  -- Case 3: no conflict → plain rename
+  local ok, err = os.rename(filepath, new_filepath)
+  if not ok then
+    vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return
+  end
+  finish(bufnr, new_filepath, nil, {}, vault,
+    { { old_name, new_name } },
+    function(n)
+      vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, n), vim.log.levels.INFO)
+    end)
 end
 
 function M.rename_page(_minwid, _clicks, _button, _mods)
@@ -305,106 +395,11 @@ function M.rename_page(_minwid, _clicks, _button, _mods)
   end
 
   local old_name = util.decode_filename(vim.fn.fnamemodify(filepath, ":t"))
-
   vim.ui.input({ prompt = "Rename page: ", default = old_name }, function(new_name)
     if not new_name or new_name == "" or new_name == old_name then return end
-    -- vim.schedule ensures we run after the input prompt has fully closed,
-    -- which is required before opening any further UI (vim.ui.select / inputlist).
     vim.schedule(function()
-    local new_filepath = pages_dir .. "/" .. util.encode_filename(new_name)
-
-    if vim.bo[bufnr].modified then
-      vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
-    end
-
-    -- ── Case 1: exact target file already exists → merge dialog ───────
-    if vim.fn.filereadable(new_filepath) == 1 then
-      vim.ui.select(
-        { "Merge into '" .. new_name .. "' (appends current file below ---)", "Cancel" },
-        { prompt = "'" .. new_name .. "' already exists:" },
-        function(_, idx)
-          if idx ~= 1 then return end
-          local err = merge_into(new_filepath, filepath)
-          if err then
-            vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
-            return
-          end
-          vim.cmd("silent edit " .. vim.fn.fnameescape(new_filepath))
-          vim.api.nvim_buf_delete(bufnr, { force = true })
-          vim.schedule(function()
-            local updated = rewrite_links(vault, old_name, new_name)
-            vim.notify(("Merged into '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
-          end)
-        end
-      )
-      return
-    end
-
-    -- ── Case 2: similarly-named file exists → choice dialog ───────────
-    local sim_name, sim_path = find_similar_page(pages_dir, new_name, old_name, util)
-    if sim_name then
-      vim.ui.select(
-        {
-          "Keep '" .. new_name .. "' (merge '" .. sim_name .. "' below it)",
-          "Keep '" .. sim_name .. "' (merge current file below it)",
-          "Cancel",
-        },
-        { prompt = "Similar page '" .. sim_name .. "' found:" },
-        function(_, idx)
-          if not idx or idx == 3 then return end
-
-          if idx == 1 then
-            -- new_name wins: rename current file, then merge similar into it
-            local ok, err = os.rename(filepath, new_filepath)
-            if not ok then
-              vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
-              return
-            end
-            local merge_err = merge_into(new_filepath, sim_path)
-            if merge_err then
-              vim.notify("Merge failed: " .. merge_err, vim.log.levels.ERROR)
-              return
-            end
-            vim.cmd("silent edit " .. vim.fn.fnameescape(new_filepath))
-            vim.api.nvim_buf_delete(bufnr, { force = true })
-            vim.schedule(function()
-              local updated = rewrite_links(vault, old_name, new_name)
-                            + rewrite_links(vault, sim_name, new_name)
-              vim.notify(("Renamed to '%s', merged '%s'. %d file(s) updated.")
-                :format(new_name, sim_name, updated), vim.log.levels.INFO)
-            end)
-          else
-            -- sim_name wins: merge current file into similar, delete current
-            local err = merge_into(sim_path, filepath)
-            if err then
-              vim.notify("Merge failed: " .. err, vim.log.levels.ERROR)
-              return
-            end
-            vim.cmd("silent edit " .. vim.fn.fnameescape(sim_path))
-            vim.api.nvim_buf_delete(bufnr, { force = true })
-            vim.schedule(function()
-              local updated = rewrite_links(vault, old_name, sim_name)
-              vim.notify(("Merged into '%s'. %d file(s) updated."):format(sim_name, updated), vim.log.levels.INFO)
-            end)
-          end
-        end
-      )
-      return
-    end
-
-    -- ── Case 3: no conflict → plain rename + rewrite refs ─────────────
-    local ok, err = os.rename(filepath, new_filepath)
-    if not ok then
-      vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
-      return
-    end
-    vim.cmd("silent edit " .. vim.fn.fnameescape(new_filepath))
-    vim.api.nvim_buf_delete(bufnr, { force = true })
-    vim.schedule(function()
-      local updated = rewrite_links(vault, old_name, new_name)
-      vim.notify(("Renamed to '%s'. %d file(s) updated."):format(new_name, updated), vim.log.levels.INFO)
+      do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, util)
     end)
-    end) -- vim.schedule
   end)
 end
 
