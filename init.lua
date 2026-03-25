@@ -57,7 +57,8 @@ end
 -- Create an augroup to clear existing autocmds on config reload (:source %)
 local logseq_grp = vim.api.nvim_create_augroup("LogseqStartup", { clear = true })
 
--- Start Logseq og kalender automatisk når du åpner nvim
+-- Open today's journal and sync the calendar automatically when Neovim starts
+-- with no file arguments — the normal "just open your notes" launch path.
 vim.api.nvim_create_autocmd("VimEnter", {
   group = logseq_grp,
   callback = function()
@@ -66,15 +67,15 @@ vim.api.nvim_create_autocmd("VimEnter", {
 
     vim.cmd("LogseqToday")
 
-    -- Replace arbitrary 500ms wait with vim.schedule.
-    -- This queues the function to run as soon as the Neovim event loop is idle, 
-    -- ensuring the UI isn't blocked and avoiding race conditions.
+    -- vim.schedule defers until the event loop is idle rather than using an
+    -- arbitrary sleep, so the UI is never blocked and there are no race
+    -- conditions against BufReadPost autocmds fired by LogseqToday.
     vim.schedule(function()
       local ok_cal, cal = pcall(require, "logseq.calendar")
       if ok_cal then
         cal.sync()
       else
-        vim.notify("FEIL: Fant ikke lua/logseq/calendar.lua!", vim.log.levels.ERROR)
+        vim.notify("[logseq.nvim] calendar module not found — skipping sync.", vim.log.levels.WARN)
       end
     end)
   end,

@@ -1,6 +1,9 @@
 #!/usr/bin/env lua5.4
 --- Test suite for logseq.nvim parser (runs outside Neovim)
-package.path = "./lua/?.lua;./lua/?/init.lua;" .. package.path
+--- Run from the repo root: lua5.4 tests/test_parser.lua
+-- Adjust the Lua search path so require("logseq.parser") resolves relative
+-- to the repo root regardless of which directory the test is launched from.
+package.path = "../lua/?.lua;../lua/?/init.lua;./lua/?.lua;./lua/?/init.lua;" .. package.path
 
 local parser = require("logseq.parser")
 
