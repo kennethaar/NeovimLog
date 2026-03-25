@@ -19,15 +19,14 @@ local function with_modifiable(bufnr, fn)
 end
 
 local function find_section_start(bufnr, header_line)
-  if header_line > 1 then
-    local line = vim.api.nvim_buf_get_lines(bufnr, header_line - 2, header_line - 1, false)[1]
-    if line and line:match("^%s*$") then return header_line - 1 end
-  end
+  if header_line <= 1 then return header_line end
+  local line = vim.api.nvim_buf_get_lines(bufnr, header_line - 2, header_line - 1, false)[1]
+  if line and line:match("^%s*$") then return header_line - 1 end
   return header_line
 end
 
 -- ── State (audit #21: single table per buffer) ────────────────────────
-M._state = {} -- bufnr → { visible, region, source_map, page_name, had_backlinks }
+M._state = {} -- bufnr → { visible, region, source_map, had_backlinks }
 
 local function get_state(bufnr)
   if not M._state[bufnr] then
@@ -35,21 +34,18 @@ local function get_state(bufnr)
       visible = false,
       region = nil,
       source_map = nil,
-      page_name = nil,
       had_backlinks = false,
     }
   end
   return M._state[bufnr]
 end
 
+-- Always derive from the current buffer name — never cache.
+-- Caching caused stale results when a buffer was reused for a different file.
 local function get_page_name(bufnr)
-  local state = get_state(bufnr)
-  if state.page_name then return state.page_name end
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if filepath == "" then return nil end
-  local page_name = indexer.page_name_from_file(filepath)
-  if page_name then state.page_name = page_name end
-  return page_name
+  return indexer.page_name_from_file(filepath)
 end
 
 function M.in_region(bufnr, lnum)
@@ -365,8 +361,7 @@ function M.setup_global()
       for other_bufnr, state in pairs(M._state) do
         if other_bufnr ~= ev.buf and state.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
           vim.schedule(function()
-            local s = M._state[other_bufnr]
-            if s and s.visible and vim.api.nvim_buf_is_valid(other_bufnr) then
+            if vim.api.nvim_buf_is_valid(other_bufnr) then
               M.remove_section(other_bufnr)
               M.render_section(other_bufnr)
             end
