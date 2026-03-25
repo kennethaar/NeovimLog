@@ -106,6 +106,16 @@ local function extract_tags(text)
   return tags
 end
 
+---@param text string
+---@return string[]  ISO dates "YYYY-MM-DD" from Org/Logseq angle-bracket timestamps
+local function extract_org_dates(text)
+  local dates = {}
+  for y, m, d in text:gmatch("<(%d%d%d%d)-(%d%d)-(%d%d)[^>]*>") do
+    dates[#dates + 1] = y .. "-" .. m .. "-" .. d
+  end
+  return dates
+end
+
 -- ── Main parser ───────────────────────────────────────────────────────
 
 ---@param lines string[]
@@ -160,9 +170,17 @@ function M.parse(lines)
           for _, link in ipairs(extract_links(pvalue)) do
             block.links[#block.links + 1] = link
           end
+          -- Org-mode timestamps in property values: SCHEDULED:: <2026-04-01 Wed>
+          for _, d in ipairs(extract_org_dates(pvalue)) do
+            block.links[#block.links + 1] = d
+          end
           block.line_end = j
           j = j + 1
         elseif leading_spaces(line) >= indent + 2 then
+          -- Timestamp may appear on its own continuation line after SCHEDULED::
+          for _, d in ipairs(extract_org_dates(line)) do
+            block.links[#block.links + 1] = d
+          end
           block.line_end = j
           j = j + 1
         else
