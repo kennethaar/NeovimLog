@@ -70,7 +70,7 @@ local function process_placeholders(content, callback)
           prompt = "Select for " .. prompt_text,
         }, function(choice)
           local replacement = choice or ""
-          local new_line = line:gsub("%%.-%% / .*%%.-%%", replacement)
+          local new_line = line:gsub("%%.-%% / .*%%.-%%", function() return replacement end)
           table.insert(final_lines, new_line)
           process_from(idx + 1) -- Resume loop asynchronously
         end)
@@ -84,7 +84,7 @@ local function process_placeholders(content, callback)
           prompt = "Fill " .. prompt_text .. ": ",
         }, function(input)
           local replacement = input or ""
-          local new_line = line:gsub("%%TEXT%%", replacement)
+          local new_line = line:gsub("%%TEXT%%", function() return replacement end)
           table.insert(final_lines, new_line)
           process_from(idx + 1) -- Resume loop asynchronously
         end)
@@ -108,7 +108,13 @@ local function write_template(bufnr, raw_content, label)
   process_placeholders(raw_content, function(processed_lines)
     vim.schedule(function()
       if not vim.api.nvim_buf_is_valid(bufnr) then return end
-      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
+      local existing = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      local is_empty = #existing == 0 or (#existing == 1 and existing[1] == "")
+      if is_empty then
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
+      else
+        vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, processed_lines)
+      end
       vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! w") end)
       vim.notify("[logseq.nvim] Template applied: " .. label, vim.log.levels.INFO)
     end)
@@ -133,9 +139,14 @@ function M.apply_template(bufnr)
     if year_content  then parts[#parts + 1] = year_content  end
     if month_content then parts[#parts + 1] = month_content end
 
-    local label = year_content and month_content
-      and (year .. " + " .. year .. "_" .. month)
-      or  (year_content and year or (year .. "_" .. month))
+    local label
+    if year_content and month_content then
+      label = year .. " + " .. year .. "_" .. month
+    elseif year_content then
+      label = year
+    else
+      label = year .. "_" .. month
+    end
 
     write_template(bufnr, table.concat(parts, "\n"), label)
     return
@@ -146,7 +157,7 @@ function M.apply_template(bufnr)
   if not namespace or namespace == "Templates" then return end
 
   local raw_content = get_template_content(namespace)
-  if not raw_content then
+  if not raw_content or raw_content == "" then
     vim.notify("[logseq.nvim] No template found for namespace: " .. namespace, vim.log.levels.DEBUG)
     return
   end
