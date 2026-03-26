@@ -156,6 +156,10 @@ function M.parse(lines)
         children    = {},
         parent      = nil,
       }
+      -- Org-mode timestamps inline on the bullet line: SCHEDULED:: <2026-04-01 Wed>
+      for _, d in ipairs(extract_org_dates(content)) do
+        block.links[#block.links + 1] = d
+      end
 
       local j = i + 1
       while j <= #lines do

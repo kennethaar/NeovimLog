@@ -269,7 +269,9 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
         source_page    = source_page,
         source_file    = filepath,
         context_blocks = extract_context(block, file_lines),
-        is_scheduled   = block.properties.SCHEDULED ~= nil or block.properties.DEADLINE ~= nil,
+        is_scheduled   = block.properties.SCHEDULED ~= nil or block.properties.DEADLINE ~= nil
+                      or block.content:find("SCHEDULED::", 1, true) ~= nil
+                      or block.content:find("DEADLINE::", 1, true) ~= nil,
       })
     end
   end
