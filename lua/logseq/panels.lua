@@ -85,12 +85,26 @@ end
 
 -- ── ASCII tab bar builder ─────────────────────────────────────────────
 
-local function build_tabbar_lines(tabs, active)
+local LABELS_FULL  = { backlinks = "Backlinks", queries = "Queries",  ns_tree = "Namespace" }
+local LABELS_SHORT = { backlinks = "Links",     queries = "Query",    ns_tree = "NS"        }
+
+-- Choose full labels if they fit within win_width, otherwise short labels.
+local function pick_labels(tabs, win_width)
+  local total = 0
+  for i, tab in ipairs(tabs) do
+    total = total + #(" " .. LABELS_FULL[tab.key] .. " ") + 2  -- label + 2 border chars
+    if i < #tabs then total = total + 2 end                     -- gap between buttons
+  end
+  return total <= win_width and LABELS_FULL or LABELS_SHORT
+end
+
+local function build_tabbar_lines(tabs, active, win_width)
+  local labels    = pick_labels(tabs, win_width or vim.o.columns)
   local top, mid, bot = "", "", ""
   local button_cols   = {}
 
   for i, tab in ipairs(tabs) do
-    local label   = " " .. tab.label .. " "
+    local label   = " " .. labels[tab.key] .. " "
     local width   = #label
     local col_frm = #mid  -- 0-indexed byte offset of the left border char
 
@@ -163,8 +177,9 @@ function M.render_tabbar(bufnr)
     if ok and is_panel_visible(mod, bufnr) then active = key; break end
   end
 
-  local vis_lines, button_cols = build_tabbar_lines(tabs, active)
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local win_width              = vim.api.nvim_win_get_width(0)
+  local vis_lines, button_cols = build_tabbar_lines(tabs, active, win_width)
+  local line_count             = vim.api.nvim_buf_line_count(bufnr)
 
   -- Append: empty separator + 3 visual lines
   with_modifiable(bufnr, function()
@@ -192,7 +207,8 @@ function M.update_tabbar(bufnr)
     if ok and is_panel_visible(mod, bufnr) then active = key; break end
   end
 
-  local vis_lines, button_cols = build_tabbar_lines(state.tabs, active)
+  local win_width              = vim.api.nvim_win_get_width(0)
+  local vis_lines, button_cols = build_tabbar_lines(state.tabs, active, win_width)
   state.button_cols = button_cols
 
   local top0 = state.vis_start - 1  -- 0-indexed
@@ -343,6 +359,18 @@ function M.setup_buf(bufnr)
       require("logseq.links").follow()
     end
   end, { buffer = bufnr, silent = true, desc = "Logseq: follow link / activate panel tab" })
+
+  -- Single click / tap on a tab button activates it
+  vim.keymap.set("n", "<LeftMouse>", function()
+    local pos = vim.fn.getmousepos()
+    if not pos or pos.line == 0 then return end
+    -- Move cursor to the clicked position (replicates default <LeftMouse> behaviour)
+    pcall(vim.api.nvim_set_current_win, pos.winid ~= 0 and pos.winid or vim.api.nvim_get_current_win())
+    local clicked_buf = vim.api.nvim_get_current_buf()
+    pcall(vim.api.nvim_win_set_cursor, 0, { pos.line, math.max(0, pos.column - 1) })
+    -- If the click landed on a tab bar button, activate it; otherwise ignore
+    handle_cr(clicked_buf)
+  end, { buffer = bufnr, silent = true, desc = "Logseq: click panel tab" })
 
   local group = vim.api.nvim_create_augroup("LogseqPanels_" .. bufnr, { clear = true })
 
