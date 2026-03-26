@@ -106,6 +106,16 @@ local function extract_tags(text)
   return tags
 end
 
+---@param text string
+---@return string[]  ISO dates "YYYY-MM-DD" from Org/Logseq angle-bracket timestamps
+local function extract_org_dates(text)
+  local dates = {}
+  for y, m, d in text:gmatch("<(%d%d%d%d)-(%d%d)-(%d%d)[^>]*>") do
+    dates[#dates + 1] = y .. "-" .. m .. "-" .. d
+  end
+  return dates
+end
+
 -- ── Main parser ───────────────────────────────────────────────────────
 
 ---@param lines string[]
@@ -136,16 +146,25 @@ function M.parse(lines)
 
     if indent then
       local block = {
-        line_start  = i,
-        line_end    = i,
-        indent      = indent,
-        content     = content,
-        properties  = {},
-        links       = extract_links(content),
-        tags        = extract_tags(content),
-        children    = {},
-        parent      = nil,
+        line_start   = i,
+        line_end     = i,
+        indent       = indent,
+        content      = content,
+        properties   = {},
+        links        = extract_links(content),
+        tags         = extract_tags(content),
+        is_scheduled = false,
+        children     = {},
+        parent       = nil,
       }
+      -- Org-mode timestamps inline on the bullet line: SCHEDULED:: <2026-04-01 Wed>
+      for _, d in ipairs(extract_org_dates(content)) do
+        block.links[#block.links + 1] = d
+      end
+      local lc = content:lower()
+      if lc:find("scheduled:", 1, true) or lc:find("deadline:", 1, true) then
+        block.is_scheduled = true
+      end
 
       local j = i + 1
       while j <= #lines do
@@ -155,14 +174,30 @@ function M.parse(lines)
         if line:match("^%s*$") then break end
 
         local pi, pkey, pvalue = match_property(line)
-        if pkey and pi == indent + 2 then
+        -- Accept properties at indent+2 (standard Logseq) OR at the same indent
+        -- as the block (Logseq also writes SCHEDULED/DEADLINE at the block's own level).
+        if pkey and (pi == indent + 2 or pi == indent) then
           block.properties[pkey] = pvalue
+          local pk = pkey:lower()
+          if pk == "scheduled" or pk == "deadline" then block.is_scheduled = true end
           for _, link in ipairs(extract_links(pvalue)) do
             block.links[#block.links + 1] = link
           end
+          for _, d in ipairs(extract_org_dates(pvalue)) do
+            block.links[#block.links + 1] = d
+          end
           block.line_end = j
           j = j + 1
-        elseif leading_spaces(line) >= indent + 2 then
+        elseif leading_spaces(line) >= indent then
+          -- Continuation line (timestamp, wrapped text, single-colon SCHEDULED, etc.).
+          -- Accept any non-bullet, non-blank line at the block's own indent or deeper.
+          for _, d in ipairs(extract_org_dates(line)) do
+            block.links[#block.links + 1] = d
+          end
+          local ll = line:lower()
+          if ll:find("scheduled:", 1, true) or ll:find("deadline:", 1, true) then
+            block.is_scheduled = true
+          end
           block.line_end = j
           j = j + 1
         else
@@ -247,6 +282,31 @@ function M.block_at_line(blocks, lnum)
     end
   end
   return nil
+end
+
+--- Extract all [[links]] and #tags from page-level property values.
+--- Returns a set (table keyed by string → true).
+--- Applies ISO-date underscore→dash normalization to match norm_link in indexer.
+---@param page_properties table<string,string>
+---@return table<string,boolean>
+function M.page_property_refs(page_properties)
+  local refs = {}
+  local function add(s)
+    refs[s:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3")] = true
+  end
+  for _, value in pairs(page_properties) do
+    for link in value:gmatch("%[%[(.-)%]%]") do
+      add(link:match("^(.-)%|") or link)
+    end
+    local clean = value:gsub("%[%[.-%]%]", "")
+    for tag in clean:gmatch("#([%w_%-/]+)") do
+      add(tag)
+    end
+    for y, m, d in value:gmatch("<(%d%d%d%d)-(%d%d)-(%d%d)[^>]*>") do
+      add(y .. "-" .. m .. "-" .. d)
+    end
+  end
+  return refs
 end
 
 --- Get the sibling list a block belongs to.
