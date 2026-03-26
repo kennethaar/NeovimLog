@@ -267,6 +267,28 @@ function M.block_at_line(blocks, lnum)
   return nil
 end
 
+--- Extract all [[links]] and #tags from page-level property values.
+--- Returns a set (table keyed by string → true).
+--- Applies ISO-date underscore→dash normalization to match norm_link in indexer.
+---@param page_properties table<string,string>
+---@return table<string,boolean>
+function M.page_property_refs(page_properties)
+  local refs = {}
+  local function add(s)
+    refs[s:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3")] = true
+  end
+  for _, value in pairs(page_properties) do
+    for link in value:gmatch("%[%[(.-)%]%]") do
+      add(link:match("^(.-)%|") or link)
+    end
+    local clean = value:gsub("%[%[.-%]%]", "")
+    for tag in clean:gmatch("#([%w_%-/]+)") do
+      add(tag)
+    end
+  end
+  return refs
+end
+
 --- Get the sibling list a block belongs to.
 ---@param block LogseqBlock
 ---@param roots LogseqBlock[]

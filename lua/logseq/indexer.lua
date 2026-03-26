@@ -273,6 +273,23 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
       })
     end
   end
+
+  -- Page-level property refs: [[ProjectX]] or #ProjectX in page properties
+  -- (e.g. "tags:: [[ProjectX]]") create a backlink even when no block links to the page.
+  -- Use the first block as the context anchor if present and not already matched.
+  local p_refs = parser.page_property_refs(parsed.page_properties)
+  local page_prop_match = false
+  for name in pairs(target_names) do
+    if p_refs[name] then page_prop_match = true; break end
+  end
+  if page_prop_match and flat[1] and not matched[flat[1].line_start] then
+    table.insert(results, {
+      source_page    = source_page,
+      source_file    = filepath,
+      context_blocks = extract_context(flat[1], file_lines),
+      is_scheduled   = false,
+    })
+  end
 end
 
 -- ── Main finder (Async) ───────────────────────────────────────────────
