@@ -45,7 +45,49 @@ function M.page_name_from_file(filepath)
   return nil
 end
 
--- ── Effective refs computation ────────────────────────────────────────
+-- ── Alias helpers ─────────────────────────────────────────────────────
+
+-- Split a Logseq "alias:: a, b, c" value into trimmed name strings.
+local function parse_alias_list(alias_str)
+  local aliases = {}
+  for part in alias_str:gmatch("[^,]+") do
+    local trimmed = part:match("^%s*(.-)%s*$")
+    if trimmed ~= "" then aliases[#aliases + 1] = trimmed end
+  end
+  return aliases
+end
+
+-- Return the alias list defined in the page-properties of a vault file.
+-- Uses the indexer cache when the file has already been parsed; reads and
+-- caches it otherwise, so this is at most one extra disk read per session.
+local function get_page_aliases(filepath, uv)
+  if not filepath then return {} end
+  local norm = util.normalize(filepath)
+  local page_props
+
+  local cached = M._cache[norm]
+  if cached then
+    page_props = cached.parsed.page_properties
+  else
+    local stat = uv.fs_stat(filepath)
+    if not stat then return {} end
+    local fd = uv.fs_open(filepath, "r", 438)
+    if not fd then return {} end
+    local content = uv.fs_read(fd, stat.size, 0)
+    uv.fs_close(fd)
+    if not content then return {} end
+    local lines = vim.split(content, "\n", { plain = true })
+    local parsed = parser.parse(lines)
+    M._cache[norm] = { mtime = stat.mtime.sec, parsed = parsed, lines = lines, content = content }
+    page_props = parsed.page_properties
+  end
+
+  local alias_str = page_props.alias or page_props.aliases
+  if not alias_str or alias_str == "" then return {} end
+  return parse_alias_list(alias_str)
+end
+
+
 
 -- Journal filenames use _ (2024_01_15) but Logseq page titles use - (2024-01-15).
 -- Normalise all ISO-date refs to dashes so both link styles are matched.
@@ -199,23 +241,29 @@ local function load_file(filepath, norm, needles, uv)
   return lines, parsed
 end
 
---- Scan one file for blocks that reference page_name; append results.
-local function process_file(filepath, norm, page_name, needles, uv, results)
+--- Scan one file for blocks that reference any name in target_names; append results.
+--- target_names is a set (table keyed by string) covering the canonical page name
+--- plus all aliases declared on that page.
+local function process_file(filepath, norm, target_names, needles, uv, results)
   local file_lines, parsed = load_file(filepath, norm, needles, uv)
   if not file_lines then return end
 
   -- Self-reference by path is already excluded upstream via norm_exclude.
-  -- Do NOT also exclude by page-name: a journal file whose formatted date
-  -- matches a pages/ file of the same name would be wrongly skipped.
   local source_page = M.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
 
-  local flat      = parser.flatten(parsed.blocks)
-  local all_refs  = compute_all_refs(flat)
-  local matched   = {}  -- line_start → true for already-added blocks
+  local flat     = parser.flatten(parsed.blocks)
+  local all_refs = compute_all_refs(flat)
+  local matched  = {}  -- line_start → true for already-added blocks
 
   for _, block in ipairs(flat) do
     local refs = all_refs[block]
-    if refs and refs[page_name] and not is_dominated(block, matched) then
+    local is_ref = false
+    if refs then
+      for name in pairs(target_names) do
+        if refs[name] then is_ref = true; break end
+      end
+    end
+    if is_ref and not is_dominated(block, matched) then
       matched[block.line_start] = true
       table.insert(results, {
         source_page    = source_page,
@@ -245,9 +293,24 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
   if vim.fn.isdirectory(vault .. "/journals") == 1 then table.insert(search_dirs, vault .. "/journals") end
   if #search_dirs == 0 then return on_complete({}) end
 
+  local uv = vim.uv or vim.loop
+
+  -- Build the target set: canonical page name + every alias declared on the page.
+  -- A link to any alias counts as a backlink to the canonical page.
+  local target_names = { [page_name] = true }
+  for _, alias in ipairs(get_page_aliases(exclude_file, uv)) do
+    target_names[alias] = true
+  end
+
+  -- Collect needles for every target name, deduped via a set.
+  local needle_set = {}
+  for name in pairs(target_names) do
+    for _, n in ipairs(build_needles(name)) do needle_set[n] = true end
+  end
+  local needles = {}
+  for n in pairs(needle_set) do needles[#needles + 1] = n end
+
   local norm_exclude = exclude_file and util.normalize(exclude_file) or nil
-  local needles   = build_needles(page_name)
-  local uv        = vim.uv or vim.loop
   local all_files = list_md_files(search_dirs, uv)
   local results   = {}
 
@@ -262,7 +325,7 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
       local filepath = all_files[j]
       local norm     = util.normalize(filepath)
       if norm ~= norm_exclude then
-        process_file(filepath, norm, page_name, needles, uv, results)
+        process_file(filepath, norm, target_names, needles, uv, results)
       end
     end
 
