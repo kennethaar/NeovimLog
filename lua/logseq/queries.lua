@@ -33,6 +33,15 @@ end
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 
+local function with_modifiable(bufnr, fn)
+  local was_modified   = vim.bo[bufnr].modified
+  local was_modifiable = vim.bo[bufnr].modifiable
+  vim.bo[bufnr].modifiable = true
+  fn()
+  vim.bo[bufnr].modified   = was_modified
+  vim.bo[bufnr].modifiable = was_modifiable
+end
+
 local function is_active_task(line)
   for _, state in ipairs(util.active_todo_states) do
     if line:match("^%s*%- " .. state .. "%s+") then return true end
@@ -316,9 +325,9 @@ function M.remove_section(bufnr)
     if prev and prev:match("^%s*$") then start = header_line - 1 end
   end
 
-  local was_modified = vim.bo[bufnr].modified
-  vim.api.nvim_buf_set_lines(bufnr, start - 1, vim.api.nvim_buf_line_count(bufnr), false, {})
-  vim.bo[bufnr].modified = was_modified
+  with_modifiable(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, start - 1, vim.api.nvim_buf_line_count(bufnr), false, {})
+  end)
 
   state.visible = false
   state.region = nil
@@ -370,15 +379,15 @@ function M.render_section(bufnr)
   end
 
   local state = get_state(bufnr)
-  local was_modified = vim.bo[bufnr].modified
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   local section_start = line_count + 1
 
   local inject = { SEPARATOR }
   vim.list_extend(inject, display_lines)
 
-  vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, inject)
-  vim.bo[bufnr].modified = was_modified
+  with_modifiable(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, inject)
+  end)
 
   state.region = {
     start_line = section_start,

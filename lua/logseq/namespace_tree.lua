@@ -312,13 +312,6 @@ function M.setup_buf(bufnr)
       M._state[ev.buf] = nil
     end,
   })
-
-  local page_name = get_page_name(bufnr)
-  if page_name and get_ns_root(page_name) then
-    vim.schedule(function()
-      if vim.api.nvim_buf_is_valid(bufnr) then M.render_section(bufnr) end
-    end)
-  end
 end
 
 return M

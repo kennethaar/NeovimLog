@@ -26,6 +26,7 @@ local function activate(bufnr)
     "logseq.backlinks",
     "logseq.queries",
     "logseq.namespace_tree",
+    "logseq.panels",   -- must be last: overrides panel keymaps and owns auto-render
   }
 
   for _, mod in ipairs(modules) do
