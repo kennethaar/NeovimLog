@@ -268,6 +268,34 @@ for _, l in ipairs(r.blocks[1].links) do
 end
 assert_eq(found_date, true, "split SCHEDULED date in block.links")
 
+-- ── Test 15a: SCHEDULED at same indent as block (zero-indent) ────────
+-- Logseq writes SCHEDULED at the block's own indent level, not indent+2.
+
+print("Test 15a: SCHEDULED at block indent (single colon)")
+r = parser.parse({
+  "- TODO Send report.",
+  "SCHEDULED: <2026-03-26 Wed>",
+})
+found_date = false
+for _, l in ipairs(r.blocks[1].links) do
+  if l == "2026-03-26" then found_date = true end
+end
+assert_eq(found_date,              true, "same-indent SCHEDULED: date in block.links")
+assert_eq(r.blocks[1].is_scheduled, true, "same-indent SCHEDULED: sets is_scheduled")
+
+print("Test 15b: SCHEDULED at block indent (double colon)")
+r = parser.parse({
+  "- TODO Send report.",
+  "SCHEDULED:: <2026-03-26 Wed>",
+})
+found_date = false
+for _, l in ipairs(r.blocks[1].links) do
+  if l == "2026-03-26" then found_date = true end
+end
+assert_eq(found_date,              true, "same-indent SCHEDULED:: date in block.links")
+assert_eq(r.blocks[1].is_scheduled, true, "same-indent SCHEDULED:: sets is_scheduled")
+assert_eq(r.blocks[1].properties["SCHEDULED"], "<2026-03-26 Wed>", "SCHEDULED:: stored as property")
+
 -- ── Test 15: page_property_refs ───────────────────────────────────────
 
 print("Test 15: page_property_refs")

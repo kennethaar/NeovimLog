@@ -146,19 +146,24 @@ function M.parse(lines)
 
     if indent then
       local block = {
-        line_start  = i,
-        line_end    = i,
-        indent      = indent,
-        content     = content,
-        properties  = {},
-        links       = extract_links(content),
-        tags        = extract_tags(content),
-        children    = {},
-        parent      = nil,
+        line_start   = i,
+        line_end     = i,
+        indent       = indent,
+        content      = content,
+        properties   = {},
+        links        = extract_links(content),
+        tags         = extract_tags(content),
+        is_scheduled = false,
+        children     = {},
+        parent       = nil,
       }
       -- Org-mode timestamps inline on the bullet line: SCHEDULED:: <2026-04-01 Wed>
       for _, d in ipairs(extract_org_dates(content)) do
         block.links[#block.links + 1] = d
+      end
+      local lc = content:lower()
+      if lc:find("scheduled:", 1, true) or lc:find("deadline:", 1, true) then
+        block.is_scheduled = true
       end
 
       local j = i + 1
@@ -169,21 +174,29 @@ function M.parse(lines)
         if line:match("^%s*$") then break end
 
         local pi, pkey, pvalue = match_property(line)
-        if pkey and pi == indent + 2 then
+        -- Accept properties at indent+2 (standard Logseq) OR at the same indent
+        -- as the block (Logseq also writes SCHEDULED/DEADLINE at the block's own level).
+        if pkey and (pi == indent + 2 or pi == indent) then
           block.properties[pkey] = pvalue
+          local pk = pkey:lower()
+          if pk == "scheduled" or pk == "deadline" then block.is_scheduled = true end
           for _, link in ipairs(extract_links(pvalue)) do
             block.links[#block.links + 1] = link
           end
-          -- Org-mode timestamps in property values: SCHEDULED:: <2026-04-01 Wed>
           for _, d in ipairs(extract_org_dates(pvalue)) do
             block.links[#block.links + 1] = d
           end
           block.line_end = j
           j = j + 1
-        elseif leading_spaces(line) >= indent + 2 then
-          -- Timestamp may appear on its own continuation line after SCHEDULED::
+        elseif leading_spaces(line) >= indent then
+          -- Continuation line (timestamp, wrapped text, single-colon SCHEDULED, etc.).
+          -- Accept any non-bullet, non-blank line at the block's own indent or deeper.
           for _, d in ipairs(extract_org_dates(line)) do
             block.links[#block.links + 1] = d
+          end
+          local ll = line:lower()
+          if ll:find("scheduled:", 1, true) or ll:find("deadline:", 1, true) then
+            block.is_scheduled = true
           end
           block.line_end = j
           j = j + 1

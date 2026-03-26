@@ -168,14 +168,14 @@ local function matches_target(refs, target_names)
   return false
 end
 
--- Return true if the block has a SCHEDULED or DEADLINE marker (any case).
+-- Return true if the block has a SCHEDULED or DEADLINE marker (any case, single or double colon).
+-- block.is_scheduled is set by the parser for both continuation-line and inline markers.
 local function is_block_scheduled(block)
-  return block.properties.SCHEDULED ~= nil
+  return block.is_scheduled == true
+      or block.properties.SCHEDULED ~= nil
       or block.properties.scheduled ~= nil
       or block.properties.DEADLINE  ~= nil
       or block.properties.deadline  ~= nil
-      or block.content:lower():find("scheduled::", 1, true) ~= nil
-      or block.content:lower():find("deadline::",  1, true) ~= nil
 end
 
 -- ── Candidate scanner ─────────────────────────────────────────────────
