@@ -29,10 +29,7 @@ _G.logseq_close_win    = function(...) M.close_win(...) end
 
 -- Winbar buttons (file/nav)
 _G.logseq_sl_search    = function() require("logseq.file_search").open() end
-_G.logseq_sl_backlinks = function() require("logseq.backlinks").toggle() end
-_G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
-_G.logseq_sl_nstree    = function() require("logseq.namespace_tree").toggle() end
 
 -- Journal day navigation
 local function _open_journal_day(offset)
@@ -87,11 +84,8 @@ function M.winbar()
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
   local nav_parts = {}
-  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
-  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
-  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
-  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
-  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+  if wb.search  ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
+  if wb.calsync ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
 
   local nav_btns  = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
   local close_btn = ""
