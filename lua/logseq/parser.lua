@@ -289,6 +289,9 @@ function M.page_property_refs(page_properties)
     for tag in clean:gmatch("#([%w_%-/]+)") do
       add(tag)
     end
+    for y, m, d in value:gmatch("<(%d%d%d%d)-(%d%d)-(%d%d)[^>]*>") do
+      add(y .. "-" .. m .. "-" .. d)
+    end
   end
   return refs
 end

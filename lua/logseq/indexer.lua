@@ -158,6 +158,26 @@ local function extract_context(block, lines)
   return result
 end
 
+-- ── Ref helpers ───────────────────────────────────────────────────────
+
+-- Return true if any key in target_names exists in refs.
+local function matches_target(refs, target_names)
+  for name in pairs(target_names) do
+    if refs[name] then return true end
+  end
+  return false
+end
+
+-- Return true if the block has a SCHEDULED or DEADLINE marker (any case).
+local function is_block_scheduled(block)
+  return block.properties.SCHEDULED ~= nil
+      or block.properties.scheduled ~= nil
+      or block.properties.DEADLINE  ~= nil
+      or block.properties.deadline  ~= nil
+      or block.content:lower():find("scheduled::", 1, true) ~= nil
+      or block.content:lower():find("deadline::",  1, true) ~= nil
+end
+
 -- ── Candidate scanner ─────────────────────────────────────────────────
 
 local function build_needles(page_name)
@@ -256,22 +276,13 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
   local matched  = {}  -- line_start → true for already-added blocks
 
   for _, block in ipairs(flat) do
-    local refs = all_refs[block]
-    local is_ref = false
-    if refs then
-      for name in pairs(target_names) do
-        if refs[name] then is_ref = true; break end
-      end
-    end
-    if is_ref and not is_dominated(block, matched) then
+    if matches_target(all_refs[block], target_names) and not is_dominated(block, matched) then
       matched[block.line_start] = true
       table.insert(results, {
         source_page    = source_page,
         source_file    = filepath,
         context_blocks = extract_context(block, file_lines),
-        is_scheduled   = block.properties.SCHEDULED ~= nil or block.properties.DEADLINE ~= nil
-                      or block.content:find("SCHEDULED::", 1, true) ~= nil
-                      or block.content:find("DEADLINE::", 1, true) ~= nil,
+        is_scheduled   = is_block_scheduled(block),
       })
     end
   end
@@ -280,11 +291,7 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
   -- (e.g. "tags:: [[ProjectX]]") create a backlink even when no block links to the page.
   -- Use the first block as the context anchor if present and not already matched.
   local p_refs = parser.page_property_refs(parsed.page_properties)
-  local page_prop_match = false
-  for name in pairs(target_names) do
-    if p_refs[name] then page_prop_match = true; break end
-  end
-  if page_prop_match and flat[1] and not matched[flat[1].line_start] then
+  if matches_target(p_refs, target_names) and flat[1] and not matched[flat[1].line_start] then
     table.insert(results, {
       source_page    = source_page,
       source_file    = filepath,
@@ -319,6 +326,13 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
   local target_names = { [page_name] = true }
   for _, alias in ipairs(get_page_aliases(exclude_file, uv)) do
     target_names[alias] = true
+  end
+  -- For journal pages with a custom title format (e.g. "Apr 1st, 2026"), org-mode
+  -- SCHEDULED/DEADLINE timestamps always embed the underlying ISO date <2026-04-01>.
+  -- Add the ISO form so those tasks are found regardless of the vault's page-title format.
+  if exclude_file then
+    local stem = exclude_file:match("[/\\]journals[/\\](%d%d%d%d[_%-]%d%d[_%-]%d%d)%.md$")
+    if stem then target_names[stem:gsub("_", "-")] = true end
   end
 
   -- Collect needles for every target name, deduped via a set.
