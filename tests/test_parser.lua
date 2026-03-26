@@ -227,6 +227,65 @@ assert_eq(found and found.content, "F", "line 7 → F")
 found = parser.block_at_line(r.blocks, 99)
 assert_eq(found, nil, "line 99 → nil")
 
+-- ── Test 12: Inline SCHEDULED org-date extraction ────────────────────
+-- SCHEDULED:: <2026-04-01 Wed> on the same line as the bullet content
+
+print("Test 12: Inline SCHEDULED org-date")
+r = parser.parse({
+  "- TODO Send report. SCHEDULED:: <2026-04-01 Wed>",
+})
+local found_date = false
+for _, l in ipairs(r.blocks[1].links) do
+  if l == "2026-04-01" then found_date = true end
+end
+assert_eq(found_date, true, "inline SCHEDULED date in block.links")
+
+-- ── Test 13: SCHEDULED on continuation line ───────────────────────────
+
+print("Test 13: SCHEDULED on continuation line")
+r = parser.parse({
+  "- TODO Send report.",
+  "  SCHEDULED:: <2026-04-01 Wed>",
+})
+found_date = false
+for _, l in ipairs(r.blocks[1].links) do
+  if l == "2026-04-01" then found_date = true end
+end
+assert_eq(found_date, true, "continuation SCHEDULED date in block.links")
+assert_eq(r.blocks[1].properties["SCHEDULED"], "<2026-04-01 Wed>", "SCHEDULED property set")
+
+-- ── Test 14: SCHEDULED on its own line, date on next continuation line
+
+print("Test 14: SCHEDULED:: then date on next line")
+r = parser.parse({
+  "- TODO Send report.",
+  "  SCHEDULED::",
+  "  <2026-04-01 Wed>",
+})
+found_date = false
+for _, l in ipairs(r.blocks[1].links) do
+  if l == "2026-04-01" then found_date = true end
+end
+assert_eq(found_date, true, "split SCHEDULED date in block.links")
+
+-- ── Test 15: page_property_refs ───────────────────────────────────────
+
+print("Test 15: page_property_refs")
+local refs = parser.page_property_refs({
+  tags    = "[[ProjectX]] [[ProjectY]]",
+  area    = "#Work",
+  nothing = "plain text",
+})
+assert_eq(refs["ProjectX"], true, "[[ProjectX]] in page props")
+assert_eq(refs["ProjectY"], true, "[[ProjectY]] in page props")
+assert_eq(refs["Work"],     true, "#Work in page props")
+assert_eq(refs["plain"],    nil,  "plain text not in refs")
+
+-- Pipe alias stripping
+refs = parser.page_property_refs({ related = "[[Real Page|Display Name]]" })
+assert_eq(refs["Real Page"],    true, "pipe alias stripped to real page")
+assert_eq(refs["Display Name"], nil,  "display name not in refs")
+
 -- ── Summary ──────────────────────────────────────────────────────────
 
 print(string.format("\n%d passed, %d failed", pass_count, fail_count))
