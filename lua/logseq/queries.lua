@@ -125,9 +125,15 @@ local function process_single_file(filepath, page_link, all_todos, very_next_tod
   local source_page = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", ""):gsub("___", "/")
   local indent_stack = {}
   local line_num = 0
+  local in_codeblock = false
 
   for line in (content .. "\n"):gmatch("([^\n]*)\n") do
     line_num = line_num + 1
+    if line:match("^%s*```") or line:match("^%s*~~~") then
+      in_codeblock = not in_codeblock
+      goto continue
+    end
+    if in_codeblock then goto continue end
     local indent_str = line:match("^(%s*)%- ")
     if not indent_str then goto continue end
 
@@ -374,9 +380,15 @@ function M.render_section(bufnr)
     for rel, info in pairs(section_smap) do all_smap[rel + offset] = info end
   end
 
+  local in_codeblock = false
   for _, raw in ipairs(vim.split(query_content, "\n", { plain = true })) do
     local line = vim.trim(raw)  -- strips \r (CRLF), spaces, tabs
-    if     line == "%QueryTodos%"         then append_section(all_todos,       "Actions")
+    if line:match("^```") or line:match("^~~~") then
+      in_codeblock = not in_codeblock
+      table.insert(display_lines, line)  -- keep the fence line as-is
+    elseif in_codeblock then
+      table.insert(display_lines, raw:gsub("\r$", ""))  -- preserve indentation inside blocks
+    elseif line == "%QueryTodos%"         then append_section(all_todos,       "Actions")
     elseif line == "%QueryVeryNextTodos%" then append_section(very_next_todos, "Very next actions")
     elseif line ~= ""                     then table.insert(display_lines, line)
     end
