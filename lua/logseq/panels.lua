@@ -63,9 +63,14 @@ end
 
 -- ── Relevance ─────────────────────────────────────────────────────────
 
+local function is_meta_page(filename)
+  return filename:match("^Query___") ~= nil or filename:match("^Templates___") ~= nil
+end
+
 local function has_query_file(bufnr)
   local filename = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t")
-  local ns       = filename:match("^(.-)___")
+  if is_meta_page(filename) then return false end
+  local ns = filename:match("^(.-)___")
   if not ns then return false end
   local vault = config.current.vault_path
   if not vault or vault == "" then return false end
@@ -73,7 +78,8 @@ local function has_query_file(bufnr)
 end
 
 local function is_namespace_page(bufnr)
-  return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"):find("___", 1, true) ~= nil
+  local filename = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t")
+  return not is_meta_page(filename) and filename:find("___", 1, true) ~= nil
 end
 
 local function get_tabs(bufnr)

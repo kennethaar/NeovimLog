@@ -175,7 +175,10 @@ local function gather_tasks(page_name)
   local very_next_todos = {}
 
   for _, filepath in ipairs(files) do
-    process_single_file(filepath, page_link, all_todos, very_next_todos)
+    local name = vim.fn.fnamemodify(filepath, ":t")
+    if not name:match("^Query___") and not name:match("^Templates___") then
+      process_single_file(filepath, page_link, all_todos, very_next_todos)
+    end
   end
 
   return all_todos, very_next_todos
