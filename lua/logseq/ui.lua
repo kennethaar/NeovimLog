@@ -86,6 +86,19 @@ function M.winbar()
 
   local wb = (require("logseq.config").current.winbar_buttons) or {}
 
+  -- ── Zoom breadcrumb (shown instead of normal winbar when zoomed) ──
+  local zoom_ok, zoom = pcall(require, "logseq.zoom")
+  if zoom_ok and zoom.is_active(bufnr) then
+    local bc = zoom.breadcrumb(bufnr)
+    if bc then
+      local nav_parts = {}
+      if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
+      if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
+      local nav_btns = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
+      return " 🔍 " .. bc:gsub("%%", "%%%%") .. nav_btns
+    end
+  end
+
   local nav_parts = {}
   if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
   if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
@@ -451,6 +464,10 @@ function M.open_help()
     "   <leader>q             Toggle queries panel",
     "   <leader>t             Apply template to current page",
     "   " .. k("search_pages","<C-k>") .. "   Search pages / all files",
+    "",
+    "  ZOOM",
+    "   " .. k("zoom_toggle","<leader>z") .. "   Zoom into block subtree (toggle)",
+    "   Outdent at zoom root → block escapes to sibling of zoom root",
     "",
     "  FOLDING & TODO",
     "   " .. k("fold_toggle","za") .. "   Toggle fold at cursor",

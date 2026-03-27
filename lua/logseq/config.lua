@@ -31,6 +31,7 @@ M.defaults = {
     help             = "hh",
     search_pages     = "<C-k>",
     rename_page      = "<leader>rn",
+    zoom_toggle      = "<leader>z",
   },
   winbar_buttons = {
     rename       = true,
