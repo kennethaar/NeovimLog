@@ -14,6 +14,11 @@ local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@�
 
 local BLOCK_NS = vim.api.nvim_create_namespace("logseq_block_ui")
 
+-- Per-buffer pending flag: ensures at most one deferred virt-line update is
+-- queued per buffer at any time, coalescing bursts of TextChanged events
+-- (e.g. during the write lifecycle when sections are removed).
+local _vl_pending = {}
+
 -- ── Helpers ───────────────────────────────────────────────────────────
 
 --- Safely escapes magic characters for Lua's string.gsub pattern matching
@@ -527,6 +532,18 @@ local function update_block_virt_lines(bufnr)
   end
 end
 
+--- Schedule a deferred virt-line update.  If one is already pending for this
+--- buffer, the new request is dropped — the existing scheduled call will run
+--- after the current event burst (write lifecycle, rapid typing, etc.) settles.
+local function schedule_virt_update(bufnr)
+  if _vl_pending[bufnr] then return end
+  _vl_pending[bufnr] = true
+  vim.schedule(function()
+    _vl_pending[bufnr] = nil
+    update_block_virt_lines(bufnr)
+  end)
+end
+
 local function setup_syntax(bufnr)
   vim.api.nvim_buf_call(bufnr, function()
     -- Hide id:: property lines entirely
@@ -630,11 +647,13 @@ function M.setup_buf(bufnr)
   setup_highlights()
   update_block_virt_lines(bufnr)
 
-  -- Refresh virtual spacing after edits
+  -- Refresh virtual spacing after edits.
+  -- Uses schedule_virt_update to avoid a full buffer scan on every event in a
+  -- burst (rapid typing, write lifecycle removing sections, etc.).
   vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" }, {
     group = grp,
     buffer = bufnr,
-    callback = function() update_block_virt_lines(bufnr) end,
+    callback = function() schedule_virt_update(bufnr) end,
   })
 
   -- Active-event highlight + tabline on buffer enter

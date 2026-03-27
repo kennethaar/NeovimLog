@@ -54,10 +54,13 @@ function M.in_region(bufnr, lnum)
   return lnum >= state.region.start_line and lnum <= state.region.end_line
 end
 
-local function find_header_line(bufnr)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+-- hint: 1-indexed expected position; limits the scan to a small tail window.
+local function find_header_line(bufnr, hint)
+  local total = vim.api.nvim_buf_line_count(bufnr)
+  local from  = hint and math.max(0, hint - 3) or 0
+  local lines = vim.api.nvim_buf_get_lines(bufnr, from, total, false)
   for i = #lines, 1, -1 do
-    if lines[i]:match(HEADER_PATTERN) then return i end
+    if lines[i]:match(HEADER_PATTERN) then return from + i end
   end
   return nil
 end
@@ -66,7 +69,7 @@ local function recalculate_region(bufnr)
   local state = get_state(bufnr)
   if not state.visible or not state.region then return end
 
-  local header_line = find_header_line(bufnr)
+  local header_line = find_header_line(bufnr, state.region.start_line)
   if not header_line then
     state.visible = false
     state.region = nil
@@ -251,7 +254,7 @@ end
 
 function M.remove_section(bufnr)
   local state = get_state(bufnr)
-  local header_line = find_header_line(bufnr)
+  local header_line = find_header_line(bufnr, state.region and state.region.start_line)
   if not header_line then
     state.visible = false
     state.region = nil
