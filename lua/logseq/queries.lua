@@ -371,7 +371,8 @@ function M.render_section(bufnr)
     for rel, info in pairs(section_smap) do all_smap[rel + offset] = info end
   end
 
-  for line in query_content:gmatch("([^\n]*)\n?") do
+  for _, raw in ipairs(vim.split(query_content, "\n", { plain = true })) do
+    local line = vim.trim(raw)  -- strips \r (CRLF), spaces, tabs
     if     line == "%QueryTodos%"         then append_section(all_todos,       "Actions")
     elseif line == "%QueryVeryNextTodos%" then append_section(very_next_todos, "Very next actions")
     elseif line ~= ""                     then table.insert(display_lines, line)
