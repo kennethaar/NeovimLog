@@ -385,12 +385,20 @@ function M.render_section(bufnr)
     local line = vim.trim(raw)  -- strips \r (CRLF), spaces, tabs
     if line:match("^```") or line:match("^~~~") then
       in_codeblock = not in_codeblock
-      table.insert(display_lines, line)  -- keep the fence line as-is
+      table.insert(display_lines, line)
     elseif in_codeblock then
-      table.insert(display_lines, raw:gsub("\r$", ""))  -- preserve indentation inside blocks
-    elseif line == "%QueryTodos%"         then append_section(all_todos,       "Actions")
-    elseif line == "%QueryVeryNextTodos%" then append_section(very_next_todos, "Very next actions")
-    elseif line ~= ""                     then table.insert(display_lines, line)
+      table.insert(display_lines, raw:gsub("\r$", ""))
+    elseif line ~= "" then
+      -- Strip optional Logseq bullet prefix before testing directive names
+      -- e.g. "- %QueryVeryNextTodos%" → "%QueryVeryNextTodos%"
+      local directive = line:match("^%-?%s*(%%.+%%)%s*$")
+      if directive == "%QueryTodos%" then
+        append_section(all_todos, "Actions")
+      elseif directive == "%QueryVeryNextTodos%" then
+        append_section(very_next_todos, "Very next actions")
+      else
+        table.insert(display_lines, line)
+      end
     end
   end
 
@@ -522,7 +530,7 @@ function M.setup_buf(bufnr)
     callback = function(ev) guard_insert(ev.buf) end,
   })
 
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+  vim.api.nvim_create_autocmd("TextChanged", {
     group = group, buffer = bufnr,
     callback = function(ev)
       local state = get_state(ev.buf)

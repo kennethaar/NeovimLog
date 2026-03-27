@@ -140,15 +140,20 @@ end
 -- ── Scan: recover vis_start after line shifts ─────────────────────────
 
 -- The top border always starts with the 3-byte sequence for ┌ or ╔.
--- Scans from EOF so it's fast and won't hit content lines.
+-- Scans backwards from EOF, limited to a small window near the expected position.
 local TOP_BYTES_SINGLE = string.char(0xE2, 0x94, 0x8C)  -- ┌
 local TOP_BYTES_DOUBLE = string.char(0xE2, 0x95, 0x94)  -- ╔
 
-local function find_tabbar_top(bufnr)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+-- hint: current vis_start (1-indexed) used to limit search to last few lines
+local function find_tabbar_top(bufnr, hint)
+  local total = vim.api.nvim_buf_line_count(bufnr)
+  local from  = math.max(0, hint and (hint - 5) or (total - 20))
+  local lines = vim.api.nvim_buf_get_lines(bufnr, from, total, false)
   for i = #lines, 1, -1 do
     local b3 = lines[i]:sub(1, 3)
-    if b3 == TOP_BYTES_SINGLE or b3 == TOP_BYTES_DOUBLE then return i end
+    if b3 == TOP_BYTES_SINGLE or b3 == TOP_BYTES_DOUBLE then
+      return from + i  -- convert local index to 1-indexed absolute line
+    end
   end
 end
 
@@ -403,13 +408,15 @@ function M.setup_buf(bufnr)
     end,
   })
 
-  -- Re-anchor vis_start if content above the tab bar shifts its line number
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+  -- Re-anchor vis_start if content above the tab bar shifts its line number.
+  -- TextChangedI is intentionally excluded: insert-mode edits can't reach the
+  -- tab bar (InsertEnter guard above), so we only need to track normal-mode edits.
+  vim.api.nvim_create_autocmd("TextChanged", {
     group = group, buffer = bufnr,
     callback = function(ev)
       local st = get_state(ev.buf)
       if not st.vis_start then return end
-      local top = find_tabbar_top(ev.buf)
+      local top = find_tabbar_top(ev.buf, st.vis_start)
       if top then st.vis_start = top end
     end,
   })
@@ -419,17 +426,10 @@ function M.setup_buf(bufnr)
     callback = function(ev) M._state[ev.buf] = nil end,
   })
 
-  -- Initial render: tab bar, then auto-open namespace tree if relevant
+  -- Initial render: tab bar only; no panel auto-opens on buffer load
   vim.schedule(function()
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     M.render_tabbar(bufnr)
-    if is_namespace_page(bufnr) then
-      local ok, ns_tree = pcall(require, MODS.ns_tree)
-      if ok then
-        ns_tree.render_section(bufnr)
-        M.update_tabbar(bufnr)
-      end
-    end
   end)
 end
 
