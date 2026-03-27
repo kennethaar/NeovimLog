@@ -294,6 +294,12 @@ local function handle_cr(bufnr)
   return true  -- still consume the CR to avoid stray line-opens
 end
 
+--- Public: called from ui.lua's follow-link button so a single tap on a tab
+--- button activates it (cursor moves there on tap, then follow = activate).
+function M.handle_cr(bufnr)
+  return handle_cr(bufnr)
+end
+
 -- ── Write lifecycle ───────────────────────────────────────────────────
 --
 -- panels registers its autocmds LAST, so its BufWritePre fires after all
@@ -335,6 +341,10 @@ local function on_write_post(bufnr)
 
   vim.schedule(function()
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    -- Skip if no window is currently showing this buffer (e.g. after :wq).
+    -- Without this guard, render_section would scan the entire vault on a
+    -- buffer the user has already closed, blocking input for seconds.
+    if #vim.fn.win_findbuf(bufnr) == 0 then return end
     M.render_tabbar(bufnr)
     if key then
       local ok, mod = pcall(require, MODS[key])
@@ -371,17 +381,11 @@ function M.setup_buf(bufnr)
     end
   end, { buffer = bufnr, silent = true, desc = "Logseq: follow link / activate panel tab" })
 
-  -- Single click / tap on a tab button activates it
-  vim.keymap.set("n", "<LeftMouse>", function()
-    local pos = vim.fn.getmousepos()
-    if not pos or pos.line == 0 then return end
-    -- Move cursor to the clicked position (replicates default <LeftMouse> behaviour)
-    pcall(vim.api.nvim_set_current_win, pos.winid ~= 0 and pos.winid or vim.api.nvim_get_current_win())
-    local clicked_buf = vim.api.nvim_get_current_buf()
-    pcall(vim.api.nvim_win_set_cursor, 0, { pos.line, math.max(0, pos.column - 1) })
-    -- If the click landed on a tab bar button, activate it; otherwise ignore
-    handle_cr(clicked_buf)
-  end, { buffer = bufnr, silent = true, desc = "Logseq: click panel tab" })
+  -- NOTE: No <LeftMouse> override here.  A buffer-local <LeftMouse> mapping
+  -- consumes ALL mouse clicks, including those on the winbar (journal buttons)
+  -- and tabline (:wq) — those callbacks never fire when the mapping returns
+  -- early.  Tab-bar activation is handled via <CR> (above) and the public
+  -- M.handle_cr exposed to ui.lua's follow-link statusline button.
 
   local group = vim.api.nvim_create_augroup("LogseqPanels_" .. bufnr, { clear = true })
 
