@@ -110,6 +110,13 @@ local function has_task_ancestor(indent_stack)
   return false
 end
 
+local function has_link_ancestor(indent_stack)
+  for _, parent in ipairs(indent_stack) do
+    if parent.has_link then return true end
+  end
+  return false
+end
+
 local function read_file_content(filepath)
   local f = io.open(filepath, "r")
   if not f then return nil end
@@ -127,13 +134,16 @@ local function process_single_file(filepath, page_link, all_todos, very_next_tod
   local line_num = 0
   local in_codeblock = false
 
-  for line in (content .. "\n"):gmatch("([^\n]*)\n") do
+  for _, raw in ipairs(vim.split(content, "\n", { plain = true })) do
     line_num = line_num + 1
+    local line = raw:gsub("\r$", "")  -- strip CRLF
+
     if line:match("^%s*```") or line:match("^%s*~~~") then
       in_codeblock = not in_codeblock
       goto continue
     end
     if in_codeblock then goto continue end
+
     local indent_str = line:match("^(%s*)%- ")
     if not indent_str then goto continue end
 
@@ -143,10 +153,15 @@ local function process_single_file(filepath, page_link, all_todos, very_next_tod
     end
 
     local current_is_task = is_active_task(line)
+    local line_has_link   = line:find(page_link, 1, true) ~= nil
     local parent_is_task  = has_task_ancestor(indent_stack)
-    table.insert(indent_stack, { indent = indent, is_task = current_is_task })
+    local parent_has_link = has_link_ancestor(indent_stack)
 
-    if not current_is_task or not line:find(page_link, 1, true) then goto continue end
+    table.insert(indent_stack, { indent = indent, is_task = current_is_task, has_link = line_has_link })
+
+    -- Match: active task that either mentions the page inline, or is nested
+    -- under a block that mentions the page (the common Logseq pattern).
+    if not current_is_task or not (line_has_link or parent_has_link) then goto continue end
 
     local entry = {
       task          = vim.trim(line:gsub("^%s*%- ", "")),
@@ -369,6 +384,11 @@ function M.render_section(bufnr)
 
   local page_name = filename:gsub("%.md$", ""):gsub("___", "/")
   local all_todos, very_next_todos = gather_tasks(page_name)
+  vim.notify(
+    string.format("[logseq] queries: [[%s]] → %d tasks (%d very-next)",
+      page_name, #all_todos, #very_next_todos),
+    vim.log.levels.INFO
+  )
 
   local display_lines = { "── Queries ──" }
   local all_smap = {}
