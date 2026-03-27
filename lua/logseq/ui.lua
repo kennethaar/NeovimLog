@@ -68,15 +68,7 @@ _G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
 _G.logseq_sl_next_day = function() _open_journal_day(1) end
 
 -- Statusline buttons (editing/cursor)
--- Follow checks the panel tab bar first: cursor on a tab button → activate tab;
--- cursor elsewhere → follow the wiki-link.  This enables single-tap tab
--- activation on mobile (tap tab button to move cursor there, tap Follow).
-_G.logseq_sl_follow = function()
-  local bufnr = vim.api.nvim_get_current_buf()
-  local ok, panels = pcall(require, "logseq.panels")
-  if ok and panels.handle_cr(bufnr) then return end
-  require("logseq.links").follow()
-end
+_G.logseq_sl_follow = function() require("logseq.links").follow() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
 _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
@@ -610,8 +602,8 @@ end
 ---@return string
 function M.build_statusline()
   local bb = (require("logseq.config").current.bottombar_buttons) or {}
-  local parts = {}
-  
+  local parts = { "%{%v:lua.require('logseq.panels').statusline_tabs()%}" }
+
   if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗↩️%X") end
   if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡za%X") end
   if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅^t%X") end
