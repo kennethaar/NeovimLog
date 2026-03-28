@@ -139,10 +139,8 @@ function M.smart_enter(bufnr)
   if bullet_prefix and col >= #bullet_prefix and col < #line then
     text_after = line:sub(col + 1)
     vim.api.nvim_set_current_line(line:sub(1, col))
-    -- Buffer changed — re-parse to get correct line_end
-    parsed = parser.parse_buf()
-    block = parser.block_at_line(parsed.blocks, row)
-    if block then insert_after = block.line_end end
+    -- Insert the split block right after the current line, not after children
+    insert_after = row
   end
 
   local new_line = indent_str .. "- " .. text_after
