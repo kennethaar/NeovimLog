@@ -544,7 +544,7 @@ local function setup_syntax(bufnr)
 
     -- Conceal [[wikilinks]]
     pcall(vim.cmd, [[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
-    pcall(vim.cmd, [[syntax match LogseqLinkNS /\%(\[\[\)\@<=\zs[^\]]*\// contained conceal]])
+    pcall(vim.cmd, "syntax match LogseqLinkNS /\\%(\\[\\[\\)\\@<=\\zs[^\\]]*\\// contained conceal")
 
     -- Conceal ((block-refs))
     pcall(vim.cmd, [[syntax region LogseqBlockRef matchgroup=LogseqBlockRefDelim start=/((\ze[^(]/ end=/))/ concealends oneline]])
