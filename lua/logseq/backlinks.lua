@@ -219,7 +219,7 @@ function M.render_section(bufnr)
       for abs_line, _ in pairs(state.source_map) do
         local line_0 = abs_line - 1
         local line_text = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
-        if line_text:match("^%- %[%[.+%]%]") then
+        if line_text:match("^%- %[%[.+%]%]%s+⋯") then
           vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", line_0, 0, -1)
         end
       end
