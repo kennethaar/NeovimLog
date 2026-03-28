@@ -170,7 +170,7 @@ end
 -- Ctrl+A  select all          (normal / visual / insert)
 -- Ctrl+C  copy to clipboard   (normal: current line; visual: selection)
 -- Ctrl+X  cut  to clipboard   (normal: current line; visual: selection)
--- Ctrl+V  intentionally NOT remapped — keeps Visual Block mode.
+-- Ctrl+V  paste from clipboard (normal / visual / insert)
 function M.setup_shortcuts()
   vim.keymap.set("n", "<C-a>", "ggVG",      { desc = "Select all" })
   vim.keymap.set("v", "<C-a>", "<Esc>ggVG", { desc = "Select all" })
@@ -181,6 +181,10 @@ function M.setup_shortcuts()
 
   vim.keymap.set("n", "<C-x>", '"+dd', { desc = "Cut line to system clipboard" })
   vim.keymap.set("v", "<C-x>", '"+d',  { desc = "Cut selection to system clipboard" })
+
+  vim.keymap.set("n", "<C-v>", '"+p',       { desc = "Paste from system clipboard" })
+  vim.keymap.set("v", "<C-v>", '"+p',       { desc = "Paste from system clipboard" })
+  vim.keymap.set("i", "<C-v>", "<C-r><C-o>+", { desc = "Paste from system clipboard" })
 end
 
 return M
