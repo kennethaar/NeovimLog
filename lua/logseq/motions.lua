@@ -61,7 +61,13 @@ function M.first_child()
   end
 end
 
--- ── Block move (swap with sibling) ───────────────────────────────────
+-- ── Block move ────────────────────────────────────────────────────────
+-- Swaps with the adjacent sibling when one exists.
+-- At a sibling boundary, performs a cross-parent move: the block becomes
+-- the last child of the parent's previous sibling (move_up) or the first
+-- child of the parent's next sibling (move_down).
+-- No re-indentation is needed because uncles are at the same level as the
+-- parent, so the block's absolute indent level is already correct.
 
 function M.move_down()
   local parsed, lines = parser.parse_buf()
@@ -70,22 +76,38 @@ function M.move_down()
   if not block then return end
 
   local sibs = parser.siblings(block, parsed.blocks)
-  local idx = parser.sibling_index(block, sibs)
-  if not idx or idx >= #sibs then return end
+  local idx  = parser.sibling_index(block, sibs)
+  if not idx then return end
 
-  local next_sib = sibs[idx + 1]
-  local a_s, a_e = block.line_start, block.line_end
-  local b_s, b_e = next_sib.line_start, next_sib.line_end
+  if idx < #sibs then
+    -- Swap with next sibling
+    local next_sib = sibs[idx + 1]
+    local a_s, a_e = block.line_start, block.line_end
+    local b_s, b_e = next_sib.line_start, next_sib.line_end
+    local a_lines, b_lines = vim.list_slice(lines, a_s, a_e), vim.list_slice(lines, b_s, b_e)
+    local replacement = {}
+    vim.list_extend(replacement, b_lines)
+    vim.list_extend(replacement, a_lines)
+    vim.api.nvim_buf_set_lines(0, a_s - 1, b_e, false, replacement)
+    jump(a_s + #b_lines)
+    return
+  end
 
-  local a_lines = vim.list_slice(lines, a_s, a_e)
-  local b_lines = vim.list_slice(lines, b_s, b_e)
+  -- Last sibling: cross-parent → become first child of parent's next sibling
+  if not block.parent then return end
+  local p_sibs = parser.siblings(block.parent, parsed.blocks)
+  local p_idx  = parser.sibling_index(block.parent, p_sibs)
+  if not p_idx or p_idx >= #p_sibs then return end
 
-  local replacement = {}
-  vim.list_extend(replacement, b_lines)
-  vim.list_extend(replacement, a_lines)
-
-  vim.api.nvim_buf_set_lines(0, a_s - 1, b_e, false, replacement)
-  jump(a_s + #b_lines)
+  local uncle   = p_sibs[p_idx + 1]
+  local b_s, b_e = block.line_start, block.line_end
+  local b_count  = b_e - b_s + 1
+  local b_lines  = vim.list_slice(lines, b_s, b_e)
+  -- uncle is below block; after removing b_count lines it shifts up
+  vim.api.nvim_buf_set_lines(0, b_s - 1, b_e, false, {})
+  local new_uncle_start = uncle.line_start - b_count
+  vim.api.nvim_buf_set_lines(0, new_uncle_start, new_uncle_start, false, b_lines)
+  jump(new_uncle_start + 1)
 end
 
 function M.move_up()
@@ -95,22 +117,36 @@ function M.move_up()
   if not block then return end
 
   local sibs = parser.siblings(block, parsed.blocks)
-  local idx = parser.sibling_index(block, sibs)
-  if not idx or idx <= 1 then return end
+  local idx  = parser.sibling_index(block, sibs)
+  if not idx then return end
 
-  local prev_sib = sibs[idx - 1]
-  local a_s, a_e = prev_sib.line_start, prev_sib.line_end
+  if idx > 1 then
+    -- Swap with previous sibling
+    local prev_sib = sibs[idx - 1]
+    local a_s, a_e = prev_sib.line_start, prev_sib.line_end
+    local b_s, b_e = block.line_start, block.line_end
+    local a_lines, b_lines = vim.list_slice(lines, a_s, a_e), vim.list_slice(lines, b_s, b_e)
+    local replacement = {}
+    vim.list_extend(replacement, b_lines)
+    vim.list_extend(replacement, a_lines)
+    vim.api.nvim_buf_set_lines(0, a_s - 1, b_e, false, replacement)
+    jump(a_s)
+    return
+  end
+
+  -- First sibling: cross-parent → become last child of parent's previous sibling
+  if not block.parent then return end
+  local p_sibs = parser.siblings(block.parent, parsed.blocks)
+  local p_idx  = parser.sibling_index(block.parent, p_sibs)
+  if not p_idx or p_idx <= 1 then return end
+
+  local uncle  = p_sibs[p_idx - 1]
   local b_s, b_e = block.line_start, block.line_end
-
-  local a_lines = vim.list_slice(lines, a_s, a_e)
-  local b_lines = vim.list_slice(lines, b_s, b_e)
-
-  local replacement = {}
-  vim.list_extend(replacement, b_lines)
-  vim.list_extend(replacement, a_lines)
-
-  vim.api.nvim_buf_set_lines(0, a_s - 1, b_e, false, replacement)
-  jump(a_s)
+  local b_lines  = vim.list_slice(lines, b_s, b_e)
+  -- uncle is above block, so its line_end is unaffected by the removal
+  vim.api.nvim_buf_set_lines(0, b_s - 1, b_e, false, {})
+  vim.api.nvim_buf_set_lines(0, uncle.line_end, uncle.line_end, false, b_lines)
+  jump(uncle.line_end + 1)
 end
 
 -- ── Promote / demote (shift indent) ──────────────────────────────────

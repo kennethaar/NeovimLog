@@ -196,6 +196,8 @@ function M.setup_buf(bufnr)
   end, { buffer = bufnr, silent = true, desc = "Logseq: outdent / zoom-escape (insert)" })
 
   -- ── Move guards (shared helper eliminates duplication) ───────────
+  -- Prevents blocks from leaving the zoom range. Handles both the sibling-
+  -- swap case and the cross-parent case added to motions.move_up/down.
   local function guarded_move(direction)
     if not M.is_active(bufnr) then
       require("logseq.motions")["move_" .. direction]()
@@ -211,11 +213,31 @@ function M.setup_buf(bufnr)
     local idx  = parser.sibling_index(block, sibs)
 
     if direction == "up" then
-      if block.line_start <= st.zoom_start then return end
-      if idx and idx > 1 and sibs[idx - 1].line_start < st.zoom_start then return end
+      if block.line_start <= st.zoom_start then return end  -- zoom root immovable
+      if idx and idx > 1 then
+        -- Sibling swap: prev sibling must be inside zoom
+        if sibs[idx - 1].line_start < st.zoom_start then return end
+      else
+        -- Cross-parent: uncle must be inside zoom
+        if not block.parent then return end
+        local p_sibs = parser.siblings(block.parent, parsed.blocks)
+        local p_idx  = parser.sibling_index(block.parent, p_sibs)
+        if not p_idx or p_idx <= 1 then return end
+        if p_sibs[p_idx - 1].line_start < st.zoom_start then return end
+      end
     else
-      if block.line_start == st.zoom_start then return end
-      if idx and idx < #sibs and sibs[idx + 1].line_end > st.zoom_end then return end
+      if block.line_start == st.zoom_start then return end  -- zoom root immovable
+      if idx and idx < #sibs then
+        -- Sibling swap: next sibling must be inside zoom
+        if sibs[idx + 1].line_end > st.zoom_end then return end
+      else
+        -- Cross-parent: uncle must be inside zoom
+        if not block.parent then return end
+        local p_sibs = parser.siblings(block.parent, parsed.blocks)
+        local p_idx  = parser.sibling_index(block.parent, p_sibs)
+        if not p_idx or p_idx >= #p_sibs then return end
+        if p_sibs[p_idx + 1].line_end > st.zoom_end then return end
+      end
     end
 
     require("logseq.motions")["move_" .. direction]()
