@@ -7,7 +7,10 @@ vim.opt.mouse = "a"
 -- Note: Native Neovim can usually handle clipboard via `vim.opt.clipboard = "unnamedplus"`.
 -- Wrapping your custom module in a pcall ensures Neovim doesn't break if it's missing.
 local ok_clip, clipboard = pcall(require, "clipboard")
-if ok_clip then clipboard.setup() end
+if ok_clip then
+  clipboard.setup()
+  clipboard.setup_shortcuts()
+end
 
 -- Grouping UI options
 vim.opt.wrap = true

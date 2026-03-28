@@ -33,9 +33,6 @@ function M.setup()
   -- `unnamedplus` is enough; Neovim's built-in win32 provider handles the rest.
   if vim.fn.has("win32") == 1 then
     vim.opt.clipboard = "unnamedplus"
-    -- Ctrl+C in visual mode copies to system clipboard so external tools
-    -- (e.g. AutoHotkey scripts using Send("^c") / ClipWait) get the selection.
-    vim.keymap.set("v", "<C-c>", '"+y', { desc = "Copy selection to system clipboard" })
     return
   end
 
@@ -61,8 +58,6 @@ function M.setup()
       cache_enabled = false,
     }
     vim.opt.clipboard = "unnamedplus"
-    -- Same Ctrl+C fix as Windows native (AHK runs on the Windows host).
-    vim.keymap.set("v", "<C-c>", '"+y', { desc = "Copy selection to system clipboard" })
     return
   end
 
@@ -169,6 +164,23 @@ function M.setup()
   -- ── 6. Last resort: let Neovim's autodetect handle it ───────────────────
   -- unnamedplus still set so y/p work if Neovim finds a provider itself.
   vim.opt.clipboard = "unnamedplus"
+end
+
+-- ── Windows-style shortcuts ───────────────────────────────────────────────
+-- Ctrl+A  select all          (normal / visual / insert)
+-- Ctrl+C  copy to clipboard   (normal: current line; visual: selection)
+-- Ctrl+X  cut  to clipboard   (normal: current line; visual: selection)
+-- Ctrl+V  intentionally NOT remapped — keeps Visual Block mode.
+function M.setup_shortcuts()
+  vim.keymap.set("n", "<C-a>", "ggVG",      { desc = "Select all" })
+  vim.keymap.set("v", "<C-a>", "<Esc>ggVG", { desc = "Select all" })
+  vim.keymap.set("i", "<C-a>", "<Esc>ggVG", { desc = "Select all" })
+
+  vim.keymap.set("n", "<C-c>", '"+yy', { desc = "Copy line to system clipboard" })
+  vim.keymap.set("v", "<C-c>", '"+y',  { desc = "Copy selection to system clipboard" })
+
+  vim.keymap.set("n", "<C-x>", '"+dd', { desc = "Cut line to system clipboard" })
+  vim.keymap.set("v", "<C-x>", '"+d',  { desc = "Cut selection to system clipboard" })
 end
 
 return M
