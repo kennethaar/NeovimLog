@@ -73,6 +73,10 @@ _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
 _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
 _G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
 _G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
+_G.logseq_sl_zoom      = function()
+  local z = require("logseq.zoom")
+  if z.is_active(vim.api.nvim_get_current_buf()) then z.exit() else z.enter() end
+end
 
 -- ── UI Components ─────────────────────────────────────────────────────
 
@@ -617,7 +621,8 @@ function M.build_statusline()
   if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@<<%X") end
   if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@alt⬆️%X") end
   if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@alt⬇️%X") end
-  
+  if bb.zoom        ~= false then table.insert(parts, "%@v:lua.logseq_sl_zoom@🔍z%X") end
+
   return table.concat(parts, "  ")
 end
 

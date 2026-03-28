@@ -50,6 +50,7 @@ M.defaults = {
     unindent    = true,
     move_up     = true,
     move_down   = true,
+    zoom        = true,
   },
 }
 
