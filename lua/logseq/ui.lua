@@ -558,8 +558,8 @@ local function setup_syntax(bufnr)
 
     -- Block-level formatting: root=bold, level2=italic, level3+=normal
     -- contains=ALL lets nested items (links, tags) still apply their own highlight
-    pcall(vim.cmd, [[syntax match LogseqLevel2Block /^\t- .*$/ contains=ALL]])
-    pcall(vim.cmd, [[syntax match LogseqRootBlock /^- .*$/ contains=ALL]])
+    pcall(vim.cmd, [[syntax match LogseqLevel2Block /^\t- .*$/ contains=ALLBUT,LogseqLinkNS]])
+    pcall(vim.cmd, [[syntax match LogseqRootBlock /^- .*$/ contains=ALLBUT,LogseqLinkNS]])
   end)
 end
 
