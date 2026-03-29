@@ -59,11 +59,11 @@ local COMMANDS = {
   -- ── Scheduling ───────────────────────────────────────────────────
   { name = "scheduled",
     label = "SCHEDULED:: <date>",
-    word  = function() return "SCHEDULED:: <" .. os.date("%Y-%m-%d") .. ">" end },
+    word  = function() return "SCHEDULED:: <" .. os.date("%Y-%m-%d %a") .. ">" end },
 
   { name = "deadline",
     label = "DEADLINE:: <date>",
-    word  = function() return "DEADLINE:: <" .. os.date("%Y-%m-%d") .. ">" end },
+    word  = function() return "DEADLINE:: <" .. os.date("%Y-%m-%d %a") .. ">" end },
 
   -- ── Embeds ───────────────────────────────────────────────────────
   { name = "embed-page",  label = "{{embed [[Page]]}}", word = "{{embed [[" },
