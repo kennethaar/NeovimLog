@@ -78,6 +78,11 @@ _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
 _G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
 _G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
 
+-- Forward declaration: get_breadcrumb is defined later in this file but
+-- referenced by M.winbar(). Declaring the upvalue here keeps M.winbar()
+-- from falling through to the (nil) global of the same name.
+local get_breadcrumb
+
 -- ── UI Components ─────────────────────────────────────────────────────
 
 function M.winbar()
@@ -677,7 +682,7 @@ end
 ---@param winid integer
 ---@param bufnr integer
 ---@return string
-local function get_breadcrumb(winid, bufnr)
+get_breadcrumb = function(winid, bufnr)
   local ok, result = pcall(parser.parse_buf, bufnr)
   if not ok then return "" end
 
