@@ -93,18 +93,18 @@ function M.winbar()
   if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
   if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
 
-  local nav_btns  = "%=%#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
+  local nav_btns  = "    %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
   local close_btn = ""
 
   if M._state.saved_buffers[bufnr] then
-    return " " .. WINBAR_LEFT .. "  ✓ Saved" .. nav_btns .. close_btn
+    return " " .. WINBAR_LEFT .. nav_btns .. "%<   ✓ Saved"
   end
 
   local ok, reminders = pcall(require, "logseq.reminders")
   if ok then
     local event_text = reminders.next_meeting_str()
     if event_text ~= "" then
-      return " " .. WINBAR_LEFT .. "%<  │  " .. event_text .. nav_btns .. close_btn
+      return " " .. WINBAR_LEFT .. nav_btns .. "%<  │  " .. event_text
     end
   end
 
