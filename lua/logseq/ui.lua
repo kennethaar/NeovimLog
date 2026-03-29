@@ -1,6 +1,9 @@
 --- logseq.nvim UI
 --- Winbar, statusline, save indicator, syntax concealment, and highlights.
 
+local parser = require("logseq.parser")
+local util   = require("logseq.util")
+
 local M = {}
 
 M._state = {
@@ -13,6 +16,7 @@ M._state = {
 local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
 
 local BLOCK_NS = vim.api.nvim_create_namespace("logseq_block_ui")
+local SCHED_NS  = vim.api.nvim_create_namespace("logseq_scheduled")
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 
@@ -106,6 +110,12 @@ function M.winbar()
     if event_text ~= "" then
       return " " .. WINBAR_LEFT .. nav_btns .. "%<  │  " .. event_text
     end
+  end
+
+  local crumb = get_breadcrumb(winid, bufnr)
+  if crumb ~= "" then
+    local safe = crumb:gsub("%%", "%%%%")
+    return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
   end
 
   return " " .. WINBAR_LEFT .. nav_btns .. close_btn
@@ -452,6 +462,14 @@ function M.open_help()
     "   <leader>t             Apply template to current page",
     "   " .. k("search_pages","<C-k>") .. "   Search pages / all files",
     "",
+    "  SLASH COMMANDS  (type / after a space in insert mode)",
+    "   /today  /yesterday  /tomorrow  /now",
+    "   /TODO  /DOING  /DONE  /WAITING  /CANCELLED",
+    "   /scheduled  /deadline",
+    "   /embed-page  /embed-block  /page-ref  /block-ref",
+    "   /bold  /italic  /code  /highlight  /strike  /hr",
+    "   /template",
+    "",
     "  FOLDING & TODO",
     "   " .. k("fold_toggle","za") .. "   Toggle fold at cursor",
     "   " .. k("todo_cycle","<C-t>") .. "   Cycle TODO state (normal & insert)",
@@ -577,6 +595,11 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqRootBlock",    { bold = true })
   vim.api.nvim_set_hl(0, "LogseqLevel2Block",  { italic = true })
   vim.api.nvim_set_hl(0, "LogseqStatusLine",   { fg = "#a89984", bg = "#3c3836", ctermfg = 246, ctermbg = 237 })
+  vim.api.nvim_set_hl(0, "LogseqScheduled",    { fg = "#d8a657", ctermfg = 214 })
+  vim.api.nvim_set_hl(0, "LogseqDeadline",     { fg = "#ea6962", ctermfg = 203 })
+  vim.api.nvim_set_hl(0, "LogseqBreadcrumb",   { fg = "#7c6f64", ctermfg = 243 })
+  vim.api.nvim_set_hl(0, "LogseqEmbedHeader",  { fg = "#504945", ctermfg = 239 })
+  vim.api.nvim_set_hl(0, "LogseqEmbedText",    { fg = "#928374", ctermfg = 245 })
 
   if not _hl_autocmd_set then
     _hl_autocmd_set = true
@@ -602,6 +625,83 @@ function M.build_statusline()
   if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@alt⬇️%X") end
   
   return table.concat(parts, "  ")
+end
+
+-- ── Scheduled / Deadline virtual text ────────────────────────────────
+
+--- Render SCHEDULED:: / DEADLINE:: dates as eol virtual text on the bullet line.
+--- Uses util.prop_ci for case-insensitive property lookup and util.match_ci
+--- instead of [Ss][Cc][Hh]… character classes.
+local function update_scheduled_virt(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  vim.api.nvim_buf_clear_namespace(bufnr, SCHED_NS, 0, -1)
+
+  local ok, result = pcall(parser.parse_buf, bufnr)
+  if not ok then return end
+
+  for _, block in ipairs(parser.flatten(result.blocks)) do
+    if block.is_scheduled then
+      local sched    = util.prop_ci(block.properties, "scheduled")
+      local deadline = util.prop_ci(block.properties, "deadline")
+
+      -- Fall back to scanning the bullet content for inline SCHEDULED:: / DEADLINE::
+      if not sched    then sched    = util.match_ci(block.content, "scheduled::%s*(<[^>]+>)") end
+      if not deadline then deadline = util.match_ci(block.content, "deadline::%s*(<[^>]+>)") end
+
+      local parts = {}
+      if sched then
+        local d = sched:match("<(%d%d%d%d%-%d%d%-%d%d)")
+        if d then parts[#parts + 1] = { "  📅 " .. d, "LogseqScheduled" } end
+      end
+      if deadline then
+        local d = deadline:match("<(%d%d%d%d%-%d%d%-%d%d)")
+        if d then parts[#parts + 1] = { "  ⏰ " .. d, "LogseqDeadline" } end
+      end
+
+      if #parts > 0 then
+        vim.api.nvim_buf_set_extmark(bufnr, SCHED_NS, block.line_start - 1, 0, {
+          virt_text     = parts,
+          virt_text_pos = "eol",
+        })
+      end
+    end
+  end
+end
+
+-- ── Breadcrumb helper ─────────────────────────────────────────────────
+
+--- Return an abbreviated ancestor chain for the block at the cursor in `winid`.
+--- Accepts the window id so it queries the correct cursor position even when
+--- the winbar is evaluated for a non-focused window.
+--- Format: "Grandparent › Parent › Current"
+---@param winid integer
+---@param bufnr integer
+---@return string
+local function get_breadcrumb(winid, bufnr)
+  local ok, result = pcall(parser.parse_buf, bufnr)
+  if not ok then return "" end
+
+  local block = parser.block_at_line(result.blocks, vim.api.nvim_win_get_cursor(winid)[1])
+  if not block or not block.parent then return "" end
+
+  -- Collect in root→leaf order (O(n) appends) then reverse in place.
+  local crumbs = {}
+  local b = block
+  while b do
+    local text = vim.trim(b.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""))
+    if #text > 22 then text = text:sub(1, 20) .. "…" end
+    crumbs[#crumbs + 1] = text ~= "" and text or "…"
+    b = b.parent
+  end
+
+  -- In-place reverse so result reads root › … › leaf.
+  local n = #crumbs
+  for i = 1, math.floor(n / 2) do
+    crumbs[i], crumbs[n - i + 1] = crumbs[n - i + 1], crumbs[i]
+  end
+
+  if n <= 1 then return "" end
+  return table.concat(crumbs, " › ")
 end
 
 -- ── Buffer Setup ─────────────────────────────────────────────────────
@@ -636,11 +736,16 @@ function M.setup_buf(bufnr)
   setup_highlights()
   update_block_virt_lines(bufnr)
 
-  -- Refresh virtual spacing after edits
+  update_scheduled_virt(bufnr)
+
+  -- Refresh virtual spacing and scheduled virt text after edits
   vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" }, {
     group = grp,
     buffer = bufnr,
-    callback = function() update_block_virt_lines(bufnr) end,
+    callback = function()
+      update_block_virt_lines(bufnr)
+      update_scheduled_virt(bufnr)
+    end,
   })
 
   -- Active-event highlight + tabline on buffer enter

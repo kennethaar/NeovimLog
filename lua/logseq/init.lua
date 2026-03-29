@@ -25,6 +25,7 @@ local function activate(bufnr)
     "logseq.autosave",
     "logseq.backlinks",
     "logseq.queries",
+    "logseq.embeds",
     "logseq.namespace_tree",
     "logseq.panels",   -- must be last: overrides panel keymaps and owns auto-render
   }
@@ -39,6 +40,8 @@ local function activate(bufnr)
   if config.current.enable_link_search then
     pcall(function() require("logseq.page_search").setup_buf(bufnr) end)
   end
+
+  pcall(function() require("logseq.slash_commands").setup_buf(bufnr) end)
 
   -- Register keymaps with which-key if it is installed, so the user can
   -- discover every binding via the popup without reading the source or help.
