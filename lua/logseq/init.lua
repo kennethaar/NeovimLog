@@ -41,6 +41,8 @@ local function activate(bufnr)
     pcall(function() require("logseq.page_search").setup_buf(bufnr) end)
   end
 
+  pcall(function() require("logseq.slash_commands").setup_buf(bufnr) end)
+
   -- Register keymaps with which-key if it is installed, so the user can
   -- discover every binding via the popup without reading the source or help.
   -- The pcall means this is a no-op on configs that don't have which-key.
