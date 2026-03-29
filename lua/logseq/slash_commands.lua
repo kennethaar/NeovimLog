@@ -57,13 +57,19 @@ local COMMANDS = {
   { name = "CANCELLED", label = "Mark CANCELLED", word = "", todo_state = "CANCELLED" },
 
   -- ── Scheduling ───────────────────────────────────────────────────
+  -- word="" erases the trigger; CompleteDone inserts the property line
+  -- on the line immediately below the bullet at indent+2 (Logseq format):
+  --   - TODO test
+  --     SCHEDULED:: <2026-03-29 Sun>
   { name = "scheduled",
     label = "SCHEDULED:: <date>",
-    word  = function() return "SCHEDULED:: <" .. os.date("%Y-%m-%d %a") .. ">" end },
+    word  = "",
+    property = function() return "SCHEDULED:: <" .. os.date("%Y-%m-%d %a") .. ">" end },
 
   { name = "deadline",
     label = "DEADLINE:: <date>",
-    word  = function() return "DEADLINE:: <" .. os.date("%Y-%m-%d %a") .. ">" end },
+    word  = "",
+    property = function() return "DEADLINE:: <" .. os.date("%Y-%m-%d %a") .. ">" end },
 
   -- ── Embeds ───────────────────────────────────────────────────────
   { name = "embed-page",  label = "{{embed [[Page]]}}", word = "{{embed [[" },
@@ -153,6 +159,29 @@ end
 
 -- ── Post-completion helpers ───────────────────────────────────────────
 
+--- Insert `value` as a continuation line below the owning block's bullet,
+--- after any existing property/continuation lines, before any child bullets.
+--- Indented at block.indent+2 (no bullet prefix) — Logseq property format.
+local function insert_property(value, bufnr)
+  local result = parser.parse_buf(bufnr)
+  local row    = vim.api.nvim_win_get_cursor(0)[1]
+  local block  = parser.block_at_line(result.blocks, row)
+  if not block then return end
+
+  -- Walk forward from the bullet line to find the last own (non-bullet) line.
+  local all_lines  = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local insert_after = block.line_start
+  for i = block.line_start + 1, #all_lines do
+    if all_lines[i]:match("^%s*$") then break end    -- blank line ends block
+    if all_lines[i]:match("^%s*%- ") then break end  -- bullet = child or next sibling
+    insert_after = i
+  end
+
+  local new_line = string.rep(" ", block.indent + 2) .. value
+  vim.api.nvim_buf_set_lines(bufnr, insert_after, insert_after, false, { new_line })
+  vim.api.nvim_win_set_cursor(0, { insert_after + 1, #new_line })
+end
+
 --- Move `state` to the front of the owning block's content, replacing any
 --- existing TODO state. This is Logseq-correct: the state must sit immediately
 --- after "- ", not wherever the user happened to type the slash command.
@@ -214,6 +243,10 @@ function M.setup_buf(bufnr)
       if cmd_def.cursor_back then
         local row, col = unpack(vim.api.nvim_win_get_cursor(0))
         pcall(vim.api.nvim_win_set_cursor, 0, { row, col - cmd_def.cursor_back })
+      end
+
+      if cmd_def.property then
+        insert_property(cmd_def.property(), bufnr)
       end
 
       if cmd_def.todo_state then
