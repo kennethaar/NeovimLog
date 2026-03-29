@@ -146,8 +146,13 @@ function M.omnifunc(findstart, base)
   local items = {}
   for _, cmd in ipairs(COMMANDS) do
     if query == "" or vim.startswith(cmd.name:lower(), query) then
+      -- Property commands (scheduled/deadline) must return a non-empty word so
+      -- Neovim's built-in filtering doesn't hide them when the user has typed
+      -- "/scheduled" etc.  CompleteDone will remove the inline text and re-
+      -- insert it on the continuation line via insert_property().
+      local word = cmd.property and cmd.property() or cmd.word()
       items[#items + 1] = {
-        word      = cmd.word(),
+        word      = word,
         abbr      = "/" .. cmd.name,
         menu      = cmd.label,
         user_data = cmd.name,   -- plain string; looked up in CompleteDone
@@ -246,6 +251,17 @@ function M.setup_buf(bufnr)
       end
 
       if cmd_def.property then
+        -- The omnifunc returned the property string as `word` so Neovim would
+        -- show the item in the popup.  That text was inserted inline; remove it
+        -- now, then re-insert it correctly on the continuation line.
+        local inserted = item.word
+        if inserted ~= "" then
+          local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+          local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1]
+          local clean = line:sub(1, col - #inserted) .. line:sub(col + 1)
+          vim.api.nvim_buf_set_lines(bufnr, row - 1, row, false, { clean })
+          vim.api.nvim_win_set_cursor(0, { row, col - #inserted })
+        end
         insert_property(cmd_def.property(), bufnr)
       end
 
