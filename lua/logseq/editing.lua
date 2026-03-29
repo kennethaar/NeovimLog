@@ -291,6 +291,13 @@ function M.setup_buf(bufnr)
   local last_insert_row = nil
   local snap_group = vim.api.nvim_create_augroup("LogseqSnap_" .. bufnr, { clear = true })
 
+  -- Snap cursor past "- " on mouse clicks and any normal-mode movement.
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group    = snap_group,
+    buffer   = bufnr,
+    callback = snap_to_bullet,
+  })
+
   vim.api.nvim_create_autocmd("CursorMovedI", {
     group = snap_group,
     buffer = bufnr,
