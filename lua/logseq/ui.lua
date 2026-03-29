@@ -93,14 +93,20 @@ function M.winbar()
 
   if name == "" then return "" end
 
-  local wb = (require("logseq.config").current.winbar_buttons) or {}
+  local config = require("logseq.config")
+  local wb = (config.current.winbar_buttons) or {}
+
+  local util        = require("logseq.util")
+  local vault       = config.current.vault_path or ""
+  local norm_path   = util.normalize(filepath)
+  local is_journal  = norm_path:find(util.normalize(vault .. "/journals"), 1, true) ~= nil
 
   local nav_parts = {}
   if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
   if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
   if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
-  if wb.calsync   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
-  if wb.ns_tree   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+  if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
+  if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
 
   local nav_btns  = "    %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
   local close_btn = ""
