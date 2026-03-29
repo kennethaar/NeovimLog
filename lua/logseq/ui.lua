@@ -1,6 +1,9 @@
 --- logseq.nvim UI
 --- Winbar, statusline, save indicator, syntax concealment, and highlights.
 
+local parser = require("logseq.parser")
+local util   = require("logseq.util")
+
 local M = {}
 
 M._state = {
@@ -109,7 +112,7 @@ function M.winbar()
     end
   end
 
-  local crumb = get_breadcrumb(bufnr)
+  local crumb = get_breadcrumb(winid, bufnr)
   if crumb ~= "" then
     local safe = crumb:gsub("%%", "%%%%")
     return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
@@ -626,46 +629,33 @@ end
 
 -- ── Scheduled / Deadline virtual text ────────────────────────────────
 
---- Case-insensitive property lookup.
-local function get_prop_ci(props, key_lower)
-  for k, v in pairs(props) do
-    if k:lower() == key_lower then return v end
-  end
-  return nil
-end
-
 --- Render SCHEDULED:: / DEADLINE:: dates as eol virtual text on the bullet line.
+--- Uses util.prop_ci for case-insensitive property lookup and util.match_ci
+--- instead of [Ss][Cc][Hh]… character classes.
 local function update_scheduled_virt(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
   vim.api.nvim_buf_clear_namespace(bufnr, SCHED_NS, 0, -1)
 
-  local ok, parser = pcall(require, "logseq.parser")
+  local ok, result = pcall(parser.parse_buf, bufnr)
   if not ok then return end
-  local ok2, result = pcall(parser.parse_buf, bufnr)
-  if not ok2 then return end
 
-  local flat = parser.flatten(result.blocks)
-  for _, block in ipairs(flat) do
+  for _, block in ipairs(parser.flatten(result.blocks)) do
     if block.is_scheduled then
-      local sched    = get_prop_ci(block.properties, "scheduled")
-      local deadline = get_prop_ci(block.properties, "deadline")
+      local sched    = util.prop_ci(block.properties, "scheduled")
+      local deadline = util.prop_ci(block.properties, "deadline")
 
-      -- Also scan the bullet content itself for inline SCHEDULED:: / DEADLINE::
-      if not sched then
-        sched = block.content:match("[Ss][Cc][Hh][Ee][Dd][Uu][Ll][Ee][Dd]::%s*(<[^>]+>)")
-      end
-      if not deadline then
-        deadline = block.content:match("[Dd][Ee][Aa][Dd][Ll][Ii][Nn][Ee]::%s*(<[^>]+>)")
-      end
+      -- Fall back to scanning the bullet content for inline SCHEDULED:: / DEADLINE::
+      if not sched    then sched    = util.match_ci(block.content, "scheduled::%s*(<[^>]+>)") end
+      if not deadline then deadline = util.match_ci(block.content, "deadline::%s*(<[^>]+>)") end
 
       local parts = {}
       if sched then
         local d = sched:match("<(%d%d%d%d%-%d%d%-%d%d)")
-        if d then parts[#parts+1] = { "  📅 " .. d, "LogseqScheduled" } end
+        if d then parts[#parts + 1] = { "  📅 " .. d, "LogseqScheduled" } end
       end
       if deadline then
         local d = deadline:match("<(%d%d%d%d%-%d%d%-%d%d)")
-        if d then parts[#parts+1] = { "  ⏰ " .. d, "LogseqDeadline" } end
+        if d then parts[#parts + 1] = { "  ⏰ " .. d, "LogseqDeadline" } end
       end
 
       if #parts > 0 then
@@ -680,29 +670,37 @@ end
 
 -- ── Breadcrumb helper ─────────────────────────────────────────────────
 
---- Return an abbreviated ancestor chain for the block at the cursor, or "".
+--- Return an abbreviated ancestor chain for the block at the cursor in `winid`.
+--- Accepts the window id so it queries the correct cursor position even when
+--- the winbar is evaluated for a non-focused window.
 --- Format: "Grandparent › Parent › Current"
-local function get_breadcrumb(bufnr)
-  local ok, parser = pcall(require, "logseq.parser")
+---@param winid integer
+---@param bufnr integer
+---@return string
+local function get_breadcrumb(winid, bufnr)
+  local ok, result = pcall(parser.parse_buf, bufnr)
   if not ok then return "" end
-  local ok2, result = pcall(parser.parse_buf, bufnr)
-  if not ok2 then return "" end
 
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  local block  = parser.block_at_line(result.blocks, cursor[1])
+  local block = parser.block_at_line(result.blocks, vim.api.nvim_win_get_cursor(winid)[1])
   if not block or not block.parent then return "" end
 
+  -- Collect in root→leaf order (O(n) appends) then reverse in place.
   local crumbs = {}
   local b = block
   while b do
-    local text = b.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""):match("^%s*(.-)%s*$") or ""
+    local text = vim.trim(b.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""))
     if #text > 22 then text = text:sub(1, 20) .. "…" end
-    if text == "" then text = "…" end
-    table.insert(crumbs, 1, text)
+    crumbs[#crumbs + 1] = text ~= "" and text or "…"
     b = b.parent
   end
 
-  if #crumbs <= 1 then return "" end
+  -- In-place reverse so result reads root › … › leaf.
+  local n = #crumbs
+  for i = 1, math.floor(n / 2) do
+    crumbs[i], crumbs[n - i + 1] = crumbs[n - i + 1], crumbs[i]
+  end
+
+  if n <= 1 then return "" end
   return table.concat(crumbs, " › ")
 end
 

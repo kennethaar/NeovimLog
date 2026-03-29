@@ -139,6 +139,30 @@ function M.format_journal_date(filename, vault_path)
   return M.apply_logseq_fmt(fmt, ts)
 end
 
+-- ── Shared property / pattern helpers ────────────────────────────────
+
+--- Case-insensitive lookup in a Logseq block's properties table.
+--- Properties are stored with their original casing ("SCHEDULED", "id", …).
+---@param props table<string,string>
+---@param key_lower string  already-lowercased key
+---@return string|nil
+function M.prop_ci(props, key_lower)
+  for k, v in pairs(props) do
+    if k:lower() == key_lower then return v end
+  end
+  return nil
+end
+
+--- Case-insensitive Lua pattern match.
+--- Lowercases `str` before matching so callers write readable lowercase patterns
+--- instead of [Ss][Cc][Hh][Ee][Dd]… character classes.
+---@param str string
+---@param pattern string  Lua pattern written for lowercase input
+---@return string|nil
+function M.match_ci(str, pattern)
+  return str:lower():match(pattern)
+end
+
 -- ── Filename Encoding/Decoding ────────────────────────────────────────
 
 --- Encode a page name to its on-disk filename.
