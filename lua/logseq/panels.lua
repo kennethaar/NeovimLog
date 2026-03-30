@@ -41,6 +41,8 @@ local function make_toggle(key, mod_name, bufnr)
   end
 end
 
+M.close_others = close_others
+
 function M.setup_buf(bufnr)
   local km = require("logseq.config").current.keymaps or {}
 

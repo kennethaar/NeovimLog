@@ -311,6 +311,7 @@ end
 
 function M.remove_section(bufnr)
   local state = get_state(bufnr)
+  sync_edits(bufnr)
   local header_line = find_header_line(bufnr)
   if not header_line then
     state.visible = false
@@ -371,7 +372,8 @@ function M.render_section(bufnr)
     for rel, info in pairs(section_smap) do all_smap[rel + offset] = info end
   end
 
-  for line in query_content:gmatch("([^\n]*)\n?") do
+  local normalized = query_content:gsub("\r\n", "\n"):gsub("\r", "\n")
+  for line in normalized:gmatch("[^\n]+") do
     if     line == "%QueryTodos%"         then append_section(all_todos,       "Actions")
     elseif line == "%QueryVeryNextTodos%" then append_section(very_next_todos, "Very next actions")
     elseif line ~= ""                     then table.insert(display_lines, line)
@@ -443,7 +445,6 @@ function M.toggle()
   local bufnr = vim.api.nvim_get_current_buf()
   local state = get_state(bufnr)
   if state.visible then
-    sync_edits(bufnr)
     M.remove_section(bufnr)
   else
     M.render_section(bufnr)
@@ -455,7 +456,6 @@ end
 local function on_write_pre(bufnr)
   local state = get_state(bufnr)
   if not state.visible then return end
-  sync_edits(bufnr)
   state.had_queries = true
   M.remove_section(bufnr)
 end
@@ -465,9 +465,10 @@ local function on_write_post(bufnr)
   if not state.had_queries then return end
   state.had_queries = false
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      M.render_section(bufnr)
-    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    local ok, panels = pcall(require, "logseq.panels")
+    if ok then panels.close_others(bufnr, "queries") end
+    M.render_section(bufnr)
   end)
 end
 
@@ -487,8 +488,6 @@ end
 -- ── Buffer Setup ──────────────────────────────────────────────────────
 
 function M.setup_buf(bufnr)
-  vim.keymap.set("n", "<Leader>q", M.toggle, { buffer = bufnr, desc = "Logseq: Toggle Queries" })
-
   local group = vim.api.nvim_create_augroup("LogseqQueries_" .. bufnr, { clear = true })
 
   vim.api.nvim_create_autocmd("BufWritePre", {
