@@ -10,6 +10,7 @@ local M = {}
 local HEADER_PREFIX  = "── Namespace: "
 local HEADER_PATTERN = "^── Namespace: .* ──$"
 local SEPARATOR      = ""
+local NS             = vim.api.nvim_create_namespace("logseq_ns_tree")
 
 -- ── State ─────────────────────────────────────────────────────────────
 
@@ -42,10 +43,13 @@ function M.in_region(bufnr, lnum)
 end
 
 --- Return the 1-indexed line of the tree header, or nil.
-local function find_header_line(bufnr)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+--- hint: expected 1-indexed position; limits the scan to a small tail window.
+local function find_header_line(bufnr, hint)
+  local total = vim.api.nvim_buf_line_count(bufnr)
+  local from  = hint and math.max(0, hint - 3) or 0
+  local lines = vim.api.nvim_buf_get_lines(bufnr, from, total, false)
   for i = #lines, 1, -1 do
-    if lines[i]:match(HEADER_PATTERN) then return i end
+    if lines[i]:match(HEADER_PATTERN) then return from + i end
   end
 end
 
@@ -177,14 +181,13 @@ function M.render_section(bufnr)
 
   update_modifiable(bufnr)
 
-  local ns = vim.api.nvim_create_namespace("logseq_ns_tree")
-  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-  vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", section_start, 0, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
+  vim.api.nvim_buf_add_highlight(bufnr, NS, "Title", section_start, 0, -1)
   for abs_line in pairs(state.source_map) do
     local line_0 = abs_line - 1
     local txt    = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
     local hl     = txt:match(" ←$") and "Bold" or "LogseqLink"
-    vim.api.nvim_buf_add_highlight(bufnr, ns, hl, line_0, 0, -1)
+    vim.api.nvim_buf_add_highlight(bufnr, NS, hl, line_0, 0, -1)
   end
 end
 
@@ -192,7 +195,7 @@ function M.remove_section(bufnr)
   local state = get_state(bufnr)
   vim.bo[bufnr].modifiable = true
 
-  local header = find_header_line(bufnr)
+  local header = find_header_line(bufnr, state.region and state.region.start_line)
   if not header then
     state.visible    = false
     state.region     = nil
@@ -209,7 +212,7 @@ function M.remove_section(bufnr)
   state.visible    = false
   state.region     = nil
   state.source_map = nil
-  vim.api.nvim_buf_clear_namespace(bufnr, vim.api.nvim_create_namespace("logseq_ns_tree"), 0, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
   return true
 end
 
@@ -258,7 +261,7 @@ function M.setup_buf(bufnr)
     callback = function(ev)
       local state = get_state(ev.buf)
       if not state.visible then return end       -- fired during our own render; ignore
-      local header = find_header_line(ev.buf)
+      local header = find_header_line(ev.buf, state.region and state.region.start_line)
       if not header then return end              -- fired during our own remove; ignore
       local new_region = region_from_header(ev.buf, header)
       local delta      = new_region.start_line - state.region.start_line

@@ -14,6 +14,7 @@ local M = {}
 
 local HEADER_PATTERN = "^── Queries.*──$"
 local SEPARATOR = ""
+local NS = vim.api.nvim_create_namespace("logseq_queries")
 
 -- ── Per-buffer state (consolidated, audit #21 pattern) ────────────────
 
@@ -360,42 +361,44 @@ function M.remove_section(bufnr)
   state.visible = false
   state.region = nil
   state.source_map = nil
-
-  local ns = vim.api.nvim_create_namespace("logseq_queries")
-  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
   return true
 end
 
-function M.render_section(bufnr)
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-  local filename = vim.fn.fnamemodify(filepath, ":t")
-  local namespace = filename:match("^(.-)___")
+local function apply_display(bufnr, display_lines, all_smap)
+  local state = get_state(bufnr)
+  local line_count    = vim.api.nvim_buf_line_count(bufnr)
+  local section_start = line_count + 1
+  local inject        = { SEPARATOR }
+  vim.list_extend(inject, display_lines)
 
-  if not namespace then
-    vim.notify("Not in a namespace. Cannot apply queries.", vim.log.levels.WARN)
-    return
+  with_modifiable(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, inject)
+  end)
+
+  state.region     = { start_line = section_start, end_line = section_start + #inject - 1 }
+  state.visible    = true
+  state.source_map = {}
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
+
+  for rel_line, info in pairs(all_smap) do
+    state.source_map[section_start + rel_line] = info
   end
 
-  local query_path = config.current.vault_path .. "/pages/Query___" .. namespace .. ".md"
-  local f = io.open(query_path, "r")
-  if not f then
-    vim.notify("No Query___" .. namespace .. ".md found.", vim.log.levels.WARN)
-    return
+  local base_0 = section_start - 1
+  for i, text in ipairs(inject) do
+    local line_0 = base_0 + (i - 1)
+    if text:match(HEADER_PATTERN) then
+      vim.api.nvim_buf_add_highlight(bufnr, NS, "Title", line_0, 0, -1)
+    elseif text:match("^─── .+ ───$") then
+      vim.api.nvim_buf_add_highlight(bufnr, NS, "Comment", line_0, 0, -1)
+    end
   end
+end
 
-  local query_content = f:read("*all")
-  f:close()
-
-  local page_name = filename:gsub("%.md$", ""):gsub("___", "/")
-  local all_todos, very_next_todos = gather_tasks(page_name)
-  vim.notify(
-    string.format("[logseq] queries: [[%s]] → %d tasks (%d very-next)",
-      page_name, #all_todos, #very_next_todos),
-    vim.log.levels.INFO
-  )
-
+local function build_query_display(query_content, all_todos, very_next_todos)
   local display_lines = { "── Queries ──" }
-  local all_smap = {}
+  local all_smap      = {}
 
   local function append_section(tasks, heading)
     local section_lines, section_smap = build_section(tasks, heading)
@@ -406,15 +409,13 @@ function M.render_section(bufnr)
 
   local in_codeblock = false
   for _, raw in ipairs(vim.split(query_content, "\n", { plain = true })) do
-    local line = vim.trim(raw)  -- strips \r (CRLF), spaces, tabs
+    local line = vim.trim(raw)
     if line:match("^```") or line:match("^~~~") then
       in_codeblock = not in_codeblock
       table.insert(display_lines, line)
     elseif in_codeblock then
       table.insert(display_lines, raw:gsub("\r$", ""))
     elseif line ~= "" then
-      -- Strip optional Logseq bullet prefix before testing directive names
-      -- e.g. "- %QueryVeryNextTodos%" → "%QueryVeryNextTodos%"
       local directive = line:match("^%-?%s*(%%.+%%)%s*$")
       if directive == "%QueryTodos%" then
         append_section(all_todos, "Actions")
@@ -426,43 +427,50 @@ function M.render_section(bufnr)
     end
   end
 
+  return display_lines, all_smap
+end
+
+function M.render_section(bufnr)
+  local filepath  = vim.api.nvim_buf_get_name(bufnr)
+  local filename  = vim.fn.fnamemodify(filepath, ":t")
+  local namespace = filename:match("^(.-)___")
+
+  if not namespace then
+    vim.notify("Not in a namespace. Cannot apply queries.", vim.log.levels.WARN)
+    return
+  end
+
+  local query_path    = config.current.vault_path .. "/pages/Query___" .. namespace .. ".md"
+  local query_content = read_file_content(query_path)
+  if not query_content then
+    vim.notify("No Query___" .. namespace .. ".md found.", vim.log.levels.WARN)
+    return
+  end
+
+  -- Show a loading placeholder immediately so the user sees something while
+  -- gather_tasks scans the vault (potentially hundreds of files).
   local state = get_state(bufnr)
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local line_count    = vim.api.nvim_buf_line_count(bufnr)
   local section_start = line_count + 1
-
-  local inject = { SEPARATOR }
-  vim.list_extend(inject, display_lines)
-
   with_modifiable(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, inject)
+    vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false,
+      { SEPARATOR, "── Queries (loading...) ──" })
   end)
-
-  state.region = {
-    start_line = section_start,
-    end_line = section_start + #inject - 1,
-  }
+  state.region  = { start_line = section_start, end_line = section_start + 1 }
   state.visible = true
 
-  state.source_map = {}
-  local ns = vim.api.nvim_create_namespace("logseq_queries")
-  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  local page_name = filename:gsub("%.md$", ""):gsub("___", "/")
 
-  for rel_line, info in pairs(all_smap) do
-    local abs_line = section_start + rel_line
-    state.source_map[abs_line] = info
-  end
+  vim.schedule(function()
+    if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
+    M.remove_section(bufnr)
 
-  local base_0 = section_start - 1
-  for i = 1, #inject do
-    local line_0 = base_0 + (i - 1)
-    local text = inject[i]
+    local all_todos, very_next_todos = gather_tasks(page_name)
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
 
-    if text:match(HEADER_PATTERN) then
-      vim.api.nvim_buf_add_highlight(bufnr, ns, "Title", line_0, 0, -1)
-    elseif text:match("^─── .+ ───$") then
-      vim.api.nvim_buf_add_highlight(bufnr, ns, "Comment", line_0, 0, -1)
-    end
-  end
+    local display_lines, all_smap = build_query_display(query_content, all_todos, very_next_todos)
+    apply_display(bufnr, display_lines, all_smap)
+  end)
 end
 
 -- ── Navigation ────────────────────────────────────────────────────────
@@ -513,9 +521,9 @@ local function on_write_post(bufnr)
   if not state.had_queries then return end
   state.had_queries = false
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      M.render_section(bufnr)
-    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    if #vim.fn.win_findbuf(bufnr) == 0 then return end
+    M.render_section(bufnr)
   end)
 end
 

@@ -32,6 +32,12 @@ local LABELS = { backlinks = "Links", queries = "Query", ns_tree = "NS" }
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 
+--- Show a brief message in the command line for 2 seconds.
+local function flash_msg(msg)
+  vim.api.nvim_echo({{ msg, "Normal" }}, false, {})
+  vim.defer_fn(function() vim.api.nvim_echo({{"", "Normal"}}, false, {}) end, 2000)
+end
+
 local function get_state(bufnr)
   if not M._state[bufnr] then
     M._state[bufnr] = { active_to_restore = nil }
@@ -113,12 +119,14 @@ local function make_toggle(key, mod_name, bufnr)
   return function()
     local ok, mod = pcall(require, mod_name)
     if not ok then return end
-    if is_panel_visible(mod, bufnr) then
-      mod.remove_section(bufnr)
-    else
+    local turning_on = not is_panel_visible(mod, bufnr)
+    if turning_on then
       close_others(bufnr, key)
       mod.render_section(bufnr)
+    else
+      mod.remove_section(bufnr)
     end
+    flash_msg(LABELS[key] .. (turning_on and " on" or " off"))
     vim.cmd("redrawstatus")
   end
 end

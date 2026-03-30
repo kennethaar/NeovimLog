@@ -314,7 +314,9 @@ local function on_write_post(bufnr)
   state.had_backlinks = false
 
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then M.render_section(bufnr) end
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    if #vim.fn.win_findbuf(bufnr) == 0 then return end
+    M.render_section(bufnr)
   end)
 end
 
@@ -336,7 +338,7 @@ function M.setup_buf(bufnr)
   vim.api.nvim_create_autocmd("BufWritePost", { group = group, buffer = bufnr, callback = function(ev) on_write_post(ev.buf) end })
   vim.api.nvim_create_autocmd("InsertEnter", { group = group, buffer = bufnr, callback = function(ev) guard_readonly(ev.buf) end })
   
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+  vim.api.nvim_create_autocmd("TextChanged", {
     group = group, buffer = bufnr, callback = function(ev)
       local state = get_state(ev.buf)
       if state.visible then recalculate_region(ev.buf) end
