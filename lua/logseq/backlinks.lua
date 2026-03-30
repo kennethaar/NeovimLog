@@ -1,10 +1,15 @@
 --- logseq.nvim backlinks (Linked References)
-local config = require("logseq.config")
+local config  = require("logseq.config")
 local indexer = require("logseq.indexer")
+local util    = require("logseq.util")
 
 local M = {}
 -- ── Constants ─────────────────────────────────────────────────────────
-local HEADER_PATTERN = "^── .*Linked References?.* ──$"
+-- Matches any of our rendered section headers (Overdue / Scheduled / Linked References).
+-- Format is always "── <number> <label> ──".
+local SECTION_HDR_PAT = "^── %d+ .-──$"
+-- Loading placeholder that appears while scans are in progress.
+local LOADING_PAT     = "^── Loading Linked References"
 local SEPARATOR = ""
 local NS = vim.api.nvim_create_namespace("logseq_backlinks")
 
@@ -54,12 +59,23 @@ function M.in_region(bufnr, lnum)
   return lnum >= state.region.start_line and lnum <= state.region.end_line
 end
 
+--- Return the 1-indexed line number of the topmost section header in our
+--- appended block (Overdue, Scheduled, or Linked References), or nil.
+--- Scans backward and continues past headers; stops at the blank SEPARATOR
+--- that precedes the first header. This ensures remove_section always
+--- removes the complete block including any Overdue/Scheduled sections.
 local function find_header_line(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local topmost = nil
   for i = #lines, 1, -1 do
-    if lines[i]:match(HEADER_PATTERN) then return i end
+    local line = lines[i]
+    if line:match(SECTION_HDR_PAT) or line:match(LOADING_PAT) then
+      topmost = i          -- keep updating; last written = topmost line
+    elseif topmost and line == "" then
+      break                -- hit the SEPARATOR blank line above the first header
+    end
   end
-  return nil
+  return topmost
 end
 
 local function recalculate_region(bufnr)
@@ -186,8 +202,8 @@ local function build_display(results, scheduled_data)
         if not cb.is_ancestor then group_line_count = group_line_count + 1 end
       end
     end
-
-    display[#display+1] = string.format("- [[%s]]  ⋯ %d lines", page_name, group_line_count)
+    local line_word = group_line_count == 1 and "line" or "lines"
+    display[#display+1] = string.format("- [[%s]]  ⋯ %d %s", page_name, group_line_count, line_word)
     smap[#display] = { file = group.source_file, line = 1 }
 
     for _, entry in ipairs(group.entries) do
@@ -208,10 +224,16 @@ function M.render_section(bufnr)
   local page_name = get_page_name(bufnr)
   if not page_name then return end
 
-  local filepath   = vim.api.nvim_buf_get_name(bufnr)
-  local state      = get_state(bufnr)
-  local is_journal = filepath:match("[/\\]journals[/\\]") ~= nil
-  local today_iso  = os.date("%Y-%m-%d")
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  local state    = get_state(bufnr)
+
+  -- Detect journal pages by comparing against the vault's journals/ dir,
+  -- not by raw string matching (which would false-positive on "my-journals/").
+  local vault        = config.current.vault_path or ""
+  local norm_file    = util.normalize(filepath)
+  local norm_journals = util.normalize(vault .. "/journals")
+  local is_journal   = norm_journals ~= "" and vim.startswith(norm_file, norm_journals .. "/")
+  local today_iso    = os.date("%Y-%m-%d")
 
   -- Show loading indicator
   local line_count    = vim.api.nvim_buf_line_count(bufnr)
@@ -225,16 +247,23 @@ function M.render_section(bufnr)
   state.visible = true
   vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
 
+  -- Each render_section invocation gets a unique token.  Callbacks check this
+  -- token before acting; stale callbacks from a previous invocation discard
+  -- their results rather than double-rendering.
+  local token = {}
+  state._render_token = token
+
   -- Coordinate two async scans (backlinks + optional scheduled).
   -- pending counts outstanding callbacks; rendering fires when it hits 0.
   local pending          = is_journal and 2 or 1
   local backlink_results = nil
   local scheduled_data   = nil
 
-  local uv            = vim.uv or vim.loop
+  local uv             = vim.uv or vim.loop
   local last_redraw_ns = uv.hrtime()
 
   local function do_render()
+    if state._render_token ~= token then return end  -- superseded by newer call
     if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
 
     M.remove_section(bufnr)
@@ -283,6 +312,7 @@ function M.render_section(bufnr)
   end
 
   local function on_scan_done()
+    if state._render_token ~= token then return end
     pending = pending - 1
     if pending == 0 then do_render() end
   end

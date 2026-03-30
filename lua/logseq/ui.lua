@@ -161,8 +161,10 @@ function M.tabline()
   local safe_label = label:gsub("%%", "%%%%")
   local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝rn%X%#TabLine#"
   local close_btn  = "%#Comment#%@v:lua.logseq_close_win@:wq❌%X%#TabLine#"
-  return " " .. rename_btn .. "%=%#TabLineSel# " .. safe_label
-       .. " %#TabLine#%=" .. close_btn .. " "
+  -- %< is the truncation point: content before it is never cut, content
+  -- after it shrinks first. Buttons are before %<; label truncates instead.
+  return " " .. rename_btn .. "  %#TabLineSel#%<" .. safe_label
+       .. "%#TabLine#%=" .. close_btn .. " "
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
