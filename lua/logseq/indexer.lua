@@ -178,6 +178,43 @@ local function is_block_scheduled(block)
       or block.properties.deadline  ~= nil
 end
 
+--- Extract the first SCHEDULED or DEADLINE ISO date "YYYY-MM-DD" from a block.
+--- Returns date_iso (string|nil), is_deadline (bool).
+local function block_sched_date(block, file_lines)
+  local sv = util.prop_ci(block.properties, "scheduled")
+  if sv then
+    local d = sv:match("<(%d%d%d%d%-%d%d%-%d%d)") or sv:match("(%d%d%d%d%-%d%d%-%d%d)")
+    if d then return d, false end
+  end
+  local dv = util.prop_ci(block.properties, "deadline")
+  if dv then
+    local d = dv:match("<(%d%d%d%d%-%d%d%-%d%d)") or dv:match("(%d%d%d%d%-%d%d%-%d%d)")
+    if d then return d, true end
+  end
+  -- Fallback: scan continuation lines when property wasn't parsed into properties table.
+  for li = block.line_start + 1, block.line_end do
+    local line = file_lines[li]
+    if line then
+      local ll = line:lower()
+      if ll:find("scheduled::", 1, true) then
+        local d = line:match("<(%d%d%d%d%-%d%d%-%d%d)") or line:match("(%d%d%d%d%-%d%d%-%d%d)")
+        if d then return d, false end
+      elseif ll:find("deadline::", 1, true) then
+        local d = line:match("<(%d%d%d%d%-%d%d%-%d%d)") or line:match("(%d%d%d%d%-%d%d%-%d%d)")
+        if d then return d, true end
+      end
+    end
+  end
+  return nil, nil
+end
+
+--- Return true when the block's TODO keyword is DONE or CANCELLED (case-insensitive).
+local function block_is_done(content)
+  local c = content:lower()
+  return vim.startswith(c, "done ") or c == "done"
+      or vim.startswith(c, "cancelled ") or c == "cancelled"
+end
+
 -- ── Candidate scanner ─────────────────────────────────────────────────
 
 local function build_needles(page_name)
@@ -378,6 +415,105 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
   end
 
   process_chunk()
+end
+
+-- ── Scheduled / Deadline task scanner ────────────────────────────────
+
+--- Async: scan the entire vault for incomplete scheduled/deadline blocks.
+--- Calls on_complete({ overdue = [...], upcoming = [...] }) where each entry is:
+---   { source_page, source_file, date_iso, is_deadline, context_blocks }
+--- overdue  — scheduled date < today_iso AND block is not DONE/CANCELLED
+--- upcoming — today_iso <= date <= today+6 AND block is not DONE/CANCELLED
+---@param today_iso  string  "YYYY-MM-DD"
+---@param on_complete function
+function M.find_scheduled_blocks(today_iso, on_complete)
+  local raw_vault = config.current.vault_path
+  if not raw_vault or raw_vault == "" then
+    return vim.schedule(function() on_complete({ overdue = {}, upcoming = {} }) end)
+  end
+  local vault = util.normalize(raw_vault)
+
+  local search_dirs = {}
+  if vim.fn.isdirectory(vault .. "/pages")   == 1 then search_dirs[#search_dirs+1] = vault .. "/pages"   end
+  if vim.fn.isdirectory(vault .. "/journals") == 1 then search_dirs[#search_dirs+1] = vault .. "/journals" end
+  if #search_dirs == 0 then
+    return vim.schedule(function() on_complete({ overdue = {}, upcoming = {} }) end)
+  end
+
+  local uv        = vim.uv or vim.loop
+  local all_files = list_md_files(search_dirs, uv)
+  if #all_files == 0 then
+    return vim.schedule(function() on_complete({ overdue = {}, upcoming = {} }) end)
+  end
+
+  -- today+6 is the upper bound of the upcoming window (7 days inclusive)
+  local upcoming_end = os.date("%Y-%m-%d", os.time() + 6 * 86400)
+  local overdue, upcoming = {}, {}
+  local i = 1
+
+  local function process_chunk()
+    local chunk_end = math.min(i + 49, #all_files)
+
+    for j = i, chunk_end do
+      local filepath = all_files[j]
+      local norm     = util.normalize(filepath)
+      local stat     = uv.fs_stat(filepath)
+      if stat then
+        local file_lines, parsed
+        local cached = M._cache[norm]
+        if cached and cached.mtime == stat.mtime.sec then
+          file_lines = cached.lines
+          parsed     = cached.parsed
+        else
+          local fd = uv.fs_open(filepath, "r", 438)
+          if fd then
+            local content = uv.fs_read(fd, stat.size, 0)
+            uv.fs_close(fd)
+            if content then
+              file_lines = vim.split(content, "\n", { plain = true })
+              if #file_lines > 0 and file_lines[#file_lines] == "" then table.remove(file_lines) end
+              parsed     = parser.parse(file_lines)
+              M._cache[norm] = { mtime = stat.mtime.sec, parsed = parsed, lines = file_lines, content = content }
+            end
+          end
+        end
+
+        if parsed and file_lines then
+          local source_page = M.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
+          for _, block in ipairs(parser.flatten(parsed.blocks)) do
+            if block.is_scheduled and not block_is_done(block.content) then
+              local date_iso, is_deadline = block_sched_date(block, file_lines)
+              if date_iso then
+                local entry = {
+                  source_page    = source_page,
+                  source_file    = filepath,
+                  date_iso       = date_iso,
+                  is_deadline    = is_deadline,
+                  context_blocks = extract_context(block, file_lines),
+                }
+                if date_iso < today_iso then
+                  overdue[#overdue+1] = entry
+                elseif date_iso <= upcoming_end then
+                  upcoming[#upcoming+1] = entry
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    i = chunk_end + 1
+    if i > #all_files then
+      table.sort(overdue,  function(a, b) return a.date_iso < b.date_iso end)
+      table.sort(upcoming, function(a, b) return a.date_iso < b.date_iso end)
+      vim.schedule(function() on_complete({ overdue = overdue, upcoming = upcoming }) end)
+    else
+      vim.schedule(process_chunk)
+    end
+  end
+
+  vim.schedule(process_chunk)
 end
 
 return M

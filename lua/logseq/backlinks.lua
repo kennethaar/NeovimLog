@@ -104,12 +104,60 @@ local function make_progress_bar(current, total, width)
 end
 
 -- ── Display Builder ───────────────────────────────────────────────────
-local function build_display(results)
-  local display = {}
-  local smap = {}
-  local match_lines = {}
-  local total = 0
 
+--- Append one Overdue or Scheduled section to display/smap.
+--- Entries are grouped by source_page (the date string for journal files).
+local function append_sched_section(label, hl_group, entries, display, smap, hl_lines)
+  if #entries == 0 then return end
+  display[#display+1] = string.format("── %d %s ──", #entries, label)
+  hl_lines[#hl_lines+1] = { #display, hl_group }
+
+  local groups, order = {}, {}
+  for _, e in ipairs(entries) do
+    if not groups[e.source_page] then
+      groups[e.source_page] = { source_file = e.source_file, items = {} }
+      order[#order+1] = e.source_page
+    end
+    groups[e.source_page].items[#groups[e.source_page].items+1] = e
+  end
+
+  for _, page in ipairs(order) do
+    local g   = groups[page]
+    local cnt = 0
+    for _, e in ipairs(g.items) do
+      for _, cb in ipairs(e.context_blocks) do
+        if not cb.is_ancestor then cnt = cnt + 1 end
+      end
+    end
+    display[#display+1] = string.format("- [[%s]]  ⋯ %d %s", page, cnt, cnt == 1 and "line" or "lines")
+    smap[#display] = { file = g.source_file, line = 1 }
+    for _, e in ipairs(g.items) do
+      for _, cb in ipairs(e.context_blocks) do
+        local prefix = cb.is_ancestor and "▸ " or "- "
+        display[#display+1] = string.rep(" ", cb.indent) .. prefix .. cb.text
+        smap[#display] = { file = e.source_file, line = cb.source_line }
+      end
+    end
+  end
+end
+
+--- Build the display lines, source map, match-line set, and header highlights.
+--- scheduled_data is { overdue = [...], upcoming = [...] } or nil.
+---@return string[], table, table, table
+local function build_display(results, scheduled_data)
+  local display    = {}
+  local smap       = {}
+  local match_lines = {}
+  local hl_lines   = {}   -- { rel_line (1-indexed in display), hl_group }
+
+  -- ── Scheduled sections (top) ──────────────────────────────────────
+  if scheduled_data then
+    append_sched_section("Overdue",   "DiagnosticError",  scheduled_data.overdue,  display, smap, hl_lines)
+    append_sched_section("Scheduled", "LogseqScheduled",  scheduled_data.upcoming, display, smap, hl_lines)
+  end
+
+  -- ── Linked References ─────────────────────────────────────────────
+  local total = 0
   for _, r in ipairs(results) do
     for _, cb in ipairs(r.context_blocks) do
       if cb.is_match then total = total + 1 end
@@ -117,17 +165,17 @@ local function build_display(results)
   end
 
   local ref_word = total == 1 and "Reference" or "References"
-  table.insert(display, string.format("── %d Linked %s ──", total, ref_word))
+  display[#display+1] = string.format("── %d Linked %s ──", total, ref_word)
+  hl_lines[#hl_lines+1] = { #display, "Title" }
 
-  local groups = {}
-  local group_order = {}
+  local groups, group_order = {}, {}
   for _, r in ipairs(results) do
     if not groups[r.source_page] then
       groups[r.source_page] = { source_file = r.source_file, entries = {}, is_scheduled = false }
-      table.insert(group_order, r.source_page)
+      group_order[#group_order+1] = r.source_page
     end
     if r.is_scheduled then groups[r.source_page].is_scheduled = true end
-    table.insert(groups[r.source_page].entries, r)
+    groups[r.source_page].entries[#groups[r.source_page].entries+1] = r
   end
 
   for _, page_name in ipairs(group_order) do
@@ -139,22 +187,20 @@ local function build_display(results)
       end
     end
 
-    table.insert(display, string.format("- [[%s]]  ⋯ %d lines", page_name, group_line_count))
+    display[#display+1] = string.format("- [[%s]]  ⋯ %d lines", page_name, group_line_count)
     smap[#display] = { file = group.source_file, line = 1 }
 
     for _, entry in ipairs(group.entries) do
       for _, cb in ipairs(entry.context_blocks) do
-        local indent_str = string.rep(" ", cb.indent)
         local prefix = cb.is_ancestor and "▸ " or "- "
-        table.insert(display, indent_str .. prefix .. cb.text)
-        local idx = #display
-        smap[idx] = { file = entry.source_file, line = cb.source_line }
-        if cb.is_match then match_lines[idx] = true end
+        display[#display+1] = string.rep(" ", cb.indent) .. prefix .. cb.text
+        smap[#display] = { file = entry.source_file, line = cb.source_line }
+        if cb.is_match then match_lines[#display] = true end
       end
     end
   end
 
-  return display, smap, match_lines
+  return display, smap, match_lines, hl_lines
 end
 
 -- ── Rendering ─────────────────────────────────────────────────────────
@@ -162,92 +208,112 @@ function M.render_section(bufnr)
   local page_name = get_page_name(bufnr)
   if not page_name then return end
 
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-  local state = get_state(bufnr)
+  local filepath   = vim.api.nvim_buf_get_name(bufnr)
+  local state      = get_state(bufnr)
+  local is_journal = filepath:match("[/\\]journals[/\\]") ~= nil
+  local today_iso  = os.date("%Y-%m-%d")
 
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  -- Show loading indicator
+  local line_count    = vim.api.nvim_buf_line_count(bufnr)
   local section_start = line_count + 1
-
-  -- Initial loading state
-  local initial_bar = make_progress_bar(0, 100, 20)
-  local loading_lines = { SEPARATOR, string.format("── Loading Linked References... %s ──", initial_bar) }
-  
+  local initial_bar   = make_progress_bar(0, 100, 20)
   with_modifiable(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, loading_lines)
+    vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false,
+      { SEPARATOR, string.format("── Loading Linked References... %s ──", initial_bar) })
   end)
-
-  state.region = { start_line = section_start, end_line = section_start + 1 }
+  state.region  = { start_line = section_start, end_line = section_start + 1 }
   state.visible = true
-
   vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
-  vim.api.nvim_buf_add_highlight(bufnr, NS, "Title", section_start - 1, 0, -1)
 
-  local uv = vim.uv or vim.loop
+  -- Coordinate two async scans (backlinks + optional scheduled).
+  -- pending counts outstanding callbacks; rendering fires when it hits 0.
+  local pending          = is_journal and 2 or 1
+  local backlink_results = nil
+  local scheduled_data   = nil
+
+  local uv            = vim.uv or vim.loop
   local last_redraw_ns = uv.hrtime()
 
+  local function do_render()
+    if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
+
+    M.remove_section(bufnr)
+    local display_lines, smap, match_lines, hl_lines = build_display(backlink_results, scheduled_data)
+    local new_line_count    = vim.api.nvim_buf_line_count(bufnr)
+    local new_section_start = new_line_count + 1
+
+    local final_lines = { SEPARATOR }
+    vim.list_extend(final_lines, display_lines)
+
+    with_modifiable(bufnr, function()
+      vim.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, final_lines)
+    end)
+
+    state.region     = { start_line = new_section_start, end_line = new_section_start + #final_lines - 1 }
+    state.visible    = true
+    state.source_map = {}
+
+    local abs_match_lines = {}
+    for rel_line, info in pairs(smap) do
+      local abs = new_section_start + rel_line
+      state.source_map[abs] = info
+      if match_lines[rel_line] then abs_match_lines[#abs_match_lines+1] = abs - 1 end
+    end
+
+    vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
+
+    -- Section-header highlights (Overdue, Scheduled, Linked References)
+    -- display_lines[k] sits at 0-indexed (new_line_count + k) = (new_section_start - 1 + k)
+    for _, hl in ipairs(hl_lines) do
+      vim.api.nvim_buf_add_highlight(bufnr, NS, hl[2], new_section_start - 1 + hl[1], 0, -1)
+    end
+
+    -- Source-page [[link]] lines
+    for abs_line, _ in pairs(state.source_map) do
+      local line_0   = abs_line - 1
+      local line_txt = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
+      if line_txt:match("^%- %[%[.+%]%]%s+⋯") then
+        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", line_0, 0, -1)
+      end
+    end
+
+    for _, line_0 in ipairs(abs_match_lines) do
+      vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", line_0, 0, -1)
+    end
+  end
+
+  local function on_scan_done()
+    pending = pending - 1
+    if pending == 0 then do_render() end
+  end
+
   indexer.find_backlinks(page_name, filepath,
-    -- ON COMPLETE
     function(results)
-      if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
-
-      M.remove_section(bufnr)
-      local display_lines, smap, match_lines = build_display(results)
-      local new_line_count = vim.api.nvim_buf_line_count(bufnr)
-      local new_section_start = new_line_count + 1
-
-      local final_lines = { SEPARATOR }
-      vim.list_extend(final_lines, display_lines)
-
-      with_modifiable(bufnr, function()
-        vim.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, final_lines)
-      end)
-
-      state.region = { start_line = new_section_start, end_line = new_section_start + #final_lines - 1 }
-      state.visible = true
-      state.source_map = {}
-
-      local abs_match_lines = {}
-      for rel_line, info in pairs(smap) do
-        local abs = new_section_start + rel_line
-        state.source_map[abs] = info
-        if match_lines[rel_line] then table.insert(abs_match_lines, abs - 1) end
-      end
-
-      vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
-      vim.api.nvim_buf_add_highlight(bufnr, NS, "Title", new_section_start - 1, 0, -1)
-
-      for abs_line, _ in pairs(state.source_map) do
-        local line_0 = abs_line - 1
-        local line_text = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
-        if line_text:match("^%- %[%[.+%]%]%s+⋯") then
-          vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", line_0, 0, -1)
-        end
-      end
-
-      for _, line_0 in ipairs(abs_match_lines) do
-        vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", line_0, 0, -1)
-      end
+      backlink_results = results
+      on_scan_done()
     end,
-    -- ON PROGRESS
+    -- ON PROGRESS: animate loading bar while either scan is still running
     function(current, total)
       if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible or not state.region then return end
-
-      local bar = make_progress_bar(current, total, 20)
-      local progress_text = string.format("── Loading Linked References... %s ──", bar)
-
+      local bar  = make_progress_bar(current, total, 20)
+      local text = string.format("── Loading Linked References... %s ──", bar)
       local text_line_0 = state.region.start_line
       with_modifiable(bufnr, function()
-        pcall(vim.api.nvim_buf_set_lines, bufnr, text_line_0, text_line_0 + 1, false, { progress_text })
+        pcall(vim.api.nvim_buf_set_lines, bufnr, text_line_0, text_line_0 + 1, false, { text })
       end)
-
-      -- Force a screen flush at most every 80 ms so the bar animates smoothly
-      -- without hammering the renderer on large cached vaults.
       local now = uv.hrtime()
       if now - last_redraw_ns >= 80e6 then
         last_redraw_ns = now
         vim.cmd("redraw")
       end
     end)
+
+  if is_journal then
+    indexer.find_scheduled_blocks(today_iso, function(data)
+      scheduled_data = data
+      on_scan_done()
+    end)
+  end
 end
 
 function M.remove_section(bufnr)
