@@ -6,7 +6,8 @@
 ---   • Virtual-text source attribution (← Page Name)
 
 local config = require("logseq.config")
-local util = require("logseq.util")
+local util   = require("logseq.util")
+local parser = require("logseq.parser")
 
 local M = {}
 
@@ -41,13 +42,6 @@ local function with_modifiable(bufnr, fn)
   fn()
   vim.bo[bufnr].modified   = was_modified
   vim.bo[bufnr].modifiable = was_modifiable
-end
-
-local function is_active_task(line)
-  for _, state in ipairs(util.active_todo_states) do
-    if line:match("^%s*%- " .. state .. "%s+") then return true end
-  end
-  return false
 end
 
 function M.in_region(bufnr, row)
@@ -107,20 +101,8 @@ local function recalculate_region(bufnr)
 end
 
 -- ── File Scanner ──────────────────────────────────────────────────────
-
-local function has_task_ancestor(indent_stack)
-  for _, parent in ipairs(indent_stack) do
-    if parent.is_task then return true end
-  end
-  return false
-end
-
-local function has_link_ancestor(indent_stack)
-  for _, parent in ipairs(indent_stack) do
-    if parent.has_link then return true end
-  end
-  return false
-end
+-- Uses the same parser + inherited-ref logic as the indexer so that tasks
+-- nested under a [[page]] bullet are found correctly.
 
 local function read_file_content(filepath)
   local f = io.open(filepath, "r")
@@ -130,53 +112,65 @@ local function read_file_content(filepath)
   return content
 end
 
-local function process_single_file(filepath, page_link, all_todos, very_next_todos)
+local function is_active_task_content(content_text)
+  for _, state in ipairs(util.active_todo_states) do
+    if content_text:match("^" .. state .. "%s+") or content_text == state then
+      return true
+    end
+  end
+  return false
+end
+
+-- Scan one file for active tasks that reference page_name.
+-- Uses parser.parse + inherited link refs so tasks nested under a [[page]]
+-- bullet are found (the common Logseq pattern).
+local function process_single_file(filepath, page_name, all_todos, very_next_todos)
   local content = read_file_content(filepath)
-  if not content or not content:find(page_link, 1, true) then return end
+  -- Quick prefix-only check: handles [[Page]] and [[Page|Alias]] alike.
+  if not content or not content:find("[[" .. page_name, 1, true) then return end
 
-  local source_page = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", ""):gsub("___", "/")
-  local indent_stack = {}
-  local line_num = 0
-  local in_codeblock = false
+  local source_page = util.decode_filename(vim.fn.fnamemodify(filepath, ":t"))
+  local lines       = vim.split(content, "\n", { plain = true })
+  local parsed      = parser.parse(lines)
+  local flat        = parser.flatten(parsed.blocks)
 
-  for _, raw in ipairs(vim.split(content, "\n", { plain = true })) do
-    line_num = line_num + 1
-    local line = raw:gsub("\r$", "")  -- strip CRLF
-
-    if line:match("^%s*```") or line:match("^%s*~~~") then
-      in_codeblock = not in_codeblock
-      goto continue
+  -- Propagate link refs down the ancestry chain (same logic as the indexer).
+  -- Iterating flat in DFS pre-order guarantees each parent is processed first.
+  local block_refs = {}
+  for _, block in ipairs(flat) do
+    local refs = {}
+    for _, link in ipairs(block.links) do refs[link] = true end
+    if block.parent and block_refs[block.parent] then
+      for ref in pairs(block_refs[block.parent]) do refs[ref] = true end
     end
-    if in_codeblock then goto continue end
+    block_refs[block] = refs
+  end
 
-    local indent_str = line:match("^(%s*)%- ")
-    if not indent_str then goto continue end
+  for _, block in ipairs(flat) do
+    local refs = block_refs[block]
+    if not refs or not refs[page_name] then goto continue end
+    if not is_active_task_content(block.content) then goto continue end
 
-    local indent = #indent_str
-    while #indent_stack > 0 and indent_stack[#indent_stack].indent >= indent do
-      table.remove(indent_stack)
-    end
-
-    local current_is_task = is_active_task(line)
-    local line_has_link   = line:find(page_link, 1, true) ~= nil
-    local parent_is_task  = has_task_ancestor(indent_stack)
-    local parent_has_link = has_link_ancestor(indent_stack)
-
-    table.insert(indent_stack, { indent = indent, is_task = current_is_task, has_link = line_has_link })
-
-    -- Match: active task that either mentions the page inline, or is nested
-    -- under a block that mentions the page (the common Logseq pattern).
-    if not current_is_task or not (line_has_link or parent_has_link) then goto continue end
+    local orig_line  = lines[block.line_start] or ""
+    local indent_str = orig_line:match("^(%s*)") or ""
 
     local entry = {
-      task          = vim.trim(line:gsub("^%s*%- ", "")),
+      task          = block.content,
       source        = source_page,
       filepath      = filepath,
-      lnum          = line_num,
+      lnum          = block.line_start,
       indent_prefix = indent_str,
     }
     table.insert(all_todos, entry)
-    if not parent_is_task then table.insert(very_next_todos, entry) end
+
+    -- Very-next: task has no task ancestor in the parent chain
+    local has_task_parent = false
+    local cur = block.parent
+    while cur and not has_task_parent do
+      if is_active_task_content(cur.content) then has_task_parent = true end
+      cur = cur.parent
+    end
+    if not has_task_parent then table.insert(very_next_todos, entry) end
 
     ::continue::
   end
@@ -186,24 +180,19 @@ local function gather_tasks(page_name)
   local vault = config.current.vault_path
   if not vault or vault == "" then return {}, {} end
 
-  local page_link = "[[" .. page_name .. "]]"
+  local dirs = { vault .. "/pages", vault .. "/journals" }
   local files = {}
-
-  local function scan_dir(dir)
-    if vim.fn.isdirectory(dir) == 0 then return end
-    vim.list_extend(files, vim.fn.glob(dir .. "/*.md", true, true))
+  for _, dir in ipairs(dirs) do
+    if vim.fn.isdirectory(dir) == 1 then
+      vim.list_extend(files, vim.fn.glob(dir .. "/*.md", true, true))
+    end
   end
 
-  scan_dir(vault .. "/pages")
-  scan_dir(vault .. "/journals")
-
-  local all_todos = {}
-  local very_next_todos = {}
-
+  local all_todos, very_next_todos = {}, {}
   for _, filepath in ipairs(files) do
     local name = vim.fn.fnamemodify(filepath, ":t")
     if not name:match("^Query___") and not name:match("^Templates___") then
-      process_single_file(filepath, page_link, all_todos, very_next_todos)
+      process_single_file(filepath, page_name, all_todos, very_next_todos)
     end
   end
 
