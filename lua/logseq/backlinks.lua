@@ -309,6 +309,8 @@ function M.render_section(bufnr)
     for _, line_0 in ipairs(abs_match_lines) do
       vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", line_0, 0, -1)
     end
+
+    vim.api.nvim_echo({ { "[logseq] Backlinks updated.", "Comment" } }, false, {})
   end
 
   local function on_scan_done()
@@ -407,6 +409,7 @@ local function on_write_post(bufnr)
   if not state.had_backlinks then return end
   state.had_backlinks = false
 
+  vim.api.nvim_echo({ { "[logseq] Scanning vault to update backlinks…", "Comment" } }, false, {})
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(bufnr) then M.render_section(bufnr) end
   end)
