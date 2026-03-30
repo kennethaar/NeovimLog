@@ -137,6 +137,24 @@ function M.toggle(key)
   make_toggle(key, MODS[key], bufnr)()
 end
 
+--- Close all visible panels and suppress their BufWritePost restore.
+--- Call before :wq so no scheduled render can re-dirty the buffer between
+--- the write and the quit (which would cause E37).
+function M.close_all(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  for key, mod_name in pairs(MODS) do
+    local ok, mod = pcall(require, mod_name)
+    if ok and is_panel_visible(mod, bufnr) then
+      mod.remove_section(bufnr)
+      -- Suppress the module's own BufWritePost restore
+      local flag = HAD_FLAGS[key]
+      if flag and mod._state[bufnr] then mod._state[bufnr][flag] = false end
+    end
+  end
+  -- Suppress panels' own coordinator restore
+  if M._state[bufnr] then M._state[bufnr].active_to_restore = nil end
+end
+
 -- Global statusline click callbacks registered once at module load.
 -- Using pcall-require avoids a hard dependency cycle at load time.
 _G.logseq_panel_backlinks = function() require("logseq.panels").toggle("backlinks") end

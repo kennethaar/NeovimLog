@@ -177,6 +177,10 @@ function M.trigger_save_indicator(bufnr)
 end
 
 function M.close_win(_minwid, _clicks, _button, _mods)
+  local bufnr = vim.api.nvim_get_current_buf()
+  -- Pre-strip all panels so no vim.schedule restore can re-dirty the buffer
+  -- between the write and quit phases of :wq (which would cause E37).
+  pcall(function() require("logseq.panels").close_all(bufnr) end)
   vim.cmd("wq")
 end
 

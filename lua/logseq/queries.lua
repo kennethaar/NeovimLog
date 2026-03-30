@@ -448,7 +448,7 @@ function M.render_section(bufnr)
   state.region  = { start_line = section_start, end_line = section_start + 1 }
   state.visible = true
 
-  local page_name = filename:gsub("%.md$", ""):gsub("___", "/")
+  local page_name = util.decode_filename(filename)
 
   vim.schedule(function()
     if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
