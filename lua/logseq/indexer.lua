@@ -228,6 +228,32 @@ local function get_todo_state(content)
   return nil
 end
 
+--- Return the TODO state of block itself or the nearest ancestor that has one.
+--- A link like [[Page]] is often a child of the actual TODO bullet, so checking
+--- only the matched block's content misses most real-world cases.
+local function get_effective_todo_state(block)
+  local cur = block
+  while cur do
+    local s = get_todo_state(cur.content)
+    if s then return s end
+    cur = cur.parent
+  end
+  return nil
+end
+
+--- Collect tags from block and all its ancestors (tags inherit in Logseq).
+local function get_effective_tags(block)
+  local tags, seen = {}, {}
+  local cur = block
+  while cur do
+    for _, tag in ipairs(cur.tags) do
+      if not seen[tag] then seen[tag] = true; tags[#tags + 1] = tag end
+    end
+    cur = cur.parent
+  end
+  return tags
+end
+
 --- Return true if any descendant of block has a TODO keyword.
 local function has_todo_children(block)
   local function check(b)
@@ -352,8 +378,8 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
         source_file       = filepath,
         context_blocks    = extract_context(block, file_lines),
         is_scheduled      = is_block_scheduled(block),
-        todo_state        = get_todo_state(block.content),
-        tags              = block.tags,
+        todo_state        = get_effective_todo_state(block),
+        tags              = get_effective_tags(block),
         has_todo_children = has_todo_children(block),
       })
     end
@@ -365,10 +391,13 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
   local p_refs = parser.page_property_refs(parsed.page_properties)
   if matches_target(p_refs, target_names) and flat[1] and not matched[flat[1].line_start] then
     table.insert(results, {
-      source_page    = source_page,
-      source_file    = filepath,
-      context_blocks = extract_context(flat[1], file_lines),
-      is_scheduled   = false,
+      source_page       = source_page,
+      source_file       = filepath,
+      context_blocks    = extract_context(flat[1], file_lines),
+      is_scheduled      = false,
+      todo_state        = get_effective_todo_state(flat[1]),
+      tags              = get_effective_tags(flat[1]),
+      has_todo_children = has_todo_children(flat[1]),
     })
   end
 end

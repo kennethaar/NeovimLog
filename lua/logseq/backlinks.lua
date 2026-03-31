@@ -190,8 +190,17 @@ local function write_page_filters(bufnr, filepath, filter)
 end
 
 --- Collect the ordered list of filterable item keys from raw results.
---- Order: TODO states first (canonical), then #tags alphabetically.
-local function collect_filter_items(results)
+--- Order: overdue/scheduled section controls first, then TODO states (canonical),
+--- then #tags alphabetically.
+local function collect_filter_items(results, scheduled_data)
+  local items = {}
+
+  -- Section visibility controls: only add when the section has content.
+  if scheduled_data then
+    if scheduled_data.overdue  and #scheduled_data.overdue  > 0 then items[#items + 1] = "overdue"   end
+    if scheduled_data.upcoming and #scheduled_data.upcoming > 0 then items[#items + 1] = "scheduled" end
+  end
+
   local todo_set, tag_set = {}, {}
   for _, r in ipairs(results) do
     if r.todo_state then todo_set[r.todo_state] = true end
@@ -199,7 +208,6 @@ local function collect_filter_items(results)
       for _, tag in ipairs(r.tags) do tag_set["#" .. tag] = true end
     end
   end
-  local items = {}
   for _, s in ipairs(util.todo_states) do
     if todo_set[s] then items[#items + 1] = s end
   end
@@ -322,7 +330,10 @@ local function build_display(results, scheduled_data, filter, filter_items)
     local f_val  = filter and filter[item]
     local inc_hl = (f_val == true)  and "LogseqLink"      or "Comment"
     local exc_hl = (f_val == false) and "DiagnosticError" or "Comment"
-    local label  = item == "very_next_actions" and "Very Next Actions" or item
+    local label  = item == "very_next_actions" and "Very Next Actions"
+               or item == "overdue"           and "Overdue"
+               or item == "scheduled"         and "Scheduled"
+               or item
     display[#display + 1] = string.format("  [+][-]  %s", label)
     smap[#display] = { action = "filter", item = item }
     hl_lines[#hl_lines + 1] = { #display, inc_hl, 2, 5 }   -- [+] cols 2-4
@@ -330,9 +341,14 @@ local function build_display(results, scheduled_data, filter, filter_items)
   end
 
   -- ── Scheduled sections (top) ──────────────────────────────────────
+  -- Excluded (filter == false) → section is hidden; nil or true → shown.
   if scheduled_data then
-    append_sched_section("Overdue",   "DiagnosticError",  scheduled_data.overdue,  display, smap, hl_lines)
-    append_sched_section("Scheduled", "LogseqScheduled",  scheduled_data.upcoming, display, smap, hl_lines)
+    if not filter or filter["overdue"]   ~= false then
+      append_sched_section("Overdue",   "DiagnosticError", scheduled_data.overdue,  display, smap, hl_lines)
+    end
+    if not filter or filter["scheduled"] ~= false then
+      append_sched_section("Scheduled", "LogseqScheduled", scheduled_data.upcoming, display, smap, hl_lines)
+    end
   end
 
   -- ── Linked References ─────────────────────────────────────────────
@@ -495,7 +511,7 @@ function M.render_section(bufnr)
     -- Cache raw results so filter toggles can re-render without a vault rescan.
     state.cached_results   = backlink_results
     state.cached_scheduled = scheduled_data
-    state.filter_items     = collect_filter_items(backlink_results)
+    state.filter_items     = collect_filter_items(backlink_results, scheduled_data)
     apply_and_render(bufnr)
   end
 
