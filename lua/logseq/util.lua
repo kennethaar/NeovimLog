@@ -165,6 +165,41 @@ end
 
 -- ── Filename Encoding/Decoding ────────────────────────────────────────
 
+-- ── EDN dict helpers (for Logseq filters:: property) ────────────────
+
+--- Parse a Logseq-style EDN dict string into a Lua table.
+--- Input:  '{"TODO" true, "#project" false}'
+--- Output: { ["TODO"] = true, ["#project"] = false }
+---@param str string|nil
+---@return table<string,boolean>
+function M.parse_edn_dict(str)
+  local result = {}
+  if not str or str == "" then return result end
+  for key, val in str:gmatch('"([^"]+)"%s+(true|false)') do
+    result[key] = (val == "true")
+  end
+  return result
+end
+
+--- Serialize a Lua bool-valued table to a Logseq-style EDN dict string.
+--- Input:  { ["TODO"] = true, ["#project"] = false }
+--- Output: '{"TODO" true, "#project" false}'
+--- Keys are emitted in sorted order for deterministic output.
+---@param t table<string,boolean>
+---@return string
+function M.serialize_edn_dict(t)
+  local keys = {}
+  for k in pairs(t) do keys[#keys + 1] = k end
+  table.sort(keys)
+  local parts = {}
+  for _, k in ipairs(keys) do
+    parts[#parts + 1] = string.format('"%s" %s', k, t[k] and "true" or "false")
+  end
+  return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+-- ── Filename Encoding/Decoding ────────────────────────────────────────
+
 --- Encode a page name to its on-disk filename.
 --- "BJJ/Techniques/Triangle" → "BJJ___Techniques___Triangle.md"
 ---@param page_name string

@@ -36,7 +36,6 @@ M.defaults = {
     rename       = true,
     search       = true,
     backlinks    = true,
-    queries      = true,
     ns_tree      = true,
     calsync      = true,
     close        = true,

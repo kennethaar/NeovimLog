@@ -10,6 +10,7 @@ local M = {}
 local SECTION_HDR_PAT = "^── %d+ .-──$"
 -- Loading placeholder that appears while scans are in progress.
 local LOADING_PAT     = "^── Loading Linked References"
+local FILTER_HDR      = "── Filters ──"
 local SEPARATOR = ""
 local NS = vim.api.nvim_create_namespace("logseq_backlinks")
 
@@ -36,10 +37,14 @@ M._state = {} -- bufnr → { visible, region, source_map, had_backlinks }
 local function get_state(bufnr)
   if not M._state[bufnr] then
     M._state[bufnr] = {
-      visible = false,
-      region = nil,
-      source_map = nil,
+      visible       = false,
+      region        = nil,
+      source_map    = nil,
       had_backlinks = false,
+      filter        = {},           -- { [item_key] = true|false }; true=include, false=exclude
+      filter_items  = {},           -- ordered list of filterable item keys for current results
+      cached_results    = nil,      -- raw backlink results (for re-render on filter change)
+      cached_scheduled  = nil,      -- scheduled data (for re-render on filter change)
     }
   end
   return M._state[bufnr]
@@ -69,7 +74,7 @@ local function find_header_line(bufnr)
   local topmost = nil
   for i = #lines, 1, -1 do
     local line = lines[i]
-    if line:match(SECTION_HDR_PAT) or line:match(LOADING_PAT) then
+    if line:match(SECTION_HDR_PAT) or line:match(LOADING_PAT) or line == FILTER_HDR then
       topmost = i          -- keep updating; last written = topmost line
     elseif topmost and line == "" then
       break                -- hit the SEPARATOR blank line above the first header
@@ -119,6 +124,140 @@ local function make_progress_bar(current, total, width)
   return string.format("[%s%s] %d%%", string.rep("█", filled), string.rep(" ", empty), pct)
 end
 
+-- ── Filter helpers ────────────────────────────────────────────────────
+
+--- Read filters:: from the page file on disk and return a parsed table.
+local function read_page_filters(filepath)
+  local f = io.open(filepath, "r")
+  if not f then return {} end
+  local content = f:read("*a")
+  f:close()
+  local edn_str = content:match("^filters::%s*([^\n]+)")
+              or content:match("\nfilters::%s*([^\n]+)")
+  if not edn_str then return {} end
+  return util.parse_edn_dict(edn_str:match("^%s*(.-)%s*$"))
+end
+
+--- Write filters:: to the page file immediately (bypasses Neovim write cycle)
+--- and sync the change into the live buffer so it stays consistent.
+local function write_page_filters(bufnr, filepath, filter)
+  -- Build the property line.
+  local edn     = util.serialize_edn_dict(filter)
+  local new_line = "filters:: " .. edn
+
+  -- ── Update file on disk ───────────────────────────────────────────
+  local f = io.open(filepath, "r")
+  if not f then return end
+  local disk_content = f:read("*a")
+  f:close()
+
+  -- Replace in-place if the property already exists; otherwise prepend.
+  -- Prepending is always safe: Logseq page properties have no required ordering.
+  local new_content
+  if disk_content:find("filters::", 1, true) then
+    new_content = disk_content:gsub("filters::[^\n]*", new_line)
+  else
+    new_content = new_line .. "\n" .. disk_content
+  end
+
+  local f2 = io.open(filepath, "w")
+  if not f2 then return end
+  f2:write(new_content)
+  f2:close()
+  indexer.invalidate(filepath)
+
+  -- ── Sync buffer (only lines before the backlinks region) ──────────
+  local state       = get_state(bufnr)
+  local region_start = state.region and state.region.start_line or math.huge
+  local buf_lines   = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local updated     = false
+  for i, line in ipairs(buf_lines) do
+    if i >= region_start then break end
+    if line:match("^filters::") then
+      with_modifiable(bufnr, function()
+        vim.api.nvim_buf_set_lines(bufnr, i - 1, i, false, { new_line })
+      end)
+      updated = true
+      break
+    end
+  end
+  if not updated then
+    -- Insert at position 0 (before any existing properties).
+    with_modifiable(bufnr, function()
+      vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { new_line })
+    end)
+  end
+end
+
+--- Collect the ordered list of filterable item keys from raw results.
+--- Order: TODO states first (canonical), then #tags alphabetically.
+local function collect_filter_items(results)
+  local todo_set, tag_set = {}, {}
+  for _, r in ipairs(results) do
+    if r.todo_state then todo_set[r.todo_state] = true end
+    if r.tags then
+      for _, tag in ipairs(r.tags) do tag_set["#" .. tag] = true end
+    end
+  end
+  local items = {}
+  for _, s in ipairs(util.todo_states) do
+    if todo_set[s] then items[#items + 1] = s end
+  end
+  local tags = {}
+  for tag in pairs(tag_set) do tags[#tags + 1] = tag end
+  table.sort(tags)
+  vim.list_extend(items, tags)
+  return items
+end
+
+--- Pure predicate: true when result r passes the current filter state.
+--- Extracted so the loop in apply_filters has a single readable condition.
+local function passes_filter(r, filter, vna, has_include, has_exclude)
+  -- VNA: must have a TODO keyword and no TODO children (leaf task).
+  if vna and (not r.todo_state or r.has_todo_children) then return false end
+
+  -- Exclude: fail if any excluded attribute matches.
+  if has_exclude then
+    if r.todo_state and filter[r.todo_state] == false then return false end
+    for _, tag in ipairs(r.tags or {}) do
+      if filter["#" .. tag] == false then return false end
+    end
+  end
+
+  -- Include: pass only if at least one included attribute matches.
+  if has_include then
+    if r.todo_state and filter[r.todo_state] == true then return true end
+    for _, tag in ipairs(r.tags or {}) do
+      if filter["#" .. tag] == true then return true end
+    end
+    return false
+  end
+
+  return true
+end
+
+--- Apply the active filter to a result list.
+--- VNA (Very Next Actions): only leaf-TODO blocks (has a todo_state, no todo children).
+--- Include rules: if any includes set, a result must match at least one.
+--- Exclude rules: a result must not match any exclude.
+local function apply_filters(results, filter)
+  if not filter or not next(filter) then return results end
+
+  local vna = filter["very_next_actions"] == true
+  local has_include, has_exclude = false, false
+  for k, v in pairs(filter) do
+    if k ~= "very_next_actions" then
+      if v == true  then has_include = true end
+      if v == false then has_exclude = true end
+    end
+  end
+
+  return vim.tbl_filter(
+    function(r) return passes_filter(r, filter, vna, has_include, has_exclude) end,
+    results
+  )
+end
+
 -- ── Display Builder ───────────────────────────────────────────────────
 
 --- Append one Overdue or Scheduled section to display/smap.
@@ -126,7 +265,7 @@ end
 local function append_sched_section(label, hl_group, entries, display, smap, hl_lines)
   if #entries == 0 then return end
   display[#display+1] = string.format("── %d %s ──", #entries, label)
-  hl_lines[#hl_lines+1] = { #display, hl_group }
+  hl_lines[#hl_lines+1] = { #display, hl_group, 0, -1 }
 
   local groups, order = {}, {}
   for _, e in ipairs(entries) do
@@ -159,12 +298,36 @@ end
 
 --- Build the display lines, source map, match-line set, and header highlights.
 --- scheduled_data is { overdue = [...], upcoming = [...] } or nil.
+--- filter is the active filter table; filter_items is the ordered key list.
 ---@return string[], table, table, table
-local function build_display(results, scheduled_data)
+local function build_display(results, scheduled_data, filter, filter_items)
   local display    = {}
   local smap       = {}
   local match_lines = {}
-  local hl_lines   = {}   -- { rel_line (1-indexed in display), hl_group }
+  -- Unified highlight table: every entry is { rel_line, group, col_start, col_end }
+  -- col_start=0, col_end=-1 means full-line; explicit ranges for button columns.
+  local hl_lines   = {}
+
+  -- ── Filter section ────────────────────────────────────────────────
+  -- Line format: "  [+][-]  Item Name"
+  -- [+] byte cols 2-4 → include toggle; [-] byte cols 5-7 → exclude toggle.
+  -- VNA is always first; remaining items come from scanned results.
+  local all_filter_items = { "very_next_actions" }
+  vim.list_extend(all_filter_items, filter_items or {})
+
+  display[#display + 1] = FILTER_HDR
+  hl_lines[#hl_lines + 1] = { #display, "Title", 0, -1 }
+
+  for _, item in ipairs(all_filter_items) do
+    local f_val  = filter and filter[item]
+    local inc_hl = (f_val == true)  and "LogseqLink"      or "Comment"
+    local exc_hl = (f_val == false) and "DiagnosticError" or "Comment"
+    local label  = item == "very_next_actions" and "Very Next Actions" or item
+    display[#display + 1] = string.format("  [+][-]  %s", label)
+    smap[#display] = { action = "filter", item = item }
+    hl_lines[#hl_lines + 1] = { #display, inc_hl, 2, 5 }   -- [+] cols 2-4
+    hl_lines[#hl_lines + 1] = { #display, exc_hl, 5, 8 }   -- [-] cols 5-7
+  end
 
   -- ── Scheduled sections (top) ──────────────────────────────────────
   if scheduled_data then
@@ -182,7 +345,7 @@ local function build_display(results, scheduled_data)
 
   local ref_word = total == 1 and "Reference" or "References"
   display[#display+1] = string.format("── %d Linked %s ──", total, ref_word)
-  hl_lines[#hl_lines+1] = { #display, "Title" }
+  hl_lines[#hl_lines+1] = { #display, "Title", 0, -1 }
 
   local groups, group_order = {}, {}
   for _, r in ipairs(results) do
@@ -219,6 +382,64 @@ local function build_display(results, scheduled_data)
   return display, smap, match_lines, hl_lines
 end
 
+-- ── Shared render helper ──────────────────────────────────────────────
+
+--- Apply state.filter to state.cached_results and repaint the backlinks section.
+--- Called by both the async scan completion (do_render) and filter toggle.
+--- Assumes cached_results / cached_scheduled / filter_items are already set.
+local function apply_and_render(bufnr)
+  local state = get_state(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) or not state.cached_results then return end
+
+  local filtered = apply_filters(state.cached_results, state.filter)
+  M.remove_section(bufnr)
+
+  local display_lines, smap, match_lines, hl_lines = build_display(
+    filtered, state.cached_scheduled, state.filter, state.filter_items)
+
+  local new_line_count    = vim.api.nvim_buf_line_count(bufnr)
+  local new_section_start = new_line_count + 1
+  local final_lines       = { SEPARATOR }
+  vim.list_extend(final_lines, display_lines)
+
+  with_modifiable(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, final_lines)
+  end)
+
+  state.region     = { start_line = new_section_start, end_line = new_section_start + #final_lines - 1 }
+  state.visible    = true
+  state.source_map = {}
+
+  local abs_match_lines = {}
+  for rel_line, info in pairs(smap) do
+    local abs = new_section_start + rel_line
+    state.source_map[abs] = info
+    if match_lines[rel_line] then abs_match_lines[#abs_match_lines + 1] = abs - 1 end
+  end
+
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
+
+  -- Unified hl_lines: every entry is { rel_line, group, col_start, col_end }.
+  for _, hl in ipairs(hl_lines) do
+    vim.api.nvim_buf_add_highlight(bufnr, NS, hl[2], new_section_start - 1 + hl[1], hl[3], hl[4])
+  end
+
+  -- [[Page]] summary lines
+  for abs_line, info in pairs(state.source_map) do
+    if not info.action then
+      local line_0   = abs_line - 1
+      local line_txt = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
+      if line_txt:match("^%- %[%[.+%]%]%s+⋯") then
+        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", line_0, 0, -1)
+      end
+    end
+  end
+
+  for _, line_0 in ipairs(abs_match_lines) do
+    vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", line_0, 0, -1)
+  end
+end
+
 -- ── Rendering ─────────────────────────────────────────────────────────
 function M.render_section(bufnr)
   local page_name = get_page_name(bufnr)
@@ -226,6 +447,11 @@ function M.render_section(bufnr)
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   local state    = get_state(bufnr)
+
+  -- Load persisted filters from the page file (only on first render; preserved across re-renders).
+  if not next(state.filter) then
+    state.filter = read_page_filters(filepath)
+  end
 
   -- Detect journal pages by comparing against the vault's journals/ dir,
   -- not by raw string matching (which would false-positive on "my-journals/").
@@ -266,49 +492,11 @@ function M.render_section(bufnr)
     if state._render_token ~= token then return end  -- superseded by newer call
     if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
 
-    M.remove_section(bufnr)
-    local display_lines, smap, match_lines, hl_lines = build_display(backlink_results, scheduled_data)
-    local new_line_count    = vim.api.nvim_buf_line_count(bufnr)
-    local new_section_start = new_line_count + 1
-
-    local final_lines = { SEPARATOR }
-    vim.list_extend(final_lines, display_lines)
-
-    with_modifiable(bufnr, function()
-      vim.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, final_lines)
-    end)
-
-    state.region     = { start_line = new_section_start, end_line = new_section_start + #final_lines - 1 }
-    state.visible    = true
-    state.source_map = {}
-
-    local abs_match_lines = {}
-    for rel_line, info in pairs(smap) do
-      local abs = new_section_start + rel_line
-      state.source_map[abs] = info
-      if match_lines[rel_line] then abs_match_lines[#abs_match_lines+1] = abs - 1 end
-    end
-
-    vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
-
-    -- Section-header highlights (Overdue, Scheduled, Linked References)
-    -- display_lines[k] sits at 0-indexed (new_line_count + k) = (new_section_start - 1 + k)
-    for _, hl in ipairs(hl_lines) do
-      vim.api.nvim_buf_add_highlight(bufnr, NS, hl[2], new_section_start - 1 + hl[1], 0, -1)
-    end
-
-    -- Source-page [[link]] lines
-    for abs_line, _ in pairs(state.source_map) do
-      local line_0   = abs_line - 1
-      local line_txt = vim.api.nvim_buf_get_lines(bufnr, line_0, line_0 + 1, false)[1] or ""
-      if line_txt:match("^%- %[%[.+%]%]%s+⋯") then
-        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", line_0, 0, -1)
-      end
-    end
-
-    for _, line_0 in ipairs(abs_match_lines) do
-      vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", line_0, 0, -1)
-    end
+    -- Cache raw results so filter toggles can re-render without a vault rescan.
+    state.cached_results   = backlink_results
+    state.cached_scheduled = scheduled_data
+    state.filter_items     = collect_filter_items(backlink_results)
+    apply_and_render(bufnr)
   end
 
   local function on_scan_done()
@@ -375,15 +563,45 @@ function M.toggle()
   if state.visible then M.remove_section(bufnr) else M.render_section(bufnr) end
 end
 
+--- Toggle one filter attribute and immediately re-render + save to disk.
+local function toggle_filter(bufnr, item, mode)
+  local state  = get_state(bufnr)
+  local filter = state.filter
+  local current = filter[item]
+
+  if mode == "include" then
+    filter[item] = (current == true) and nil or true
+  else
+    filter[item] = (current == false) and nil or false
+  end
+
+  write_page_filters(bufnr, vim.api.nvim_buf_get_name(bufnr), filter)
+  apply_and_render(bufnr)
+end
+
 function M.navigate()
   local bufnr = vim.api.nvim_get_current_buf()
-  local lnum = vim.api.nvim_win_get_cursor(0)[1]
+  local lnum  = vim.api.nvim_win_get_cursor(0)[1]
+  local col   = vim.api.nvim_win_get_cursor(0)[2]  -- 0-indexed byte offset
 
   if not M.in_region(bufnr, lnum) then return false end
   local state = get_state(bufnr)
   if not state.source_map or not state.source_map[lnum] then return false end
 
   local target = state.source_map[lnum]
+
+  -- Filter button line: "  [+][-]  Item Name"
+  -- [+] occupies byte cols 2-4, [-] occupies byte cols 5-7 (0-indexed).
+  -- Pressing <CR> anywhere else on the line (header, item label) is a no-op.
+  if target.action == "filter" then
+    if col >= 2 and col <= 4 then
+      toggle_filter(bufnr, target.item, "include")
+    elseif col >= 5 and col <= 7 then
+      toggle_filter(bufnr, target.item, "exclude")
+    end
+    return true
+  end
+
   vim.cmd("normal! m'")
   vim.cmd.edit(vim.fn.fnameescape(target.file))
   if target.line and target.line > 0 then

@@ -30,16 +30,11 @@ local function snap_to_bullet()
   end
 end
 
---- Returns true if cursor is in backlinks or queries region (read-only guard).
+--- Returns true if cursor is in a read-only panel region (backlinks, namespace tree).
 local function in_protected_region(bufnr)
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
-
   local bl_ok, backlinks = pcall(require, "logseq.backlinks")
   if bl_ok and backlinks.in_region(bufnr, lnum) then return true end
-
-  local q_ok, queries = pcall(require, "logseq.queries")
-  if q_ok and queries.in_region(bufnr, lnum) then return true end
-
   return false
 end
 

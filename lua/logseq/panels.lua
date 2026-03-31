@@ -1,6 +1,6 @@
 --- logseq.nvim panel coordinator
---- Queries, backlinks, and namespace tree behave as exclusive tabs:
---- at most one is visible at a time.  This module owns all three toggle
+--- Backlinks and namespace tree behave as exclusive tabs:
+--- at most one is visible at a time.  This module owns all toggle
 --- keymaps and is the only place that calls render_section, so mutual
 --- exclusion is guaranteed without any cross-module imports inside the
 --- individual panel modules.
@@ -9,7 +9,6 @@ local M = {}
 
 local PANELS = {
   { key = "backlinks", mod = "logseq.backlinks"      },
-  { key = "queries",   mod = "logseq.queries"        },
   { key = "ns_tree",   mod = "logseq.namespace_tree" },
 }
 
@@ -74,10 +73,6 @@ function M.setup_buf(bufnr)
   vim.keymap.set("n", km.toggle_backlinks or "<leader>b",
     make_toggle("backlinks", "logseq.backlinks", bufnr),
     { buffer = bufnr, silent = true, desc = "Logseq: toggle backlinks" })
-
-  vim.keymap.set("n", "<leader>q",
-    make_toggle("queries", "logseq.queries", bufnr),
-    { buffer = bufnr, silent = true, desc = "Logseq: toggle queries" })
 
   vim.keymap.set("n", km.toggle_ns_tree or "<leader>N",
     make_toggle("ns_tree", "logseq.namespace_tree", bufnr),
