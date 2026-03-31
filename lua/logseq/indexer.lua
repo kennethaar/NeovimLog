@@ -217,6 +217,29 @@ local function block_sched_date(block, file_lines)
   return nil, nil
 end
 
+--- Extract the leading TODO keyword from block content, or nil if none.
+local function get_todo_state(content)
+  for _, state in ipairs(util.todo_states) do
+    local prefix = state .. " "
+    if content:upper():sub(1, #prefix) == prefix or content:upper() == state then
+      return state
+    end
+  end
+  return nil
+end
+
+--- Return true if any descendant of block has a TODO keyword.
+local function has_todo_children(block)
+  local function check(b)
+    for _, child in ipairs(b.children) do
+      if get_todo_state(child.content) then return true end
+      if check(child) then return true end
+    end
+    return false
+  end
+  return check(block)
+end
+
 --- Return true when the block's TODO keyword is DONE or CANCELLED (case-insensitive).
 local function block_is_done(content)
   local c = content:lower()
@@ -325,10 +348,13 @@ local function process_file(filepath, norm, target_names, needles, uv, results)
     if matches_target(all_refs[block], target_names) and not is_dominated(block, matched) then
       matched[block.line_start] = true
       table.insert(results, {
-        source_page    = source_page,
-        source_file    = filepath,
-        context_blocks = extract_context(block, file_lines),
-        is_scheduled   = is_block_scheduled(block),
+        source_page       = source_page,
+        source_file       = filepath,
+        context_blocks    = extract_context(block, file_lines),
+        is_scheduled      = is_block_scheduled(block),
+        todo_state        = get_todo_state(block.content),
+        tags              = block.tags,
+        has_todo_children = has_todo_children(block),
       })
     end
   end
