@@ -15,8 +15,9 @@ M._state = {
 
 local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
 
-local BLOCK_NS = vim.api.nvim_create_namespace("logseq_block_ui")
-local SCHED_NS  = vim.api.nvim_create_namespace("logseq_scheduled")
+local BLOCK_NS   = vim.api.nvim_create_namespace("logseq_block_ui")
+local SCHED_NS   = vim.api.nvim_create_namespace("logseq_scheduled")
+local TODO_HL_NS = vim.api.nvim_create_namespace("logseq_todo_hl")
 
 -- Per-buffer pending flag: ensures at most one deferred virt-line update is
 -- queued per buffer at any time, coalescing bursts of TextChanged events
@@ -598,6 +599,9 @@ local function setup_syntax(bufnr)
     pcall(vim.cmd, [[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
     pcall(vim.cmd, "syntax match LogseqLinkNS /\\%(\\[\\[\\)\\@<=\\zs[^\\]]*\\// contained conceal")
 
+    -- Conceal [text](url) markdown links (single [ only, not [[)
+    pcall(vim.cmd, [[syntax region LogseqMdLink matchgroup=LogseqMdLinkDelim start=/\[\[\@!/ end=/\](.\{-})/ concealends oneline]])
+
     -- Conceal ((block-refs))
     pcall(vim.cmd, [[syntax region LogseqBlockRef matchgroup=LogseqBlockRefDelim start=/((\ze[^(]/ end=/))/ concealends oneline]])
 
@@ -615,6 +619,11 @@ local function setup_syntax(bufnr)
     -- Strikethrough for ~~cancelled~~ text
     pcall(vim.cmd, [[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
 
+    -- TODO state keywords (matched at start of bullet content)
+    pcall(vim.cmd, [[syntax match LogseqTodoKw   /\v(^\s*- )\zs(TODO|WAITING|DOING)\ze(\s|$)/]])
+    pcall(vim.cmd, [[syntax match LogseqDoneKw   /\v(^\s*- )\zsDONE\ze(\s|$)/]])
+    pcall(vim.cmd, [[syntax match LogseqCancelKw /\v(^\s*- )\zsCANCELLED\ze(\s|$)/]])
+
     -- Block-level formatting: root=bold, level2=italic, level3+=normal
     -- contains=ALL lets nested items (links, tags) still apply their own highlight
     pcall(vim.cmd, [[syntax match LogseqLevel2Block /^\t- .*$/ contains=ALLBUT,LogseqLinkNS]])
@@ -627,6 +636,8 @@ local _hl_autocmd_set = false
 local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqTime",         { fg = "#e06c60", ctermfg = 167 })
   vim.api.nvim_set_hl(0, "LogseqLink",         { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqMdLink",       { fg = "#7daea3", underline = true, ctermfg = 109, cterm = { underline = true } })
+  vim.api.nvim_set_hl(0, "LogseqMdLinkDelim",  { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqBlockRef",     { fg = "#a9b665", underline = true, italic = true, ctermfg = 142, cterm = { underline = true, italic = true } })
   vim.api.nvim_set_hl(0, "LogseqTag",          { fg = "#d3869b", underline = true, ctermfg = 175, cterm = { underline = true } })
   vim.api.nvim_set_hl(0, "LogseqBold",           { bold = true })
@@ -649,6 +660,10 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqScheduled",    { fg = "#d8a657", ctermfg = 214 })
   vim.api.nvim_set_hl(0, "LogseqDeadline",     { fg = "#ea6962", ctermfg = 203 })
   vim.api.nvim_set_hl(0, "LogseqBreadcrumb",   { fg = "#7c6f64", ctermfg = 243 })
+  vim.api.nvim_set_hl(0, "LogseqTodoKw",       { fg = "#e8a827", bold = true, ctermfg = 214, cterm = { bold = true } })
+  vim.api.nvim_set_hl(0, "LogseqDoneKw",       { fg = "#a9b665", bold = true, ctermfg = 142, cterm = { bold = true } })
+  vim.api.nvim_set_hl(0, "LogseqCancelKw",     { fg = "#928374", bold = true, ctermfg = 245, cterm = { bold = true } })
+  vim.api.nvim_set_hl(0, "LogseqOverdueTodoKw",{ fg = "#ea6962", bold = true, ctermfg = 203, cterm = { bold = true } })
   vim.api.nvim_set_hl(0, "LogseqEmbedHeader",  { fg = "#504945", ctermfg = 239 })
   vim.api.nvim_set_hl(0, "LogseqEmbedText",    { fg = "#928374", ctermfg = 245 })
 
@@ -716,6 +731,65 @@ local function update_scheduled_virt(bufnr)
         })
       end
     end
+  end
+end
+
+-- ── Overdue TODO highlight ────────────────────────────────────────────
+
+--- Highlight active TODO keywords in red when the block is overdue.
+--- "Overdue" means: has SCHEDULED or DEADLINE date strictly before today.
+local function update_todo_hl(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  vim.api.nvim_buf_clear_namespace(bufnr, TODO_HL_NS, 0, -1)
+
+  local ok, result = pcall(parser.parse_buf, bufnr)
+  if not ok then return end
+
+  local t = os.date("*t")
+  local today_ts = os.time({ year = t.year, month = t.month, day = t.day, hour = 0, min = 0, sec = 0 })
+
+  local active = { TODO = true, WAITING = true, DOING = true }
+
+  for _, block in ipairs(parser.flatten(result.blocks)) do
+    -- Detect active TODO state at start of content
+    local state
+    for _, s in ipairs({ "TODO", "WAITING", "DOING" }) do
+      if block.content:match("^" .. s .. "%s") or block.content == s then
+        state = s
+        break
+      end
+    end
+    if not state then goto continue end
+
+    -- Look for SCHEDULED / DEADLINE dates
+    local sched    = util.prop_ci(block.properties, "scheduled")
+    local deadline = util.prop_ci(block.properties, "deadline")
+    if not sched    then sched    = util.match_ci(block.content, "scheduled::%s*(<[^>]+>)") end
+    if not deadline then deadline = util.match_ci(block.content, "deadline::%s*(<[^>]+>)") end
+
+    local function is_past(date_str)
+      if not date_str then return false end
+      local y, m, d = date_str:match("<(%d%d%d%d)-(%d%d)-(%d%d)")
+      if not y then return false end
+      local ts = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 0, min = 0, sec = 0 })
+      return ts < today_ts
+    end
+
+    if is_past(sched) or is_past(deadline) then
+      local line = vim.api.nvim_buf_get_lines(bufnr, block.line_start - 1, block.line_start, false)[1]
+      if line then
+        local s_byte = line:find(state, 1, true)
+        if s_byte then
+          vim.api.nvim_buf_set_extmark(bufnr, TODO_HL_NS, block.line_start - 1, s_byte - 1, {
+            end_col  = s_byte - 1 + #state,
+            hl_group = "LogseqOverdueTodoKw",
+            priority = 200,
+          })
+        end
+      end
+    end
+
+    ::continue::
   end
 end
 
@@ -794,16 +868,17 @@ function M.setup_buf(bufnr)
     callback = function() setup_syntax(bufnr) end,
   })
   update_block_virt_lines(bufnr)
-
   update_scheduled_virt(bufnr)
+  update_todo_hl(bufnr)
 
-  -- Refresh virtual spacing and scheduled virt text after edits
+  -- Refresh virtual spacing, scheduled virt text, and overdue highlights after edits
   vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" }, {
     group = grp,
     buffer = bufnr,
     callback = function()
       update_block_virt_lines(bufnr)
       update_scheduled_virt(bufnr)
+      update_todo_hl(bufnr)
     end,
   })
 
