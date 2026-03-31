@@ -662,7 +662,7 @@ end
 ---@return string
 function M.build_statusline()
   local bb = (require("logseq.config").current.bottombar_buttons) or {}
-  local parts = { "%{%v:lua.require('logseq.panels').statusline_tabs()%}" }
+  local parts = {}
 
   if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗↩️%X") end
   if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡za%X") end
