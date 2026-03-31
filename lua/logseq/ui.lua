@@ -72,7 +72,10 @@ _G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
 _G.logseq_sl_next_day = function() _open_journal_day(1) end
 
 -- Statusline buttons (editing/cursor)
-_G.logseq_sl_follow = function() require("logseq.links").follow() end
+_G.logseq_sl_follow    = function() require("logseq.links").follow() end
+_G.logseq_sl_backlinks = function() require("logseq.panels").toggle_key("backlinks") end
+_G.logseq_sl_queries   = function() require("logseq.panels").toggle_key("queries")   end
+_G.logseq_sl_nstree    = function() require("logseq.panels").toggle_key("ns_tree")   end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
 _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end

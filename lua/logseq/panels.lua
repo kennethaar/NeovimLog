@@ -43,6 +43,17 @@ end
 
 M.close_others = close_others
 
+--- Toggle a panel by key for the current buffer (called from winbar globals).
+function M.toggle_key(key)
+  local bufnr = vim.api.nvim_get_current_buf()
+  for _, p in ipairs(PANELS) do
+    if p.key == key then
+      make_toggle(key, p.mod, bufnr)()
+      return
+    end
+  end
+end
+
 --- Close all visible panels. Call before :wq so the buffer is clean and no
 --- deferred render can re-dirty it between write and quit (E37).
 function M.close_all(bufnr)
