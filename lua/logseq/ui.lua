@@ -75,7 +75,6 @@ _G.logseq_sl_next_day = function() _open_journal_day(1) end
 -- Statusline buttons (editing/cursor)
 _G.logseq_sl_follow    = function() require("logseq.links").follow() end
 _G.logseq_sl_backlinks = function() require("logseq.panels").toggle_key("backlinks") end
-_G.logseq_sl_queries   = function() require("logseq.panels").toggle_key("queries")   end
 _G.logseq_sl_nstree    = function() require("logseq.panels").toggle_key("ns_tree")   end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
@@ -110,7 +109,6 @@ function M.winbar()
   local nav_parts = {}
   if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
   if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
-  if wb.queries   ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_queries@q❔%X") end
   if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
   if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
 
@@ -481,7 +479,6 @@ function M.open_help()
     "   [[                    Trigger fuzzy page-link completion",
     "   " .. k("rename_page","<leader>rn") .. "   Rename page (+ merge if target exists)",
     "   " .. k("toggle_backlinks","<leader>b") .. "   Toggle backlinks / linked-references panel",
-    "   <leader>q             Toggle queries panel",
     "   <leader>t             Apply template to current page",
     "   " .. k("search_pages","<C-k>") .. "   Search pages / all files",
     "",

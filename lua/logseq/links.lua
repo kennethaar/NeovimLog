@@ -192,11 +192,6 @@ function M.follow()
   local bl_ok, backlinks = pcall(require, "logseq.backlinks")
   if bl_ok and backlinks.in_region(bufnr, row) and backlinks.navigate() then return end
 
-  local q_ok, queries = pcall(require, "logseq.queries")
-  if q_ok and queries.in_region(bufnr, row) and not M.link_under_cursor() then
-    if queries.navigate() then return end
-  end
-
   local nt_ok, ns_tree = pcall(require, "logseq.namespace_tree")
   if nt_ok and ns_tree.in_region(bufnr, row) and ns_tree.navigate() then return end
 

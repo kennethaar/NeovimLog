@@ -31,7 +31,6 @@ local WINBAR_DEFS = {
   { key = "rename",       label = "rn📝",    desc = "Rename page" },
   { key = "search",       label = "^k🔍",   desc = "Search pages / all files" },
   { key = "backlinks",    label = "b🖇️",    desc = "Toggle backlinks" },
-  { key = "queries",      label = "q❔",     desc = "Toggle queries" },
   { key = "ns_tree",      label = "n🌲",     desc = "Toggle namespace tree" },
   { key = "calsync",      label = "c🗓️",    desc = "Calendar sync" },
   { key = "close",        label = ":wq❌",   desc = "Close window" },
