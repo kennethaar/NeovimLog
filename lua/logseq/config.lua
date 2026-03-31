@@ -37,6 +37,7 @@ M.defaults = {
     search       = true,
     backlinks    = true,
     queries      = true,
+    ns_tree      = true,
     calsync      = true,
     close        = true,
     page_tabline = true,

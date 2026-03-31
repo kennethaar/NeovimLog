@@ -18,6 +18,11 @@ local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@�
 local BLOCK_NS = vim.api.nvim_create_namespace("logseq_block_ui")
 local SCHED_NS  = vim.api.nvim_create_namespace("logseq_scheduled")
 
+-- Per-buffer pending flag: ensures at most one deferred virt-line update is
+-- queued per buffer at any time, coalescing bursts of TextChanged events
+-- (e.g. during the write lifecycle when sections are removed).
+local _vl_pending = {}
+
 -- ── Helpers ───────────────────────────────────────────────────────────
 
 --- Safely escapes magic characters for Lua's string.gsub pattern matching
@@ -33,10 +38,7 @@ _G.logseq_close_win    = function(...) M.close_win(...) end
 
 -- Winbar buttons (file/nav)
 _G.logseq_sl_search    = function() require("logseq.file_search").open() end
-_G.logseq_sl_backlinks = function() require("logseq.backlinks").toggle() end
-_G.logseq_sl_queries   = function() require("logseq.queries").toggle() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
-_G.logseq_sl_nstree    = function() require("logseq.namespace_tree").toggle() end
 
 -- Journal day navigation
 local function _open_journal_day(offset)
@@ -70,7 +72,7 @@ _G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
 _G.logseq_sl_next_day = function() _open_journal_day(1) end
 
 -- Statusline buttons (editing/cursor)
-_G.logseq_sl_follow    = function() require("logseq.links").follow() end
+_G.logseq_sl_follow = function() require("logseq.links").follow() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
 _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
@@ -198,6 +200,10 @@ function M.trigger_save_indicator(bufnr)
 end
 
 function M.close_win(_minwid, _clicks, _button, _mods)
+  local bufnr = vim.api.nvim_get_current_buf()
+  -- Pre-strip all panels so no vim.schedule restore can re-dirty the buffer
+  -- between the write and quit phases of :wq (which would cause E37).
+  pcall(function() require("logseq.panels").close_all(bufnr) end)
   vim.cmd("wq")
 end
 
@@ -564,6 +570,18 @@ local function update_block_virt_lines(bufnr)
   end
 end
 
+--- Schedule a deferred virt-line update.  If one is already pending for this
+--- buffer, the new request is dropped — the existing scheduled call will run
+--- after the current event burst (write lifecycle, rapid typing, etc.) settles.
+local function schedule_virt_update(bufnr)
+  if _vl_pending[bufnr] then return end
+  _vl_pending[bufnr] = true
+  vim.schedule(function()
+    _vl_pending[bufnr] = nil
+    update_block_virt_lines(bufnr)
+  end)
+end
+
 local function setup_syntax(bufnr)
   vim.api.nvim_buf_call(bufnr, function()
     -- Hide id:: property lines entirely
@@ -644,8 +662,8 @@ end
 ---@return string
 function M.build_statusline()
   local bb = (require("logseq.config").current.bottombar_buttons) or {}
-  local parts = {}
-  
+  local parts = { "%{%v:lua.require('logseq.panels').statusline_tabs()%}" }
+
   if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗↩️%X") end
   if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡za%X") end
   if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅^t%X") end

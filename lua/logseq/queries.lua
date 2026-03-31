@@ -359,7 +359,7 @@ function M.render_section(bufnr)
   local query_content = f:read("*all")
   f:close()
 
-  local page_name = filename:gsub("%.md$", ""):gsub("___", "/")
+  local page_name = util.decode_filename(filename)
   local all_todos, very_next_todos = gather_tasks(page_name)
 
   local display_lines = { "── Queries ──" }

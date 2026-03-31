@@ -43,6 +43,18 @@ end
 
 M.close_others = close_others
 
+--- Close all visible panels. Call before :wq so the buffer is clean and no
+--- deferred render can re-dirty it between write and quit (E37).
+function M.close_all(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  for _, p in ipairs(PANELS) do
+    local ok, mod = pcall(require, p.mod)
+    if ok and is_visible(mod, bufnr) then
+      mod.remove_section(bufnr)
+    end
+  end
+end
+
 function M.setup_buf(bufnr)
   local km = require("logseq.config").current.keymaps or {}
 
