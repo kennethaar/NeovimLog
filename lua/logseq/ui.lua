@@ -785,6 +785,14 @@ function M.setup_buf(bufnr)
   vim.opt_local.conceallevel = 2
   setup_syntax(bufnr)
   setup_highlights()
+
+  -- Re-apply syntax rules after any filetype/syntax reload (e.g. markdown
+  -- resourcing its syntax file would wipe our custom match/region rules).
+  vim.api.nvim_create_autocmd("Syntax", {
+    group = grp,
+    buffer = bufnr,
+    callback = function() setup_syntax(bufnr) end,
+  })
   update_block_virt_lines(bufnr)
 
   update_scheduled_virt(bufnr)

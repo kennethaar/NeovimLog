@@ -41,7 +41,10 @@ local function activate(bufnr)
     pcall(function() require("logseq.page_search").setup_buf(bufnr) end)
   end
 
-  pcall(function() require("logseq.slash_commands").setup_buf(bufnr) end)
+  local ok_sc, err_sc = pcall(function() require("logseq.slash_commands").setup_buf(bufnr) end)
+  if not ok_sc then
+    vim.notify("[logseq.nvim] slash_commands setup failed: " .. tostring(err_sc), vim.log.levels.ERROR)
+  end
 
   -- Register keymaps with which-key if it is installed, so the user can
   -- discover every binding via the popup without reading the source or help.

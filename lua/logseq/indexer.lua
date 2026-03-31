@@ -196,14 +196,23 @@ local function block_sched_date(block, file_lines)
     local line = file_lines[li]
     if line then
       local ll = line:lower()
-      if ll:find("scheduled::", 1, true) then
+      if ll:find("scheduled:", 1, true) then
         local d = line:match("<(%d%d%d%d%-%d%d%-%d%d)") or line:match("(%d%d%d%d%-%d%d%-%d%d)")
         if d then return d, false end
-      elseif ll:find("deadline::", 1, true) then
+      elseif ll:find("deadline:", 1, true) then
         local d = line:match("<(%d%d%d%d%-%d%d%-%d%d)") or line:match("(%d%d%d%d%-%d%d%-%d%d)")
         if d then return d, true end
       end
     end
+  end
+  -- Also check the block's own content for inline "SCHEDULED: <date>" on the same line.
+  local lc = block.content:lower()
+  if lc:find("scheduled:", 1, true) then
+    local d = block.content:match("<(%d%d%d%d%-%d%d%-%d%d)")
+    if d then return d, false end
+  elseif lc:find("deadline:", 1, true) then
+    local d = block.content:match("<(%d%d%d%d%-%d%d%-%d%d)")
+    if d then return d, true end
   end
   return nil, nil
 end

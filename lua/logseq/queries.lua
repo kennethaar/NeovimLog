@@ -339,27 +339,50 @@ function M.remove_section(bufnr)
   return true
 end
 
-function M.render_section(bufnr)
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
+--- Resolve query_path and page_name for the given buffer.
+--- For namespace pages: uses Query___Namespace.md.
+--- For journal pages: falls back to Query___YEAR.md (e.g. Query___2026.md).
+--- Returns query_path, page_name — or nil, nil if no query file applies.
+local function resolve_query_file(filepath)
+  local vault = config.current.vault_path or ""
   local filename = vim.fn.fnamemodify(filepath, ":t")
   local namespace = filename:match("^(.-)___")
 
-  if not namespace then
-    vim.notify("Not in a namespace. Cannot apply queries.", vim.log.levels.WARN)
+  if namespace then
+    local qpath = vault .. "/pages/Query___" .. namespace .. ".md"
+    local page  = util.decode_filename(filename)
+    return qpath, page
+  end
+
+  -- Journal page: try Query___YEAR.md
+  local year = filename:match("^(%d%d%d%d)[_%-]")
+  if year then
+    local qpath = vault .. "/pages/Query___" .. year .. ".md"
+    local page  = require("logseq.indexer").page_name_from_file(filepath)
+                  or filename:gsub("%.md$", ""):gsub("_", "-")
+    return qpath, page
+  end
+
+  return nil, nil
+end
+
+function M.render_section(bufnr)
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  local query_path, page_name = resolve_query_file(filepath)
+
+  if not query_path then
+    vim.notify("Not in a namespace or dated journal. Cannot apply queries.", vim.log.levels.WARN)
     return
   end
 
-  local query_path = config.current.vault_path .. "/pages/Query___" .. namespace .. ".md"
   local f = io.open(query_path, "r")
   if not f then
-    vim.notify("No Query___" .. namespace .. ".md found.", vim.log.levels.WARN)
+    vim.notify("No " .. vim.fn.fnamemodify(query_path, ":t") .. " found.", vim.log.levels.WARN)
     return
   end
 
   local query_content = f:read("*all")
   f:close()
-
-  local page_name = util.decode_filename(filename)
   local all_todos, very_next_todos = gather_tasks(page_name)
 
   local display_lines = { "── Queries ──" }
