@@ -78,16 +78,6 @@ function M.setup_buf(bufnr)
     make_toggle("ns_tree", "logseq.namespace_tree", bufnr),
     { buffer = bufnr, silent = true, desc = "Logseq: toggle namespace tree" })
 
-  -- Auto-render namespace tree (previously owned by namespace_tree.setup_buf).
-  -- Runs after everything else is set up so other panels have a chance to
-  -- register first (relevant for the is_visible checks).
-  vim.schedule(function()
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    local ns_tree = require("logseq.namespace_tree")
-    -- render_section is a no-op for non-namespace pages, so this is always safe.
-    close_others(bufnr, "ns_tree")
-    ns_tree.render_section(bufnr)
-  end)
 end
 
 return M
