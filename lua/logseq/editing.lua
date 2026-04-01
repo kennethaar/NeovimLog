@@ -51,46 +51,31 @@ end
 
 -- ── TODO Cycling ─────────────────────────────────────────────────────
 
-local done_states = { DONE = "completed", CANCELLED = "cancelled" }
+-- Maps done-state names to their property key.
+local done_state_props = { DONE = "completed", CANCELLED = "cancelled" }
 
 local function today_date_link()
   return "[[" .. os.date("%Y-%m-%d") .. "]]"
 end
 
---- Find and remove a done-state property line (`completed::` or `cancelled::`)
---- from the block's property lines (after the bullet, before any child bullet).
-local function remove_done_prop(lines, block)
-  local result = {}
-  for i = block.line_start, block.line_end do
-    local l = lines[i]
-    if i > block.line_start and (l:match("^%s*completed::") or l:match("^%s*cancelled::")) then
-      -- skip this line
-    else
-      result[#result + 1] = l
-    end
-  end
-  return result
+local function is_done_prop(line)
+  return line:match("^%s*completed::") or line:match("^%s*cancelled::")
 end
 
---- Insert or update the done-state property (`completed::` or `cancelled::`)
---- on the line right after the bullet (before any child bullets).
-local function upsert_done_prop(lines, block, indent_str, prop_key)
-  local prop_line = indent_str .. "  " .. prop_key .. ":: " .. today_date_link()
-  local result = { lines[block.line_start] } -- bullet line (already updated)
+--- Rebuild the block's line range with a new bullet and an optional done
+--- property. Any existing done prop is stripped; if prop_key is given the
+--- new property is placed immediately after the bullet.
+local function rewrite_block(lines, block, new_bullet, indent_str, prop_key)
+  local result = { new_bullet }
 
-  local found = false
-  for i = block.line_start + 1, block.line_end do
-    local l = lines[i]
-    if l:match("^%s*completed::") or l:match("^%s*cancelled::") then
-      result[#result + 1] = prop_line
-      found = true
-    else
-      result[#result + 1] = l
-    end
+  if prop_key then
+    result[#result + 1] = indent_str .. "  " .. prop_key .. ":: " .. today_date_link()
   end
 
-  if not found then
-    table.insert(result, 2, prop_line)
+  for i = block.line_start + 1, block.line_end do
+    if not is_done_prop(lines[i]) then
+      result[#result + 1] = lines[i]
+    end
   end
 
   return result
@@ -118,7 +103,7 @@ function M.cycle_todo()
     end
   end
 
-  local next_state = nil
+  local next_state
   if current_state then
     for i, state in ipairs(states) do
       if state == current_state then
@@ -130,29 +115,8 @@ function M.cycle_todo()
     next_state = states[1]
   end
 
-  local new_line
-  if next_state then
-    new_line = indent_str .. "- " .. next_state .. " " .. content_after
-  else
-    new_line = indent_str .. "- " .. content_after
-  end
-
-  -- Update bullet line first so helpers see the new text
-  lines[block.line_start] = new_line
-
-  local replacement
-  if next_state and done_states[next_state] then
-    replacement = upsert_done_prop(lines, block, indent_str, done_states[next_state])
-  elseif current_state and done_states[current_state] then
-    replacement = remove_done_prop(lines, block)
-  else
-    replacement = { new_line }
-    -- preserve any existing property lines unchanged
-    for i = block.line_start + 1, block.line_end do
-      replacement[#replacement + 1] = lines[i]
-    end
-  end
-
+  local new_bullet = indent_str .. "- " .. (next_state and next_state .. " " or "") .. content_after
+  local replacement = rewrite_block(lines, block, new_bullet, indent_str, done_state_props[next_state])
   vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_end, false, replacement)
 end
 
