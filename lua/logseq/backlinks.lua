@@ -190,8 +190,17 @@ local function write_page_filters(bufnr, filepath, filter)
 end
 
 --- Collect the ordered list of filterable item keys from raw results.
---- Order: TODO states first (canonical), then #tags alphabetically.
-local function collect_filter_items(results)
+--- Order: overdue/scheduled section controls first, then TODO states (canonical),
+--- then #tags alphabetically.
+local function collect_filter_items(results, scheduled_data)
+  local items = {}
+
+  -- Section visibility controls: only add when the section has content.
+  if scheduled_data then
+    if scheduled_data.overdue  and #scheduled_data.overdue  > 0 then items[#items + 1] = "overdue"   end
+    if scheduled_data.upcoming and #scheduled_data.upcoming > 0 then items[#items + 1] = "scheduled" end
+  end
+
   local todo_set, tag_set = {}, {}
   for _, r in ipairs(results) do
     if r.todo_state then todo_set[r.todo_state] = true end
@@ -199,7 +208,6 @@ local function collect_filter_items(results)
       for _, tag in ipairs(r.tags) do tag_set["#" .. tag] = true end
     end
   end
-  local items = {}
   for _, s in ipairs(util.todo_states) do
     if todo_set[s] then items[#items + 1] = s end
   end
@@ -319,20 +327,27 @@ local function build_display(results, scheduled_data, filter, filter_items)
   hl_lines[#hl_lines + 1] = { #display, "Title", 0, -1 }
 
   for _, item in ipairs(all_filter_items) do
-    local f_val  = filter and filter[item]
-    local inc_hl = (f_val == true)  and "LogseqLink"      or "Comment"
-    local exc_hl = (f_val == false) and "DiagnosticError" or "Comment"
-    local label  = item == "very_next_actions" and "Very Next Actions" or item
-    display[#display + 1] = string.format("  [+][-]  %s", label)
+    local f_val    = filter and filter[item]
+    local indicator = f_val == true and "[+]" or f_val == false and "[-]" or "[ ]"
+    local hl        = f_val == true and "LogseqLink" or f_val == false and "DiagnosticError" or "Comment"
+    local label     = item == "very_next_actions" and "Very Next Actions"
+                   or item == "overdue"           and "Overdue"
+                   or item == "scheduled"         and "Scheduled"
+                   or item
+    display[#display + 1] = string.format("  %s  %s", indicator, label)
     smap[#display] = { action = "filter", item = item }
-    hl_lines[#hl_lines + 1] = { #display, inc_hl, 2, 5 }   -- [+] cols 2-4
-    hl_lines[#hl_lines + 1] = { #display, exc_hl, 5, 8 }   -- [-] cols 5-7
+    hl_lines[#hl_lines + 1] = { #display, hl, 2, 5 }   -- indicator box
   end
 
   -- ── Scheduled sections (top) ──────────────────────────────────────
+  -- Excluded (filter == false) → section is hidden; nil or true → shown.
   if scheduled_data then
-    append_sched_section("Overdue",   "DiagnosticError",  scheduled_data.overdue,  display, smap, hl_lines)
-    append_sched_section("Scheduled", "LogseqScheduled",  scheduled_data.upcoming, display, smap, hl_lines)
+    if not filter or filter["overdue"]   ~= false then
+      append_sched_section("Overdue",   "DiagnosticError", scheduled_data.overdue,  display, smap, hl_lines)
+    end
+    if not filter or filter["scheduled"] ~= false then
+      append_sched_section("Scheduled", "LogseqScheduled", scheduled_data.upcoming, display, smap, hl_lines)
+    end
   end
 
   -- ── Linked References ─────────────────────────────────────────────
@@ -499,7 +514,7 @@ function M.render_section(bufnr)
     -- Cache raw results so filter toggles can re-render without a vault rescan.
     state.cached_results   = backlink_results
     state.cached_scheduled = scheduled_data
-    state.filter_items     = collect_filter_items(backlink_results)
+    state.filter_items     = collect_filter_items(backlink_results, scheduled_data)
     apply_and_render(bufnr)
   end
 
@@ -567,18 +582,15 @@ function M.toggle()
   if state.visible then M.remove_section(bufnr) else M.render_section(bufnr) end
 end
 
---- Toggle one filter attribute and immediately re-render + save to disk.
-local function toggle_filter(bufnr, item, mode)
+--- Cycle one filter attribute through nil → true → false → nil and re-render.
+local function cycle_filter(bufnr, item)
   local state  = get_state(bufnr)
   local filter = state.filter
   local current = filter[item]
-
-  if mode == "include" then
-    filter[item] = (current == true) and nil or true
-  else
-    filter[item] = (current == false) and nil or false
+  if     current == nil   then filter[item] = true
+  elseif current == true  then filter[item] = false
+  else                         filter[item] = nil
   end
-
   write_page_filters(bufnr, vim.api.nvim_buf_get_name(bufnr), filter)
   apply_and_render(bufnr)
 end
@@ -586,7 +598,6 @@ end
 function M.navigate()
   local bufnr = vim.api.nvim_get_current_buf()
   local lnum  = vim.api.nvim_win_get_cursor(0)[1]
-  local col   = vim.api.nvim_win_get_cursor(0)[2]  -- 0-indexed byte offset
 
   if not M.in_region(bufnr, lnum) then return false end
   local state = get_state(bufnr)
@@ -594,15 +605,9 @@ function M.navigate()
 
   local target = state.source_map[lnum]
 
-  -- Filter button line: "  [+][-]  Item Name"
-  -- [+] occupies byte cols 2-4, [-] occupies byte cols 5-7 (0-indexed).
-  -- Pressing <CR> anywhere else on the line (header, item label) is a no-op.
+  -- Filter line: <CR> anywhere cycles the state [ ] → [+] → [-] → [ ]
   if target.action == "filter" then
-    if col >= 2 and col <= 4 then
-      toggle_filter(bufnr, target.item, "include")
-    elseif col >= 5 and col <= 7 then
-      toggle_filter(bufnr, target.item, "exclude")
-    end
+    cycle_filter(bufnr, target.item)
     return true
   end
 
