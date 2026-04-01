@@ -317,8 +317,8 @@ local function build_display(results, scheduled_data, filter, filter_items)
   local hl_lines   = {}
 
   -- ── Filter section ────────────────────────────────────────────────
-  -- Line format: "  [+][-]  Item Name"
-  -- [+] byte cols 2-4 → include toggle; [-] byte cols 5-7 → exclude toggle.
+  -- Line format: "  [ ]  Item Name"  ([ ] neutral, [+] include, [-] exclude)
+  -- <CR> anywhere on the line cycles: [ ] → [+] → [-] → [ ]
   -- VNA is always first; remaining items come from scanned results.
   local all_filter_items = { "very_next_actions" }
   vim.list_extend(all_filter_items, filter_items or {})
