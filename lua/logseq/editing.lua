@@ -51,6 +51,54 @@ end
 
 -- ── TODO Cycling ─────────────────────────────────────────────────────
 
+local done_states = { DONE = true, CANCELLED = true }
+
+local function today_date_link()
+  return "[[" .. os.date("%Y-%m-%d") .. "]]"
+end
+
+--- Find and remove a `completed::` property line from the block's property
+--- lines (lines after the bullet, before any child bullet).
+--- Returns the new list of lines to replace block.line_start..block.line_end.
+local function remove_completed_prop(lines, block)
+  local result = {}
+  for i = block.line_start, block.line_end do
+    local l = lines[i]
+    if i > block.line_start and l:match("^%s*completed::") then
+      -- skip this line
+    else
+      result[#result + 1] = l
+    end
+  end
+  return result
+end
+
+--- Insert or update the `completed::` property on the line right after the
+--- bullet (before any child bullets).
+local function upsert_completed_prop(lines, block, indent_str)
+  local prop_line = indent_str .. "  completed:: " .. today_date_link()
+  local result = { lines[block.line_start] } -- bullet line (already updated)
+
+  -- Check if a completed:: property already exists; update it in place
+  local found = false
+  for i = block.line_start + 1, block.line_end do
+    local l = lines[i]
+    if l:match("^%s*completed::") then
+      result[#result + 1] = prop_line
+      found = true
+    else
+      result[#result + 1] = l
+    end
+  end
+
+  if not found then
+    -- Insert right after bullet line, before anything else
+    table.insert(result, 2, prop_line)
+  end
+
+  return result
+end
+
 function M.cycle_todo()
   local parsed = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
@@ -91,7 +139,24 @@ function M.cycle_todo()
   else
     new_line = indent_str .. "- " .. content_after
   end
-  vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_start, false, { new_line })
+
+  -- Update bullet line first so helpers see the new text
+  lines[block.line_start] = new_line
+
+  local replacement
+  if next_state and done_states[next_state] then
+    replacement = upsert_completed_prop(lines, block, indent_str)
+  elseif current_state and done_states[current_state] then
+    replacement = remove_completed_prop(lines, block)
+  else
+    replacement = { new_line }
+    -- preserve any existing property lines unchanged
+    for i = block.line_start + 1, block.line_end do
+      replacement[#replacement + 1] = lines[i]
+    end
+  end
+
+  vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_end, false, replacement)
 end
 
 -- ── Smart Enter (Insert Mode) ────────────────────────────────────────
