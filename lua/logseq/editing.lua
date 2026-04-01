@@ -51,20 +51,19 @@ end
 
 -- ── TODO Cycling ─────────────────────────────────────────────────────
 
-local done_states = { DONE = true, CANCELLED = true }
+local done_states = { DONE = "completed", CANCELLED = "cancelled" }
 
 local function today_date_link()
   return "[[" .. os.date("%Y-%m-%d") .. "]]"
 end
 
---- Find and remove a `completed::` property line from the block's property
---- lines (lines after the bullet, before any child bullet).
---- Returns the new list of lines to replace block.line_start..block.line_end.
-local function remove_completed_prop(lines, block)
+--- Find and remove a done-state property line (`completed::` or `cancelled::`)
+--- from the block's property lines (after the bullet, before any child bullet).
+local function remove_done_prop(lines, block)
   local result = {}
   for i = block.line_start, block.line_end do
     local l = lines[i]
-    if i > block.line_start and l:match("^%s*completed::") then
+    if i > block.line_start and (l:match("^%s*completed::") or l:match("^%s*cancelled::")) then
       -- skip this line
     else
       result[#result + 1] = l
@@ -73,17 +72,16 @@ local function remove_completed_prop(lines, block)
   return result
 end
 
---- Insert or update the `completed::` property on the line right after the
---- bullet (before any child bullets).
-local function upsert_completed_prop(lines, block, indent_str)
-  local prop_line = indent_str .. "  completed:: " .. today_date_link()
+--- Insert or update the done-state property (`completed::` or `cancelled::`)
+--- on the line right after the bullet (before any child bullets).
+local function upsert_done_prop(lines, block, indent_str, prop_key)
+  local prop_line = indent_str .. "  " .. prop_key .. ":: " .. today_date_link()
   local result = { lines[block.line_start] } -- bullet line (already updated)
 
-  -- Check if a completed:: property already exists; update it in place
   local found = false
   for i = block.line_start + 1, block.line_end do
     local l = lines[i]
-    if l:match("^%s*completed::") then
+    if l:match("^%s*completed::") or l:match("^%s*cancelled::") then
       result[#result + 1] = prop_line
       found = true
     else
@@ -92,7 +90,6 @@ local function upsert_completed_prop(lines, block, indent_str)
   end
 
   if not found then
-    -- Insert right after bullet line, before anything else
     table.insert(result, 2, prop_line)
   end
 
@@ -145,9 +142,9 @@ function M.cycle_todo()
 
   local replacement
   if next_state and done_states[next_state] then
-    replacement = upsert_completed_prop(lines, block, indent_str)
+    replacement = upsert_done_prop(lines, block, indent_str, done_states[next_state])
   elseif current_state and done_states[current_state] then
-    replacement = remove_completed_prop(lines, block)
+    replacement = remove_done_prop(lines, block)
   else
     replacement = { new_line }
     -- preserve any existing property lines unchanged
