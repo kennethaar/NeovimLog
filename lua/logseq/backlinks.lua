@@ -593,6 +593,14 @@ local function cycle_filter(bufnr, item)
   end
   write_page_filters(bufnr, vim.api.nvim_buf_get_name(bufnr), filter)
   apply_and_render(bufnr)
+  -- Restore cursor to this filter item after the section is re-appended
+  -- (apply_and_render rebuilds source_map with updated absolute lines).
+  for abs_line, info in pairs(state.source_map or {}) do
+    if info.action == "filter" and info.item == item then
+      pcall(vim.api.nvim_win_set_cursor, 0, { abs_line, 2 })
+      break
+    end
+  end
 end
 
 function M.navigate()
