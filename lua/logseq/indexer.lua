@@ -515,6 +515,22 @@ function M.find_scheduled_blocks(today_iso, on_complete)
   local overdue, upcoming = {}, {}
   local i = 1
 
+  -- Pre-build active-state set for O(1) lookup inside the hot per-block loop.
+  local active_set = {}
+  for _, s in ipairs(util.active_todo_states) do active_set[s] = true end
+
+  --- True when block (or any ancestor) has a [[link]] equal to today's journal page.
+  local function refs_today(block)
+    local cur = block
+    while cur do
+      for _, link in ipairs(cur.links) do
+        if link == today_iso then return true end
+      end
+      cur = cur.parent
+    end
+    return false
+  end
+
   local function process_chunk()
     local chunk_end = math.min(i + 49, #all_files)
 
@@ -545,22 +561,28 @@ function M.find_scheduled_blocks(today_iso, on_complete)
         if parsed and file_lines then
           local source_page = M.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
           for _, block in ipairs(parser.flatten(parsed.blocks)) do
-            if block.is_scheduled and not block_is_done(block.content) then
-              local date_iso, is_deadline = block_sched_date(block, file_lines)
-              if date_iso then
-                local entry = {
-                  source_page    = source_page,
-                  source_file    = filepath,
-                  date_iso       = date_iso,
-                  is_deadline    = is_deadline,
-                  context_blocks = extract_context(block, file_lines),
-                  todo_state     = get_effective_todo_state(block),
-                  tags           = get_effective_tags(block),
-                }
-                if date_iso < today_iso then
-                  overdue[#overdue+1] = entry
-                elseif date_iso <= upcoming_end then
-                  upcoming[#upcoming+1] = entry
+            if block.is_scheduled then
+              local ts = get_effective_todo_state(block)
+              local relevant = active_set[ts]              -- active TODO state
+                            or (refs_today(block)          -- OR links to today's journal
+                                and ts ~= "DONE" and ts ~= "CANCELLED")
+              if relevant then
+                local date_iso, is_deadline = block_sched_date(block, file_lines)
+                if date_iso then
+                  local entry = {
+                    source_page    = source_page,
+                    source_file    = filepath,
+                    date_iso       = date_iso,
+                    is_deadline    = is_deadline,
+                    context_blocks = extract_context(block, file_lines),
+                    todo_state     = ts,
+                    tags           = get_effective_tags(block),
+                  }
+                  if date_iso < today_iso then
+                    overdue[#overdue+1] = entry
+                  elseif date_iso <= upcoming_end then
+                    upcoming[#upcoming+1] = entry
+                  end
                 end
               end
             end
