@@ -505,7 +505,11 @@ function M.render_section(bufnr)
 
   local function do_render()
     if state._render_token ~= token then return end  -- superseded by newer call
-    if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible then return end
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    -- Restore visibility: close_others (panels.setup_buf) may have cleared it
+    -- mid-scan via remove_section.  The token check above is the real staleness
+    -- guard; state.visible is just a render-gate and must not abort a valid scan.
+    state.visible = true
 
     -- Cache raw results so filter toggles can re-render without a vault rescan.
     state.cached_results   = backlink_results
