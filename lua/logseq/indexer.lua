@@ -554,6 +554,8 @@ function M.find_scheduled_blocks(today_iso, on_complete)
                   date_iso       = date_iso,
                   is_deadline    = is_deadline,
                   context_blocks = extract_context(block, file_lines),
+                  todo_state     = get_effective_todo_state(block),
+                  tags           = get_effective_tags(block),
                 }
                 if date_iso < today_iso then
                   overdue[#overdue+1] = entry
