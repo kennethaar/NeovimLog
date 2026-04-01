@@ -39,8 +39,8 @@ end
 
 -- ── TODO States (audit #27) ──────────────────────────────────────────
 
-M.todo_states        = { "NOW", "LATER", "TODO", "WAITING", "DOING", "DONE", "CANCELLED" }
-M.active_todo_states = { "NOW", "LATER", "TODO", "DOING", "WAITING" }
+M.todo_states        = { "TODO", "DOING", "WAITING", "DONE", "CANCELLED" }
+M.active_todo_states = { "TODO", "DOING", "WAITING" }
 
 -- ── Filename Decoding (audit #29) ─────────────────────────────────────
 
