@@ -28,6 +28,8 @@ end
 
 --- Dedup the given buffer in-place. Shows a notification with the result.
 --- bufnr defaults to the current buffer.
+--- Note: the entire operation is one undo entry — pressing u restores all
+--- removed lines at once.
 function M.dedup_buf(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -42,13 +44,25 @@ function M.dedup_buf(bufnr)
   vim.notify(("[logseq.nvim] Removed %d duplicate line(s)."):format(removed), vim.log.levels.INFO)
 end
 
+--- Dedup an open buffer silently and save it. Returns removed count.
+local function dedup_open_buf(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local new_lines, removed = M.dedup_lines(lines)
+  if removed > 0 then
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
+  end
+  return removed
+end
+
 --- Dedup a file on disk (not open in a buffer).
 --- Returns removed count, or nil on read/write error.
 local function dedup_file_on_disk(path)
   local f = io.open(path, "r")
   if not f then return nil end
-  local content = f:read("*a")
+  local ok, content = pcall(function() return f:read("*a") end)
   f:close()
+  if not ok then return nil end
 
   local lines = vim.split(content, "\n", { plain = true })
   -- vim.split on "a\nb\n" produces {"a","b",""} — drop the trailing empty
@@ -94,22 +108,12 @@ function M.dedup_vault(vault)
 
       local fpath = files[i]
       local bufnr = vim.fn.bufnr(fpath)
-      local removed
+      local is_open = bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr)
+      local removed = is_open and dedup_open_buf(bufnr) or dedup_file_on_disk(fpath)
 
-      if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
-        -- File is open — dedup the live buffer and write it
-        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        local new_lines, r = M.dedup_lines(lines)
-        removed = r
-        if r > 0 then
-          vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
-          vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
-        end
-      else
-        removed = dedup_file_on_disk(fpath)
-      end
-
-      if removed and removed > 0 then
+      if removed == nil then
+        vim.notify("[logseq.nvim] Dedup failed (write error): " .. fpath, vim.log.levels.WARN)
+      elseif removed > 0 then
         total_files = total_files + 1
         total_removed = total_removed + removed
       end
