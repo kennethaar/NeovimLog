@@ -202,12 +202,18 @@ local function collect_filter_items(results, scheduled_data)
   end
 
   local todo_set, tag_set = {}, {}
-  for _, r in ipairs(results) do
-    if r.todo_state then todo_set[r.todo_state] = true end
-    if r.tags then
-      for _, tag in ipairs(r.tags) do tag_set["#" .. tag] = true end
+  local function collect_from(list)
+    for _, r in ipairs(list) do
+      if r.todo_state then todo_set[r.todo_state] = true end
+      for _, tag in ipairs(r.tags or {}) do tag_set["#" .. tag] = true end
     end
   end
+  collect_from(results)
+  if scheduled_data then
+    collect_from(scheduled_data.overdue  or {})
+    collect_from(scheduled_data.upcoming or {})
+  end
+
   for _, s in ipairs(util.todo_states) do
     if todo_set[s] then items[#items + 1] = s end
   end
@@ -216,6 +222,45 @@ local function collect_filter_items(results, scheduled_data)
   table.sort(tags)
   vim.list_extend(items, tags)
   return items
+end
+
+--- Apply todo/tag filter rules to a scheduled data table.
+--- Section-level visibility (overdue/scheduled keys) is handled in build_display;
+--- this function only applies todo-state and tag include/exclude rules.
+local function filter_scheduled(scheduled_data, filter)
+  if not scheduled_data then return nil end
+  if not filter or not next(filter) then return scheduled_data end
+
+  local has_include, has_exclude = false, false
+  for k, v in pairs(filter) do
+    if k ~= "very_next_actions" and k ~= "overdue" and k ~= "scheduled" then
+      if v == true  then has_include = true end
+      if v == false then has_exclude = true end
+    end
+  end
+  if not has_include and not has_exclude then return scheduled_data end
+
+  local function keep(e)
+    if has_exclude then
+      if e.todo_state and filter[e.todo_state] == false then return false end
+      for _, tag in ipairs(e.tags or {}) do
+        if filter["#" .. tag] == false then return false end
+      end
+    end
+    if has_include then
+      if e.todo_state and filter[e.todo_state] == true then return true end
+      for _, tag in ipairs(e.tags or {}) do
+        if filter["#" .. tag] == true then return true end
+      end
+      return false
+    end
+    return true
+  end
+
+  return {
+    overdue  = vim.tbl_filter(keep, scheduled_data.overdue  or {}),
+    upcoming = vim.tbl_filter(keep, scheduled_data.upcoming or {}),
+  }
 end
 
 --- Pure predicate: true when result r passes the current filter state.
@@ -406,11 +451,12 @@ local function apply_and_render(bufnr)
   local state = get_state(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) or not state.cached_results then return end
 
-  local filtered = apply_filters(state.cached_results, state.filter)
+  local filtered           = apply_filters(state.cached_results, state.filter)
+  local filtered_scheduled = filter_scheduled(state.cached_scheduled, state.filter)
   M.remove_section(bufnr)
 
   local display_lines, smap, match_lines, hl_lines = build_display(
-    filtered, state.cached_scheduled, state.filter, state.filter_items)
+    filtered, filtered_scheduled, state.filter, state.filter_items)
 
   local new_line_count    = vim.api.nvim_buf_line_count(bufnr)
   local new_section_start = new_line_count + 1
@@ -506,10 +552,6 @@ function M.render_section(bufnr)
   local function do_render()
     if state._render_token ~= token then return end  -- superseded by newer call
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    -- Restore visibility: close_others (panels.setup_buf) may have cleared it
-    -- mid-scan via remove_section.  The token check above is the real staleness
-    -- guard; state.visible is just a render-gate and must not abort a valid scan.
-    state.visible = true
 
     -- Cache raw results so filter toggles can re-render without a vault rescan.
     state.cached_results   = backlink_results
@@ -555,6 +597,8 @@ end
 
 function M.remove_section(bufnr)
   local state = get_state(bufnr)
+  state._render_token = nil  -- cancel any in-flight scan
+
   local header_line = find_header_line(bufnr)
   if not header_line then
     state.visible = false
@@ -593,6 +637,14 @@ local function cycle_filter(bufnr, item)
   end
   write_page_filters(bufnr, vim.api.nvim_buf_get_name(bufnr), filter)
   apply_and_render(bufnr)
+  -- Restore cursor to this filter item after the section is re-appended
+  -- (apply_and_render rebuilds source_map with updated absolute lines).
+  for abs_line, info in pairs(state.source_map or {}) do
+    if info.action == "filter" and info.item == item then
+      pcall(vim.api.nvim_win_set_cursor, 0, { abs_line, 2 })
+      break
+    end
+  end
 end
 
 function M.navigate()

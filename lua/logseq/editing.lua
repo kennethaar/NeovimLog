@@ -51,6 +51,36 @@ end
 
 -- ── TODO Cycling ─────────────────────────────────────────────────────
 
+-- Maps done-state names to their property key.
+local done_state_props = { DONE = "completed", CANCELLED = "cancelled" }
+
+local function today_date_link()
+  return "[[" .. os.date("%Y-%m-%d") .. "]]"
+end
+
+local function is_done_prop(line)
+  return line:match("^%s*completed::") or line:match("^%s*cancelled::")
+end
+
+--- Rebuild the block's line range with a new bullet and an optional done
+--- property. Any existing done prop is stripped; if prop_key is given the
+--- new property is placed immediately after the bullet.
+local function rewrite_block(lines, block, new_bullet, indent_str, prop_key)
+  local result = { new_bullet }
+
+  if prop_key then
+    result[#result + 1] = indent_str .. "  " .. prop_key .. ":: " .. today_date_link()
+  end
+
+  for i = block.line_start + 1, block.line_end do
+    if not is_done_prop(lines[i]) then
+      result[#result + 1] = lines[i]
+    end
+  end
+
+  return result
+end
+
 function M.cycle_todo()
   local parsed = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
@@ -73,7 +103,7 @@ function M.cycle_todo()
     end
   end
 
-  local next_state = nil
+  local next_state
   if current_state then
     for i, state in ipairs(states) do
       if state == current_state then
@@ -85,13 +115,9 @@ function M.cycle_todo()
     next_state = states[1]
   end
 
-  local new_line
-  if next_state then
-    new_line = indent_str .. "- " .. next_state .. " " .. content_after
-  else
-    new_line = indent_str .. "- " .. content_after
-  end
-  vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_start, false, { new_line })
+  local new_bullet = indent_str .. "- " .. (next_state and next_state .. " " or "") .. content_after
+  local replacement = rewrite_block(lines, block, new_bullet, indent_str, done_state_props[next_state])
+  vim.api.nvim_buf_set_lines(0, block.line_start - 1, block.line_end, false, replacement)
 end
 
 -- ── Smart Enter (Insert Mode) ────────────────────────────────────────

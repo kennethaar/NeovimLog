@@ -39,7 +39,7 @@ end
 
 -- ── TODO States (audit #27) ──────────────────────────────────────────
 
-M.todo_states = { "TODO", "WAITING", "DOING", "DONE", "CANCELLED" }
+M.todo_states        = { "TODO", "DOING", "WAITING", "DONE", "CANCELLED" }
 M.active_todo_states = { "TODO", "DOING", "WAITING" }
 
 -- ── Filename Decoding (audit #29) ─────────────────────────────────────
