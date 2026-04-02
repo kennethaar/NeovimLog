@@ -40,23 +40,25 @@ end
 --- Appends _1, _2, ... if a file with that timestamp already exists.
 --- Silently skips if the directory cannot be created or the file cannot be written.
 local function backup_file(filepath, vault, content)
-  vim.fn.mkdir(vault .. "/deduped", "p")
+  local backup_dir = vault .. "/deduped"
+  vim.fn.mkdir(backup_dir, "p")
 
   local stem = vim.fn.fnamemodify(filepath, ":t:r")
   local ext  = vim.fn.fnamemodify(filepath, ":e")
   local ts   = os.date("%Y-%m-%d_%H%M%S")
-  local dest = vault .. "/deduped/" .. stem .. "_" .. ts .. "." .. ext
+  local dest = backup_dir .. "/" .. stem .. "_" .. ts .. "." .. ext
 
   local n = 1
   while vim.fn.filereadable(dest) == 1 do
-    dest = vault .. "/deduped/" .. stem .. "_" .. ts .. "_" .. n .. "." .. ext
+    dest = backup_dir .. "/" .. stem .. "_" .. ts .. "_" .. n .. "." .. ext
     n = n + 1
   end
 
   local f = io.open(dest, "w")
   if not f then return end
-  pcall(function() f:write(content) end)
+  local write_ok = pcall(function() f:write(content) end)
   f:close()
+  if not write_ok then os.remove(dest) end
 end
 
 --- Dedup the given buffer in-place. Shows a notification with the result.
@@ -101,7 +103,10 @@ local function dedup_open_buf(bufnr, vault)
   local ok = pcall(function()
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
   end)
-  if not ok then return nil end
+  if not ok then
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    return nil
+  end
   return removed
 end
 
