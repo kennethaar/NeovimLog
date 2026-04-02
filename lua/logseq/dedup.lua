@@ -5,26 +5,90 @@
 
 local M = {}
 
---- Remove exact duplicate lines from a list of lines.
---- Empty lines ("") and "---" section dividers are never considered duplicates.
---- Returns: cleaned lines (table), removed count (number)
-function M.dedup_lines(lines)
-  local seen = {}
-  local result = {}
-  local removed = 0
+--- Returns the number of leading spaces in a line.
+local function line_indent(line)
+  return #(line:match("^(%s*)"))
+end
 
-  for _, line in ipairs(lines) do
+--- Segment a flat list of lines at a given indent level into blocks.
+--- Each block = { line, body[], always_keep? }
+--- Body collects all deeper-indented lines following the header, stopping
+--- at the next empty line or a line at the same or lesser indent.
+--- Empty lines and "---" dividers are always_keep blocks with no body.
+local function segment(lines, indent)
+  local blocks = {}
+  local i, n = 1, #lines
+  while i <= n do
+    local line = lines[i]
     if line == "" or line == "---" then
-      result[#result + 1] = line
-    elseif seen[line] then
-      removed = removed + 1
+      blocks[#blocks + 1] = { line = line, body = {}, always_keep = true }
+      i = i + 1
     else
-      seen[line] = true
-      result[#result + 1] = line
+      local block = { line = line, body = {} }
+      i = i + 1
+      while i <= n do
+        local next = lines[i]
+        if next == "" or line_indent(next) <= indent then break end
+        block.body[#block.body + 1] = next
+        i = i + 1
+      end
+      blocks[#blocks + 1] = block
+    end
+  end
+  return blocks
+end
+
+--- Flatten a list of blocks back into a flat list of lines.
+local function flatten_blocks(blocks)
+  local lines = {}
+  for _, b in ipairs(blocks) do
+    lines[#lines + 1] = b.line
+    vim.list_extend(lines, b.body)
+  end
+  return lines
+end
+
+--- Recursively dedup a list of lines at a given indent level.
+--- Duplicate block headers have their bodies appended to the first occurrence.
+--- The merged body is then recursively deduped at the next indent level.
+local function dedup_block_list(lines, indent)
+  local blocks = segment(lines, indent)
+  local order, seen = {}, {}
+
+  for _, block in ipairs(blocks) do
+    if block.always_keep then
+      order[#order + 1] = { line = block.line, body = {}, always_keep = true }
+    elseif seen[block.line] then
+      vim.list_extend(seen[block.line].body, block.body)
+    else
+      local entry = { line = block.line, body = block.body }
+      seen[block.line] = entry
+      order[#order + 1] = entry
     end
   end
 
-  return result, removed
+  for _, entry in ipairs(order) do
+    if not entry.always_keep and #entry.body > 0 then
+      local child_indent = indent + 2
+      for _, l in ipairs(entry.body) do
+        if l ~= "" then child_indent = line_indent(l); break end
+      end
+      entry.body = flatten_blocks(dedup_block_list(entry.body, child_indent))
+    end
+  end
+
+  return order
+end
+
+--- Remove exact duplicate lines from a list of lines, block-tree-aware.
+--- Empty lines ("") and "---" section dividers are always preserved.
+--- When two blocks share the same header line, the duplicate is removed and
+--- its entire child subtree is appended to the children of the kept copy.
+--- Duplicate children within the merged subtree are also removed recursively.
+--- Returns: cleaned lines (table), removed count (number)
+function M.dedup_lines(lines)
+  local result = flatten_blocks(dedup_block_list(lines, 0))
+  return result, #lines - #result
 end
 
 --- Read a file from disk. Returns content string or nil on any error.
