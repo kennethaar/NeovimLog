@@ -27,26 +27,42 @@ function M.dedup_lines(lines)
   return result, removed
 end
 
---- Copy content to vault/deduped/<stem>_<YYYY-MM-DD_HHMMSS>.<ext>.
---- Silently skips if the backup directory cannot be created or written.
+--- Read a file from disk. Returns content string or nil on any error.
+local function read_file(path)
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local ok, content = pcall(function() return f:read("*a") end)
+  f:close()
+  return ok and content or nil
+end
+
+--- Copy content to vault/deduped/<stem>_<YYYY-MM-DD_HHMMSS>[_N].<ext>.
+--- Appends _1, _2, ... if a file with that timestamp already exists.
+--- Silently skips if the directory cannot be created or the file cannot be written.
 local function backup_file(filepath, vault, content)
-  local backup_dir = vault .. "/deduped"
-  if vim.fn.isdirectory(backup_dir) == 0 then
-    vim.fn.mkdir(backup_dir, "p")
-  end
+  vim.fn.mkdir(vault .. "/deduped", "p")
+
   local stem = vim.fn.fnamemodify(filepath, ":t:r")
   local ext  = vim.fn.fnamemodify(filepath, ":e")
   local ts   = os.date("%Y-%m-%d_%H%M%S")
-  local dest = backup_dir .. "/" .. stem .. "_" .. ts .. "." .. ext
+  local dest = vault .. "/deduped/" .. stem .. "_" .. ts .. "." .. ext
+
+  local n = 1
+  while vim.fn.filereadable(dest) == 1 do
+    dest = vault .. "/deduped/" .. stem .. "_" .. ts .. "_" .. n .. "." .. ext
+    n = n + 1
+  end
+
   local f = io.open(dest, "w")
   if not f then return end
-  f:write(content)
+  pcall(function() f:write(content) end)
   f:close()
 end
 
 --- Dedup the given buffer in-place. Shows a notification with the result.
 --- bufnr defaults to the current buffer.
---- The original is backed up to vault/deduped/ before changes are applied.
+--- Backs up the disk version of the file before applying changes, preserving
+--- original line endings. Falls back to buffer reconstruction for unsaved files.
 --- Note: the entire operation is one undo entry — pressing u restores all
 --- removed lines at once.
 function M.dedup_buf(bufnr)
@@ -60,35 +76,41 @@ function M.dedup_buf(bufnr)
   end
 
   local vault = require("logseq.config").current.vault_path
-  if vault and vault ~= "" then
-    backup_file(vim.api.nvim_buf_get_name(bufnr), vault, table.concat(lines, "\n") .. "\n")
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if vault and vault ~= "" and filepath ~= "" then
+    local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
+    backup_file(filepath, vault, content)
   end
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
   vim.notify(("[logseq.nvim] Removed %d duplicate line(s)."):format(removed), vim.log.levels.INFO)
 end
 
---- Dedup an open buffer silently, back up the original, and save.
---- Returns removed count.
+--- Dedup an open buffer silently, back up the disk version, and save.
+--- Returns removed count, or nil on write error.
 local function dedup_open_buf(bufnr, vault)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local new_lines, removed = M.dedup_lines(lines)
-  if removed > 0 then
-    backup_file(vim.api.nvim_buf_get_name(bufnr), vault, table.concat(lines, "\n") .. "\n")
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+  if removed == 0 then return 0 end
+
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
+  backup_file(filepath, vault, content)
+
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+  local ok = pcall(function()
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
-  end
+  end)
+  if not ok then return nil end
   return removed
 end
 
 --- Dedup a file on disk (not open in a buffer), backing up the original first.
+--- Uses an atomic write (temp file + rename) to protect against partial writes.
 --- Returns removed count, or nil on read/write error.
 local function dedup_file_on_disk(path, vault)
-  local f = io.open(path, "r")
-  if not f then return nil end
-  local ok, content = pcall(function() return f:read("*a") end)
-  f:close()
-  if not ok then return nil end
+  local content = read_file(path)
+  if not content then return nil end
 
   local lines = vim.split(content, "\n", { plain = true })
   -- vim.split on "a\nb\n" produces {"a","b",""} — drop the trailing empty
@@ -99,10 +121,14 @@ local function dedup_file_on_disk(path, vault)
 
   backup_file(path, vault, content)
 
-  local wf = io.open(path, "w")
+  local tmp = path .. ".dedup_tmp"
+  local wf = io.open(tmp, "w")
   if not wf then return nil end
-  wf:write(table.concat(new_lines, "\n") .. "\n")
+  local write_ok = pcall(function() wf:write(table.concat(new_lines, "\n") .. "\n") end)
   wf:close()
+  if not write_ok then os.remove(tmp); return nil end
+  if not os.rename(tmp, path) then os.remove(tmp); return nil end
+
   return removed
 end
 
@@ -137,8 +163,12 @@ function M.dedup_vault(vault)
 
       local fpath = files[i]
       local bufnr = vim.fn.bufnr(fpath)
-      local is_open = bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr)
-      local removed = is_open and dedup_open_buf(bufnr, vault) or dedup_file_on_disk(fpath, vault)
+      local removed
+      if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
+        removed = dedup_open_buf(bufnr, vault)
+      else
+        removed = dedup_file_on_disk(fpath, vault)
+      end
 
       if removed == nil then
         vim.notify("[logseq.nvim] Dedup failed (write error): " .. fpath, vim.log.levels.WARN)
