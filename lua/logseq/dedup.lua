@@ -57,7 +57,7 @@ local function dedup_block_list(lines, indent)
 
   for _, block in ipairs(blocks) do
     if block.always_keep then
-      order[#order + 1] = { line = block.line, body = {}, always_keep = true }
+      order[#order + 1] = block
     elseif seen[block.line] then
       vim.list_extend(seen[block.line].body, block.body)
     else
@@ -68,7 +68,7 @@ local function dedup_block_list(lines, indent)
   end
 
   for _, entry in ipairs(order) do
-    if not entry.always_keep and #entry.body > 0 then
+    if #entry.body > 0 then
       local child_indent = indent + 2
       for _, l in ipairs(entry.body) do
         if l ~= "" then child_indent = line_indent(l); break end
@@ -118,7 +118,7 @@ local function backup_file(filepath, vault, content)
     n = n + 1
   end
 
-  local f = io.open(dest, "w")
+  local f = io.open(dest, "wb")
   if not f then return end
   local write_ok = pcall(function() f:write(content) end)
   f:close()
@@ -191,7 +191,7 @@ local function dedup_file_on_disk(path, vault)
   backup_file(path, vault, content)
 
   local tmp = path .. ".dedup_tmp"
-  local wf = io.open(tmp, "w")
+  local wf = io.open(tmp, "wb")
   if not wf then return nil end
   local write_ok = pcall(function() wf:write(table.concat(new_lines, "\n") .. "\n") end)
   wf:close()
