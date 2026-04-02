@@ -182,7 +182,11 @@ Full in-editor documentation is available via:
 :help logseq
 ```
 
-Feature-specific docs are in the `docs/` directory.
+Feature-specific docs are in the `docs/` directory:
+
+- [Backlinks](docs/backlinks.md)
+- [Templates](docs/templates.md)
+- [Deduplication](docs/dedup.md)
 
 ---
 

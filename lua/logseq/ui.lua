@@ -326,6 +326,7 @@ local function finish(bufnr, dest_path, extra_path, to_delete, vault, rewrites, 
         while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
         vim.list_extend(lines, { "", "---", "" })
         vim.list_extend(lines, vim.split(src:gsub("%s+$", ""), "\n", { plain = true }))
+        lines = (require("logseq.dedup").dedup_lines(lines))
         vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
         vim.cmd("silent write")
       end
@@ -452,6 +453,8 @@ function M.open_help()
     "   :LogseqCalAdd         Add an ICS calendar feed URL",
     "   :LogseqCalEdit        View / add / remove calendar URLs",
     "   :LogseqCalRemind      Set reminder lead time in minutes",
+    "   :LogseqDedup          Remove duplicate lines in current buffer",
+    "   :LogseqDedupVault     Remove duplicate lines across entire vault",
     "",
     "  NAVIGATION",
     "   " .. k("next_sibling","<leader>j") .. "   Next sibling block",

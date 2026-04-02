@@ -26,6 +26,7 @@ local function activate(bufnr)
     "logseq.backlinks",
     "logseq.embeds",
     "logseq.namespace_tree",
+    "logseq.query_ui",
     "logseq.panels",   -- must be last: overrides panel keymaps and owns auto-render
   }
 
@@ -233,6 +234,19 @@ local function bootstrap(opts)
       create_page(cmd_opts.args)
     end
   end, { nargs = "?", desc = "Create a new Logseq page" })
+
+  vim.api.nvim_create_user_command("LogseqDedup", function()
+    require("logseq.dedup").dedup_buf()
+  end, { desc = "Remove duplicate lines in the current buffer" })
+
+  vim.api.nvim_create_user_command("LogseqDedupVault", function()
+    local vault = config.current.vault_path
+    if not vault or vault == "" then
+      vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
+      return
+    end
+    require("logseq.dedup").dedup_vault(vault)
+  end, { desc = "Remove duplicate lines across the entire vault" })
 
   -- ── Autocmds ──────────────────────────────────────────────────────
 
