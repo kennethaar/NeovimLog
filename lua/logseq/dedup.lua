@@ -29,7 +29,7 @@ end
 
 --- Read a file from disk. Returns content string or nil on any error.
 local function read_file(path)
-  local f = io.open(path, "r")
+  local f = io.open(path, "rb")
   if not f then return nil end
   local ok, content = pcall(function() return f:read("*a") end)
   f:close()
@@ -68,7 +68,7 @@ end
 --- Note: the entire operation is one undo entry — pressing u restores all
 --- removed lines at once.
 function M.dedup_buf(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local new_lines, removed = M.dedup_lines(lines)
 
@@ -132,7 +132,8 @@ local function dedup_file_on_disk(path, vault)
   local write_ok = pcall(function() wf:write(table.concat(new_lines, "\n") .. "\n") end)
   wf:close()
   if not write_ok then os.remove(tmp); return nil end
-  if not os.rename(tmp, path) then os.remove(tmp); return nil end
+  local renamed = vim.uv.fs_rename(tmp, path)
+  if not renamed then os.remove(tmp); return nil end
 
   return removed
 end
@@ -159,10 +160,14 @@ function M.dedup_vault(vault)
     for _ = 1, BATCH do
       i = i + 1
       if i > #files then
-        vim.notify(
-          ("[logseq.nvim] Vault dedup: removed %d duplicate line(s) from %d file(s).")
-            :format(total_removed, total_files),
-          vim.log.levels.INFO)
+        if total_removed == 0 then
+          vim.notify("[logseq.nvim] Vault dedup: no duplicates found.", vim.log.levels.INFO)
+        else
+          vim.notify(
+            ("[logseq.nvim] Vault dedup: removed %d duplicate line(s) from %d file(s).")
+              :format(total_removed, total_files),
+            vim.log.levels.INFO)
+        end
         return
       end
 
