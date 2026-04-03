@@ -178,6 +178,7 @@ local function load_file(filepath, uv)
 end
 
 --- Scan one file and append any matching blocks to results.
+
 local function process_file(filepath, ast, uv, results, current_page_lower)
   local _lines, parsed = load_file(filepath, uv)
   if not parsed then return end
@@ -187,6 +188,34 @@ local function process_file(filepath, ast, uv, results, current_page_lower)
   local jdate       = journal_date(filepath)
   local page_props  = parsed.page_properties
 
+  -- Special handling for page_property queries: only return the page if it matches, once.
+  if ast.type == "page_property" or (ast.type == "and" and ast.children and vim.tbl_contains(vim.tbl_map(function(child) return child.type end, ast.children), "page_property")) then
+    local ctx = {
+      todo_state   = nil,
+      tags         = {},
+      journal_date = jdate,
+      page_props   = page_props,
+    }
+    -- For compound queries, require all predicates to match at the page level.
+    local page_match = eval(ast, nil, ctx, current_page_lower)
+    if page_match then
+      -- Only add the page once.
+      results[#results + 1] = {
+        source_page = source_page,
+        source_file = filepath,
+        content     = "",
+        line_start  = 1,
+        todo_state  = nil,
+        tags        = {},
+        date        = jdate,
+        properties  = page_props,
+        is_page     = true,
+      }
+    end
+    return
+  end
+
+  -- Default: block-level matching
   for _, block in ipairs(parser.flatten(parsed.blocks)) do
     local ctx = {
       todo_state   = effective_todo(block),

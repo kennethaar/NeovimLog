@@ -206,11 +206,20 @@ local function build_display(q)
   -- Results
   local results = q.results or {}
 
+
   local function list_line(r)
-    local suffix   = r.source_page .. (r.date and (" · " .. r.date) or "")
-    local content  = truncate(r.content, 46)
-    local padding  = math.max(1, 58 - #content - #suffix)
-    return " • " .. content .. string.rep(" ", padding) .. suffix
+    if r.is_page then
+      -- For page-level results, just show the page name (optionally with date for journals)
+      local suffix = r.date and (" · " .. r.date) or ""
+      local content = truncate(r.source_page, 46)
+      local padding = math.max(1, 58 - #content - #suffix)
+      return " • " .. content .. string.rep(" ", padding) .. suffix
+    else
+      local suffix   = r.source_page .. (r.date and (" · " .. r.date) or "")
+      local content  = truncate(r.content, 46)
+      local padding  = math.max(1, 58 - #content - #suffix)
+      return " • " .. content .. string.rep(" ", padding) .. suffix
+    end
   end
 
   local function table_line(r)
