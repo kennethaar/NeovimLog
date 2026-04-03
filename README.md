@@ -187,6 +187,7 @@ Feature-specific docs are in the `docs/` directory:
 - [Backlinks](docs/backlinks.md)
 - [Templates](docs/templates.md)
 - [Deduplication](docs/dedup.md)
+- [Logseq Simple Queries](docs/queries.md)
 
 ---
 

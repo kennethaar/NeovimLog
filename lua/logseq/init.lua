@@ -79,6 +79,43 @@ local function activate(bufnr)
       { "<S-Tab>",           desc = "Outdent block",                   buffer = bufnr, mode = "n" },
     })
   end
+
+  -- Auto-move date-named files to journals
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    buffer = bufnr,
+    callback = function()
+      local filepath = vim.api.nvim_buf_get_name(bufnr)
+      if not filepath or filepath == "" then return end
+      local filename = vim.fn.fnamemodify(filepath, ":t")
+      local year, month, day = filename:match("^(%d%d%d%d)[-_](%d%d)[-_](%d%d)%.md$")
+      if not year then return end
+      local date_str = os.date("%Y_%m_%d", os.time{year=tonumber(year), month=tonumber(month), day=tonumber(day)})
+      local journal_dir = vim.fs.joinpath(config.current.vault_path, "journals")
+      local journal_path = vim.fs.joinpath(journal_dir, date_str .. ".md")
+      if util.normalize(filepath) == util.normalize(journal_path) then return end
+      -- Check if journal_path exists
+      if vim.fn.filereadable(journal_path) == 1 then
+        -- Merge: append the content
+        local current_content = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        local journal_content = vim.fn.readfile(journal_path)
+        -- Append current content to journal content
+        vim.list_extend(journal_content, {""}) -- add empty line
+        vim.list_extend(journal_content, current_content)
+        -- Write back to journal_path
+        vim.fn.writefile(journal_content, journal_path)
+        -- Delete the old file
+        vim.fn.delete(filepath)
+        -- Update buffer to point to journal_path
+        vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
+      else
+        -- Move the file
+        if vim.fn.isdirectory(journal_dir) == 0 then vim.fn.mkdir(journal_dir, "p") end
+        vim.fn.rename(filepath, journal_path)
+        -- Update buffer name
+        vim.api.nvim_buf_set_name(bufnr, journal_path)
+      end
+    end
+  })
 end
 
 local function run_interactive_setup(opts, callback)

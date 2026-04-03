@@ -20,6 +20,7 @@
 local config      = require("logseq.config")
 local qparser     = require("logseq.query_parser")
 local engine      = require("logseq.query_engine")
+local indexer     = require("logseq.indexer")
 
 local M = {}
 
@@ -346,11 +347,12 @@ local function refresh_query(bufnr, q)
     render_one(bufnr, q)
     return
   end
+  local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
   engine.run(q.ast, function(results)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     q.results = results
     render_one(bufnr, q)
-  end)
+  end, current_page)
 end
 
 --- Re-render all queries in the buffer (called on BufReadPost and after save).
@@ -370,6 +372,7 @@ function M.render_all(bufnr)
   state.queries = {}
 
   local found = scan_queries(bufnr)
+  local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
   for _, f in ipairs(found) do
     local ast, err = qparser.parse(f.query_str)
     local q = {
@@ -394,7 +397,7 @@ function M.render_all(bufnr)
         if not vim.api.nvim_buf_is_valid(bufnr) then return end
         q.results = results
         render_one(bufnr, q)
-      end)
+      end, current_page)
     else
       q.results = {}
       vim.schedule(function()

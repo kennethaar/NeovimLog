@@ -44,12 +44,13 @@ local function effective_tags(block)
   return tags
 end
 
---- True if the block (or any ancestor) links to page_lower.
-local function block_links_page(block, page_lower)
+--- True if the block (or any ancestor) links to page_lower (or namespace).
+local function block_links_page(block, page_lower, namespace)
   local cur = block
   while cur do
     for _, link in ipairs(cur.links) do
-      if link:lower() == page_lower then return true end
+      local l = link:lower()
+      if l == page_lower or (namespace and l:find("^" .. page_lower .. "/", 1, true)) then return true end
     end
     cur = cur.parent
   end
@@ -62,8 +63,12 @@ local eval  -- forward declaration
 
 local evaluators = {}
 
-evaluators["page_link"] = function(ast, block, _ctx)
-  return block_links_page(block, ast.page:lower())
+evaluators["page_link"] = function(ast, block, ctx, current_page_lower)
+  local query_page = ast.page:lower()
+  if query_page == "current page" then
+    query_page = current_page_lower or ""
+  end
+  return block_links_page(block, query_page, true)
 end
 
 evaluators["todo"] = function(ast, _block, ctx)
@@ -121,10 +126,10 @@ evaluators["not"] = function(ast, block, ctx)
   return not eval(ast.children[1], block, ctx)
 end
 
-eval = function(ast, block, ctx)
+eval = function(ast, block, ctx, current_page_lower)
   if not ast then return false end
   local fn = evaluators[ast.type]
-  return fn and fn(ast, block, ctx) or false
+  return fn and fn(ast, block, ctx, current_page_lower) or false
 end
 
 -- ── File I/O ───────────────────────────────────────────────────────────
@@ -163,7 +168,7 @@ local function load_file(filepath, uv)
 end
 
 --- Scan one file and append any matching blocks to results.
-local function process_file(filepath, ast, uv, results)
+local function process_file(filepath, ast, uv, results, current_page_lower)
   local _lines, parsed = load_file(filepath, uv)
   if not parsed then return end
 
@@ -179,7 +184,7 @@ local function process_file(filepath, ast, uv, results)
       journal_date = jdate,
       page_props   = page_props,
     }
-    if eval(ast, block, ctx) then
+    if eval(ast, block, ctx, current_page_lower) then
       results[#results + 1] = {
         source_page = source_page,
         source_file = filepath,
@@ -201,12 +206,14 @@ end
 --- Reuses the indexer's file cache so repeated queries are fast.
 ---@param ast        table
 ---@param on_complete function
-function M.run(ast, on_complete)
+---@param current_page string|nil  current page name for "current page" placeholder
+function M.run(ast, on_complete, current_page)
   local raw_vault = config.current.vault_path
   if not raw_vault or raw_vault == "" then
     return vim.schedule(function() on_complete({}) end)
   end
   local vault = util.normalize(raw_vault)
+  local current_page_lower = current_page and current_page:lower() or nil
 
   local search_dirs = {}
   if vim.fn.isdirectory(vault .. "/pages")   == 1 then
@@ -245,7 +252,7 @@ function M.run(ast, on_complete)
   local function process_chunk()
     local chunk_end = math.min(i + 49, #all_files)
     for j = i, chunk_end do
-      process_file(all_files[j], ast, uv, results)
+      process_file(all_files[j], ast, uv, results, current_page_lower)
     end
     if chunk_end < #all_files then
       i = chunk_end + 1
