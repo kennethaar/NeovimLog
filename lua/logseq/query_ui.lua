@@ -76,12 +76,6 @@ end
 
 local function remove_section(bufnr, q)
   if not q.section_mark then return end
-  local s0 = section_row_0(bufnr, q)
-  if s0 then
-    with_modifiable(bufnr, function()
-      vim.api.nvim_buf_set_lines(bufnr, s0, s0 + (q.section_line_count or 0), false, {})
-    end)
-  end
   pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
   q.section_mark       = nil
   q.section_line_count = nil
@@ -302,28 +296,32 @@ local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, 
   end
 end
 
+local function virt_lines_from_lines(lines)
+  local virt_lines = {}
+  for i, line in ipairs(lines) do
+    local hl = (line == SEP) and "Comment" or "Normal"
+    virt_lines[#virt_lines + 1] = { { line, hl } }
+  end
+  return virt_lines
+end
+
 local function render_one(bufnr, q)
   local qrow = query_row_0(bufnr, q)
   if not qrow then return end
+  if q.hidden then return end
 
-  local lines, smap, header_rel, header_buttons = build_display(q)
+  local lines = build_display(q)
+  local virt_lines = virt_lines_from_lines(lines)
 
-  -- Insert section immediately after the {{query}} line.
-  with_modifiable(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, qrow + 1, qrow + 1, false, lines)
-  end)
+  if q.section_mark then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
+  end
 
-  -- Track the section start with an extmark so future edits shift it correctly.
-  q.section_mark       = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow + 1, 0, {})
+  q.section_mark       = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow, 0, {
+    virt_lines      = virt_lines,
+    virt_lines_above = false,
+  })
   q.section_line_count = #lines
-  q.source_map         = smap
-  q.header_rel         = header_rel
-  q.header_buttons     = header_buttons
-
-  -- Syntax highlights
-  local abs0 = qrow + 1  -- 0-indexed absolute row of section start
-  vim.api.nvim_buf_clear_namespace(bufnr, NS, abs0, abs0 + #lines)
-  apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, q)
 end
 
 -- ── Query scanning ─────────────────────────────────────────────────────
@@ -385,6 +383,7 @@ function M.render_all(bufnr)
       mode               = "list",
       columns            = vim.deepcopy(DEFAULT_COLUMNS),
       show_columns       = false,
+      hidden             = false,
       results            = nil,
       source_map         = nil,
       header_rel         = nil,
@@ -409,16 +408,12 @@ end
 
 -- ── Navigation & interaction ───────────────────────────────────────────
 
---- True if lnum (1-indexed) is inside any rendered query section.
+--- True if lnum (1-indexed) is on a query line.
 function M.in_any_region(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_start_1 = s0 + 1
-      local sec_end_1   = s0 + (q.section_line_count or 0)
-      if lnum >= sec_start_1 and lnum <= sec_end_1 then return true end
-    end
+    local qrow = query_row_0(bufnr, q)
+    if qrow and lnum == qrow + 1 then return true end
   end
   return false
 end
@@ -491,57 +486,65 @@ function M.navigate(bufnr)
   return false
 end
 
---- Refresh the query whose section contains lnum (1-indexed).
+--- Refresh the query on the current query line.
 local function refresh_at(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_end_1 = s0 + (q.section_line_count or 0)
-      if lnum >= s0 + 1 and lnum <= sec_end_1 then
-        refresh_query(bufnr, q)
-        return
-      end
+    local qrow = query_row_0(bufnr, q)
+    if qrow and lnum == qrow + 1 then
+      refresh_query(bufnr, q)
+      return
     end
   end
 end
 
---- Toggle list/table mode for the query under the cursor.
+--- Toggle list/table mode for the current query line.
 local function toggle_mode_at(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_end_1 = s0 + (q.section_line_count or 0)
-      if lnum >= s0 + 1 and lnum <= sec_end_1 then
-        remove_section(bufnr, q)
-        q.mode         = q.mode == "list" and "table" or "list"
-        q.show_columns = false
-        render_one(bufnr, q)
-        return
-      end
+    local qrow = query_row_0(bufnr, q)
+    if qrow and lnum == qrow + 1 then
+      remove_section(bufnr, q)
+      q.mode         = q.mode == "list" and "table" or "list"
+      q.show_columns = false
+      render_one(bufnr, q)
+      return
     end
   end
 end
 
---- Toggle the column picker for the query under the cursor (table mode only).
+--- Toggle the column picker for the current query line (table mode only).
 local function toggle_cols_at(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_end_1 = s0 + (q.section_line_count or 0)
-      if lnum >= s0 + 1 and lnum <= sec_end_1 then
-        if q.mode ~= "table" then return end
-        remove_section(bufnr, q)
-        q.show_columns = not q.show_columns
-        render_one(bufnr, q)
-        return
-      end
+    local qrow = query_row_0(bufnr, q)
+    if qrow and lnum == qrow + 1 then
+      if q.mode ~= "table" then return end
+      remove_section(bufnr, q)
+      q.show_columns = not q.show_columns
+      render_one(bufnr, q)
+      return
     end
   end
 end
-
+--- Toggle rendering for the query under the cursor.
+function M.toggle_render_at_cursor(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local lnum = vim.api.nvim_win_get_cursor(0)[1]
+  local state = get_state(bufnr)
+  for _, q in ipairs(state.queries) do
+    local qrow = query_row_0(bufnr, q)
+    if qrow and lnum == qrow + 1 then
+      q.hidden = not q.hidden
+      if q.hidden then
+        remove_section(bufnr, q)
+      else
+        render_one(bufnr, q)
+      end
+      return
+    end
+  end
+end
 -- ── Buffer lifecycle ───────────────────────────────────────────────────
 
 local function on_write_pre(bufnr)
@@ -578,6 +581,10 @@ end
 function M.setup_buf(bufnr)
   local km      = config.current.keymaps or {}
   local bld_key = km.query_builder or "<leader>Q"
+
+  _G.logseq_toggle_query_render = function()
+    require("logseq.query_ui").toggle_render_at_cursor()
+  end
 
   -- Query builder: open empty or pre-filled when on a {{query}} line.
   vim.keymap.set("n", bld_key, function()

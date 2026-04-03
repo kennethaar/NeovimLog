@@ -109,15 +109,20 @@ end
 
 -- ── Form rendering ─────────────────────────────────────────────────────
 
+local function quote_value(value)
+  if not value then return nil end
+  return '"' .. value:gsub('([\\"])', '\\%1') .. '"'
+end
+
 local function pred_label(p)
   if p.type == "page_link"     then return "[[" .. (p.page or "?") .. "]]" end
   if p.type == "todo"          then return "todo: " .. table.concat(p.states or {}, " ") end
   if p.type == "tags"          then return "tags: " .. table.concat(p.tags  or {}, " ") end
   if p.type == "property"      then
-    return "prop: " .. (p.key or "?") .. (p.value and (" = " .. p.value) or "")
+    return "prop: :" .. (p.key or "?") .. (p.value and (" = " .. quote_value(p.value)) or "")
   end
   if p.type == "page_property" then
-    return "page-prop: " .. (p.key or "?") .. (p.value and (" = " .. p.value) or "")
+    return "page-prop: :" .. (p.key or "?") .. (p.value and (" = " .. quote_value(p.value)) or "")
   end
   if p.type == "between"       then
     return "between: " .. (p.from or "?") .. " — " .. (p.to or "?")
@@ -280,10 +285,17 @@ local function ask_tags(existing, callback)
   end)
 end
 
+local function normalize_property_key(key)
+  if not key or key:match("^%s*$") then return "" end
+  local trimmed = key:match("^%s*(.-)%s*$")
+  if trimmed:sub(1, 1) == ":" then trimmed = trimmed:sub(2) end
+  return trimmed
+end
+
 local function ask_kv(node_type, prompt_key, existing_key, existing_val, callback)
   vim.ui.input({ prompt = prompt_key .. " key: ", default = existing_key or "" }, function(key)
     if not key or key:match("^%s*$") then return end
-    key = key:match("^%s*(.-)%s*$")
+    key = normalize_property_key(key)
     vim.ui.input({ prompt = prompt_key .. " value (leave blank = any): ", default = existing_val or "" },
       function(val)
         local v = val and val:match("^%s*(.-)%s*$")

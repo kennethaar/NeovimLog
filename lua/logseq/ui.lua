@@ -164,10 +164,11 @@ function M.tabline()
 
   local safe_label = label:gsub("%%", "%%%%")
   local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝rn%X%#TabLine#"
+  local toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@🪄%X%#TabLine#"
   local close_btn  = "%#Comment#%@v:lua.logseq_close_win@:wq❌%X%#TabLine#"
   -- %< is the truncation point: content before it is never cut, content
   -- after it shrinks first. Buttons are before %<; label truncates instead.
-  return " " .. rename_btn .. "  %#TabLineSel#%<" .. safe_label
+  return " " .. rename_btn .. "  " .. toggle_btn .. "  %#TabLineSel#%<" .. safe_label
        .. "%#TabLine#%=" .. close_btn .. " "
 end
 

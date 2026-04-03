@@ -232,6 +232,17 @@ function M.parse(query_str)
   return ast, parse_err
 end
 
+local function format_property_key(key)
+  if not key or key == "" then return "" end
+  if key:sub(1, 1) == ":" then return key end
+  return ":" .. key
+end
+
+local function quote_value(value)
+  if not value then return nil end
+  return '"' .. value:gsub('([\\"])', '\\%1') .. '"'
+end
+
 --- Serialise an AST node back to a Logseq query expression string.
 ---@param ast table
 ---@return string
@@ -244,10 +255,10 @@ function M.to_string(ast)
     tags          = function(n) return "(tags " .. table.concat(n.tags  or {}, " ") .. ")" end,
     between       = function(n) return "(between <" .. n.from .. "> <" .. n.to .. ">)" end,
     property      = function(n)
-      return "(property " .. n.key .. (n.value and (" " .. n.value) or "") .. ")"
+      return "(property " .. format_property_key(n.key) .. (n.value and (" " .. quote_value(n.value)) or "") .. ")"
     end,
     page_property = function(n)
-      return "(page-property " .. n.key .. (n.value and (" " .. n.value) or "") .. ")"
+      return "(page-property " .. format_property_key(n.key) .. (n.value and (" " .. quote_value(n.value)) or "") .. ")"
     end,
     ["and"] = function(n)
       local parts = {}
