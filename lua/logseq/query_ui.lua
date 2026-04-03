@@ -36,6 +36,12 @@ local COLUMN_WIDTHS = { block = 34, page = 15, date = 12, todo = 9, tags = 16 }
 
 local DEFAULT_COLUMNS = { block = true, page = true, date = true, todo = false, tags = false }
 
+--- Extract the leaf segment of a (possibly namespaced) page name.
+--- "1/Project" → "Project", "Foo Bar" → "Foo Bar"
+local function leaf_name(name)
+  return name:match("[^/]+$") or name
+end
+
 -- ── State ──────────────────────────────────────────────────────────────
 
 M._state = {}   -- bufnr → { queries = [...] }
