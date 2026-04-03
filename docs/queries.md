@@ -32,8 +32,9 @@ The builder lets you construct queries without writing S-expressions. You can:
 
 Once a query renders, you can use these keys inside the results section:
 
-| Key | Action |
-|-----|--------|
+| Key/Button | Action |
+|------------|--------|
+| `[~]` | Toggle query rendering (hide/show results) |
 | `<CR>` | Jump to the source block |
 | `r` | Refresh this query (re-scan the vault) |
 | `t` | Toggle between **List** and **Table** mode |

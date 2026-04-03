@@ -16,6 +16,9 @@
 ---   r     refresh this query
 ---   t     toggle list ↔ table mode
 ---   c     toggle column picker (table mode only)
+---   r     refresh this query
+---   t     toggle list ↔ table mode
+---   c     toggle column picker (table mode only)
 
 local config      = require("logseq.config")
 local qparser     = require("logseq.query_parser")
@@ -132,7 +135,7 @@ local function make_header(q)
   end
 
   push(" ")
-  push("[~]",   "refresh")
+  push("[~]",   "toggle_render")
   push("  ")
   push(q.mode == "list"  and "[LIST]"  or "[list]",  "set_mode", "list")
   push("  ")
@@ -274,7 +277,7 @@ local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, 
   vim.api.nvim_buf_add_highlight(bufnr, NS, "Normal", hdr_abs, 0, -1)
   for _, btn in ipairs(header_buttons or {}) do
     local hl = (btn.action == "set_mode" and btn.data == q.mode) and "Bold"
-            or (btn.action == "refresh")                          and "Special"
+            or (btn.action == "toggle_render")                   and "Special"
             or "Comment"
     -- col args are 0-based byte offsets: from-1 and to (exclusive end)
     vim.api.nvim_buf_add_highlight(bufnr, NS, hl, hdr_abs, btn.from - 1, btn.to)
@@ -423,19 +426,33 @@ end
 
 -- ── Navigation & interaction ───────────────────────────────────────────
 
---- True if lnum (1-indexed) is on a query line.
+--- True if lnum (1-indexed) is on a query line or within a query results section.
 function M.in_any_region(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
+    -- Check if on the query line
     local qrow = query_row_0(bufnr, q)
     if qrow and lnum == qrow + 1 then return true end
+    
+    -- Check if in the results section
+    local s0 = q.section_mark and section_row_0(bufnr, q)
+    if s0 then
+      local sec_start_1 = s0 + 1
+      local sec_end_1   = s0 + (q.section_line_count or 0)
+      if lnum >= sec_start_1 and lnum <= sec_end_1 then return true end
+    end
   end
   return false
 end
 
 local function handle_button(bufnr, q, action, data)
-  if action == "refresh" then
-    refresh_query(bufnr, q)
+  if action == "toggle_render" then
+    q.hidden = not q.hidden
+    if q.hidden then
+      remove_section(bufnr, q)
+    else
+      render_one(bufnr, q)
+    end
 
   elseif action == "set_mode" then
     remove_section(bufnr, q)
