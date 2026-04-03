@@ -3,11 +3,11 @@
 --- Uses Neovim extmarks to track section positions across edits.
 ---
 --- Layout (per query block):
----   ──────────────────────────────────────────────────────────────
+---   ──────────────────────────────────────────────────────────────────────
 ---    [~]  [LIST]  [table]    N results
----   ──────────────────────────────────────────────────────────────
+---   ──────────────────────────────────────────────────────────────────────
 ---    • Block content                       page-name · date
----   ──────────────────────────────────────────────────────────────
+---   ──────────────────────────────────────────────────────────────────────
 ---
 --- Table mode adds column headers, optional column picker, and │-separated cells.
 ---
@@ -31,7 +31,7 @@ local NS = vim.api.nvim_create_namespace("logseq_query")
 
 -- ── Constants ──────────────────────────────────────────────────────────
 
-local SEP = string.rep("─", 62)
+local SEP = string.rep("─", 70)
 
 local COLUMN_ORDER  = { "block", "page", "date", "todo", "tags" }
 local COLUMN_LABELS = { block = "Block", page = "Page", date = "Date", todo = "TODO", tags = "Tags" }
@@ -219,12 +219,14 @@ local function build_display(q)
   local function list_line(r)
     if r.is_page then
       -- For page-level results, just show the page name (optionally with date for journals)
+      local display_page = leaf_name(r.source_page)
       local suffix = r.date and (" · " .. r.date) or ""
-      local content = truncate(r.source_page, 46)
+      local content = truncate(display_page, 46)
       local padding = math.max(1, 58 - #content - #suffix)
       return " • " .. content .. string.rep(" ", padding) .. suffix
     else
-      local suffix   = r.source_page .. (r.date and (" · " .. r.date) or "")
+      local display_page = leaf_name(r.source_page)
+      local suffix   = display_page .. (r.date and (" · " .. r.date) or "")
       local content  = truncate(r.content, 46)
       local padding  = math.max(1, 58 - #content - #suffix)
       return " • " .. content .. string.rep(" ", padding) .. suffix
@@ -232,9 +234,10 @@ local function build_display(q)
   end
 
   local function table_line(r)
+    local display_page = leaf_name(r.source_page)
     local vals = {
       block = truncate(r.content,    COLUMN_WIDTHS.block),
-      page  = truncate(r.source_page, COLUMN_WIDTHS.page),
+      page  = truncate(display_page, COLUMN_WIDTHS.page),
       date  = truncate(r.date or "", COLUMN_WIDTHS.date),
       todo  = truncate(r.todo_state or "", COLUMN_WIDTHS.todo),
       tags  = truncate(table.concat(r.tags or {}, " "), COLUMN_WIDTHS.tags),
@@ -253,7 +256,11 @@ local function build_display(q)
   end
 
   if #results == 0 then
-    add("  (no results)")
+    if q.loading then
+      add("  Loading...")
+    else
+      add("  (no results)")
+    end
   end
 
   -- Bottom separator
@@ -309,6 +316,45 @@ local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, 
           vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", col_hdr_abs, 0, -1)
         end
         break
+      end
+    end
+  end
+
+  -- Highlight page names in result lines as links
+  if q.mode == "list" then
+    -- In list mode, page names are at the end of lines like " • content ... page · date"
+    for i, line in ipairs(lines) do
+      if line:match("^ • ") and not line:match("^  %(no results%)") and not line:match("^  Loading...") then
+        -- Find the page name (before " · date" if present)
+        local page_part = line:match(" · (.+)$") or line:match("   (.+)$")
+        if page_part then
+          local page_start = line:find(page_part, 1, true)
+          if page_start then
+            vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, page_start - 1, -1)
+          end
+        end
+      end
+    end
+  elseif q.mode == "table" then
+    -- In table mode, page names are in the page column
+    -- Find the page column position
+    local page_col_start = 1  -- " " prefix
+    local col_idx = 1
+    for _, key in ipairs(COLUMN_ORDER) do
+      if q.columns[key] then
+        if key == "page" then
+          page_col_start = page_col_start
+          local page_col_end = page_col_start + COLUMN_WIDTHS[key]
+          -- Highlight page column in all result rows
+          for i, line in ipairs(lines) do
+            if line:match("^ │ ") or line:match("^ ") then  -- table rows
+              vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, page_col_start, page_col_end)
+            end
+          end
+          break
+        end
+        page_col_start = page_col_start + COLUMN_WIDTHS[key] + 3  -- +3 for " │ "
+        col_idx = col_idx + 1
       end
     end
   end
@@ -403,6 +449,7 @@ function M.render_all(bufnr)
       show_columns       = false,
       hidden             = false,
       results            = nil,
+      loading            = false,
       source_map         = nil,
       header_rel         = nil,
       header_buttons     = nil,
@@ -570,8 +617,23 @@ function M.toggle_render_at_cursor(bufnr)
       q.hidden = not q.hidden
       if q.hidden then
         remove_section(bufnr, q)
+        q.loading = false
       else
-        render_one(bufnr, q)
+        -- Show loading indicator if we don't have results yet
+        if not q.results and q.ast then
+          q.loading = true
+          render_one(bufnr, q)
+          -- Execute the query asynchronously
+          local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
+          engine.run(q.ast, function(results)
+            if not vim.api.nvim_buf_is_valid(bufnr) then return end
+            q.results = results
+            q.loading = false
+            render_one(bufnr, q)
+          end, current_page)
+        else
+          render_one(bufnr, q)
+        end
       end
       return
     end
