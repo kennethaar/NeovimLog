@@ -1,6 +1,17 @@
 -- DEBUG: Log autosave and query state events
 local function debug_log(msg)
-  local f = io.open('/tmp/logseq_query_debug.log', 'a')
+  -- Cross-platform temp file path for debug log
+  local function get_debug_log_path()
+    local sep = package.config:sub(1,1)
+    if sep == '\\' then -- Windows
+      return os.getenv('TEMP') .. '\\logseq_query_debug.log'
+    else -- Unix
+      return '/tmp/logseq_query_debug.log'
+    end
+  end
+
+  local path = get_debug_log_path()
+  local f = io.open(path, 'a')
   if f then
     f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' ' .. msg .. '\n')
     f:close()
