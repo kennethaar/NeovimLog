@@ -82,6 +82,7 @@ end
 
 -- forward declaration for functions that are referenced before definition
 local render_one
+local remove_section
 
 -- Small helpers to reduce duplicated code and nested conditionals
 local function open_file_at(file, line)
