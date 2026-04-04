@@ -782,7 +782,7 @@ function M.build_statusline()
   end
   
   if is_mobile then
-    return table.concat(parts, string.rep(" ", 4))
+    return table.concat(parts, string.rep(" ", 3))
   end
 
   return table.concat(parts, "")
