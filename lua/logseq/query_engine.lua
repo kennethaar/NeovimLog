@@ -21,6 +21,12 @@ local function get_todo_state(content)
   end
 end
 
+--- Get TODO state of the block itself (not inherited from parents).
+--- Used for query predicates to ensure accurate filtering.
+local function get_direct_todo_state(block)
+  return get_todo_state(block.content)
+end
+
 --- Walk up the parent chain to find the nearest TODO state.
 local function effective_todo(block)
   local cur = block
@@ -218,7 +224,7 @@ local function process_file(filepath, ast, uv, results, current_page_lower)
   -- Default: block-level matching
   for _, block in ipairs(parser.flatten(parsed.blocks)) do
     local ctx = {
-      todo_state   = effective_todo(block),
+      todo_state   = get_direct_todo_state(block),
       tags         = effective_tags(block),
       journal_date = jdate,
       page_props   = page_props,
