@@ -407,7 +407,7 @@ local function virt_lines_from_lines(lines)
   return virt_lines
 end
 
-local function render_one(bufnr, q)
+render_one = function(bufnr, q)
   local qrow = query_row_0(bufnr, q)
   if not qrow then return end
   if q.hidden then 
