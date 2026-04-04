@@ -6,6 +6,9 @@ local util   = require("logseq.util")
 
 local M = {}
 
+local MOBILE_WIDTH = 50
+local NEXT_APPT_MAX_COLS = 15
+
 M._state = {
   saved_buffers = {},
   tabline_active = false,
@@ -13,7 +16,7 @@ M._state = {
   orig_tabline = nil,
 }
 
-local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@◀%X  %@v:lua.logseq_sl_today@📅%X  %@v:lua.logseq_sl_next_day@▶%X"
+local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@ ◀ %X%@v:lua.logseq_sl_today@ 📅 %X%@v:lua.logseq_sl_next_day@ ▶ %X"
 
 local BLOCK_NS   = vim.api.nvim_create_namespace("logseq_block_ui")
 local SCHED_NS   = vim.api.nvim_create_namespace("logseq_scheduled")
@@ -23,6 +26,20 @@ local TODO_HL_NS = vim.api.nvim_create_namespace("logseq_todo_hl")
 -- queued per buffer at any time, coalescing bursts of TextChanged events
 -- (e.g. during the write lifecycle when sections are removed).
 local _vl_pending = {}
+
+local function truncate_display_width(text, max_cols)
+  if not text or text == "" then return "" end
+  if vim.fn.strdisplaywidth(text) <= max_cols then return text end
+
+  local out = ""
+  local chars = vim.fn.strchars(text)
+  for i = 0, chars - 1 do
+    local ch = vim.fn.strcharpart(text, i, 1)
+    if vim.fn.strdisplaywidth(out .. ch) > max_cols then break end
+    out = out .. ch
+  end
+  return out
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 
@@ -117,15 +134,15 @@ function M.winbar()
     return formatted
   end
 
-  -- Build nav buttons differently for narrow vs wide windows
+  -- Build nav buttons differently for mobile vs wider windows
   local nav_parts = {}
-  if win_width < 60 then
-    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@🔍%X") end
-    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@🖇️%X") end
-    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@🗓️%X") end
-    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
+  if win_width < MOBILE_WIDTH then
+    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ 🔍 %X") end
+    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ 🖇️ %X") end
+    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@ 🗓️ %X") end
+    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ 🌳 %X") end
 
-    local nav_btns  = "  %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
+    local nav_btns  = " %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
     local close_btn = ""
 
     if M._state.saved_buffers[bufnr] then
@@ -136,7 +153,7 @@ function M.winbar()
     if ok then
       local event_text = reminders.next_meeting_str()
       if event_text ~= "" then
-        local short_time = format_time(event_text)
+        local short_time = truncate_display_width(format_time(event_text), NEXT_APPT_MAX_COLS)
         return " " .. WINBAR_LEFT .. nav_btns .. "%<  " .. short_time .. "  "
       end
     end
@@ -149,12 +166,12 @@ function M.winbar()
 
     return " " .. WINBAR_LEFT .. nav_btns .. close_btn
   else
-    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
-    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
-    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
-    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ ^k 🔍 %X") end
+    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ b 🖇️ %X") end
+    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@ c 🗓️ %X") end
+    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ n 🌳 %X") end
 
-    local nav_btns  = "    %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
+    local nav_btns  = "  %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
     local close_btn = ""
 
     if M._state.saved_buffers[bufnr] then
@@ -165,7 +182,8 @@ function M.winbar()
     if ok then
       local event_text = reminders.next_meeting_str()
       if event_text ~= "" then
-        return " " .. WINBAR_LEFT .. nav_btns .. "%<  │  " .. event_text
+        local clipped = truncate_display_width(event_text, NEXT_APPT_MAX_COLS)
+        return " " .. WINBAR_LEFT .. nav_btns .. "%<  │  " .. clipped
       end
     end
 
@@ -206,12 +224,23 @@ function M.tabline()
   end
 
   local safe_label = label:gsub("%%", "%%%%")
-  local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝rn%X%#TabLine#"
-  local toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@🪄%X%#TabLine#"
-  local close_btn  = "%#Comment#%@v:lua.logseq_close_win@:wq❌%X%#TabLine#"
+  local is_mobile = vim.o.columns < MOBILE_WIDTH
+  local rename_btn
+  local toggle_btn
+  local close_btn
+
+  if is_mobile then
+    rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 %X%#TabLine#"
+    toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
+    close_btn  = "%#Comment#%@v:lua.logseq_close_win@ ❌ %X%#TabLine#"
+  else
+    rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 rn %X%#TabLine#"
+    toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
+    close_btn  = "%#Comment#%@v:lua.logseq_close_win@ :wq ❌ %X%#TabLine#"
+  end
   -- %< is the truncation point: content before it is never cut, content
   -- after it shrinks first. Buttons are before %<; label truncates instead.
-  return " " .. rename_btn .. "  " .. toggle_btn .. "  %#TabLineSel#%<" .. safe_label
+  return " " .. rename_btn .. toggle_btn .. " %#TabLineSel#%<" .. safe_label
        .. "%#TabLine#%=" .. close_btn .. " "
 end
 
@@ -731,17 +760,28 @@ end
 ---@return string
 function M.build_statusline()
   local bb = (require("logseq.config").current.bottombar_buttons) or {}
+  local is_mobile = vim.o.columns < MOBILE_WIDTH
   local parts = {}
 
-  if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗↩️%X") end
-  if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡za%X") end
-  if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅^t%X") end
-  if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@>>%X") end
-  if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@<<%X") end
-  if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@alt⬆️%X") end
-  if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@alt⬇️%X") end
+  if is_mobile then
+    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 %X") end
+    if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ %X") end
+    if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@ ✅ %X") end
+    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ➡️ %X") end
+    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ⬅️ %X") end
+    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ ⬆️ %X") end
+    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ ⬇️ %X") end
+  else
+    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 ↩️ %X") end
+    if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ za %X") end
+    if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@ ✅ ^t %X") end
+    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ➡️ >> %X") end
+    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ⬅️ << %X") end
+    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ alt ⬆️ %X") end
+    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ alt ⬇️ %X") end
+  end
   
-  return table.concat(parts, "  ")
+  return table.concat(parts, "")
 end
 
 -- ── Scheduled / Deadline virtual text ────────────────────────────────
