@@ -554,7 +554,7 @@ function M.render_all(bufnr, preserved_state)
       mode               = preserved and preserved.mode or "list",
       columns            = preserved and vim.deepcopy(preserved.columns) or vim.deepcopy(DEFAULT_COLUMNS),
       show_columns       = preserved and preserved.show_columns or false,
-      hidden             = preserved and preserved.hidden or true,  -- Start with query toggled off
+      hidden             = preserved and (preserved.hidden == false and false or true) or true,  -- If previously open, stay open
       results            = preserved and preserved.results or nil,   -- Restore results if available
       loading            = preserved and preserved.loading or false,
       header_rel         = nil,
