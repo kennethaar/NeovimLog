@@ -51,12 +51,11 @@ end
 M._state = {}   -- bufnr → { queries = [...] }
 
 local function get_state(bufnr)
-  if not M._state[bufnr] then 
-    M._state[bufnr] = { 
+  if not M._state[bufnr] then
+    M._state[bufnr] = {
       queries = {},  -- array of query objects
       regions = {},  -- query_idx → { start_line, end_line }
-      source_map = {}, -- abs_line -> { action=..., file=..., line=... }
-    } 
+    }
   end
   return M._state[bufnr]
 end
@@ -124,34 +123,55 @@ end
 -- ── Section management ─────────────────────────────────────────────────
 
 local function remove_section(bufnr, q)
-  if not q.region then return end
   local state = get_state(bufnr)
 
-  -- Remove any entries we registered in the global source_map for this query
-  if q.abs_lines then
+  -- Remove any entries we registered in the (older) global source_map for this query
+  if q.abs_lines and state.source_map then
     for _, abs in ipairs(q.abs_lines) do state.source_map[abs] = nil end
     q.abs_lines = nil
   end
 
+  -- Compute the current region (prefer extmark-derived positions so shifts are handled).
+  local start_line, end_line
+  local qrow = query_row_0(bufnr, q)
+  if qrow and q._lines_count then
+    start_line = qrow + 3
+    end_line = start_line + q._lines_count - 1
+  elseif q.region then
+    start_line = q.region.start_line
+    end_line   = q.region.end_line
+  else
+    return
+  end
+
   -- Remove the lines from the buffer
   with_modifiable(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, q.region.start_line - 1, q.region.end_line, false, {})
+    vim.api.nvim_buf_set_lines(bufnr, start_line - 1, end_line, false, {})
   end)
 
-  -- Clear the region and header info
+  -- Clear stored display bookkeeping
   q.region = nil
   q.header_abs = nil
   q.header_buttons = nil
+  q._lines_count = nil
+  q.smap = nil
 end
 
 local function remove_all_sections(bufnr)
   local state = get_state(bufnr)
-  -- Collect sections with their current absolute start rows.
+  -- Collect sections with their current absolute start rows (compute from extmarks
+  -- when possible so we remove bottom-to-top correctly even when things shifted).
   local with_rows = {}
   for _, q in ipairs(state.queries) do
-    if q.region then with_rows[#with_rows + 1] = { q = q, s0 = q.region.start_line } end
+    local qrow = query_row_0(bufnr, q)
+    local s0
+    if qrow and q._lines_count then
+      s0 = qrow + 3
+    elseif q.region then
+      s0 = q.region.start_line
+    end
+    if s0 then with_rows[#with_rows + 1] = { q = q, s0 = s0 } end
   end
-  -- Remove bottom-to-top so earlier sections aren't shifted by later removals.
   table.sort(with_rows, function(a, b) return a.s0 > b.s0 end)
   for _, entry in ipairs(with_rows) do remove_section(bufnr, entry.q) end
 end
@@ -437,19 +457,15 @@ render_one = function(bufnr, q)
   local end_line = insert_pos + #final_lines
   q.region = { start_line = start_line, end_line = end_line }
 
-  -- Register source_map entries at the buffer level (state.source_map)
   local state = get_state(bufnr)
-  q.abs_lines = {}
-  for rel_line, info in pairs(smap) do
-    local abs_line = start_line + rel_line - 1
-    state.source_map[abs_line] = info
-    q.abs_lines[#q.abs_lines + 1] = abs_line
-  end
 
-  -- Store header info for button handling
+  -- Store per-query source map (relative indices) and display length so we can
+  -- recompute absolute positions from the query extmark when needed.
+  q.smap = smap
+  q._lines_count = #final_lines
   q.header_rel = header_rel
   q.header_buttons = header_buttons
-  q.header_abs = start_line + header_rel - 1
+  q.region = { start_line = start_line, end_line = end_line }
 
   -- Apply highlights
   apply_highlights(bufnr, start_line, lines, header_rel, header_buttons, q)
@@ -538,8 +554,14 @@ function M.in_any_region(bufnr, lnum)
     local qrow = query_row_0(bufnr, q)
     if qrow and lnum == qrow + 1 then return true end
     
-    -- Check if in the results section
-    if q.region and lnum >= q.region.start_line and lnum <= q.region.end_line then return true end
+    -- Check if in the results section (compute current region from extmark)
+    if qrow and q._lines_count then
+      local start_line = qrow + 3
+      local end_line = start_line + q._lines_count - 1
+      if lnum >= start_line and lnum <= end_line then return true end
+    elseif q.region and lnum >= q.region.start_line and lnum <= q.region.end_line then
+      return true
+    end
   end
   return false
 end
@@ -600,9 +622,11 @@ function M.navigate(bufnr)
 
   local state = get_state(bufnr)
 
-  -- First: header buttons (per-query)
+  -- First: header buttons (per-query). Compute header position from extmark so
+  -- it remains correct even if other sections shifted the buffer.
   for _, q in ipairs(state.queries) do
-    if q.header_abs and lnum == q.header_abs then
+    local qrow = query_row_0(bufnr, q)
+    if qrow and q.header_rel and lnum == (qrow + q.header_rel + 2) then
       local col = vim.api.nvim_win_get_cursor(0)[2] + 1  -- 1-indexed byte
       for _, btn in ipairs(q.header_buttons or {}) do
         if col >= btn.from and col <= btn.to then
@@ -614,25 +638,28 @@ function M.navigate(bufnr)
     end
   end
 
-  -- Then: buffer-level source_map (shared across query sections)
-  if state.source_map and state.source_map[lnum] then
-    local target = state.source_map[lnum]
-    if target.action == "navigate" then
-      open_file_at(target.file, target.line)
-      return true
-    elseif target.action == "toggle_column" then
-      -- Find the owning query to update its columns and re-render
-      for _, q in ipairs(state.queries) do
-        if q.abs_lines then
-          for _, al in ipairs(q.abs_lines) do
-            if al == lnum then
-              update_and_render(bufnr, q, function()
-                q.columns[target.column] = not q.columns[target.column]
-              end)
-              return true
-            end
-          end
+  -- Then: per-query relative source maps. Recompute absolute rows from the
+  -- query extmark so mappings don't go stale when other sections insert/remove.
+  for _, q in ipairs(state.queries) do
+    local qrow = query_row_0(bufnr, q)
+    if qrow and q._lines_count and q.smap then
+      local start_line = qrow + 3
+      local end_line = start_line + q._lines_count - 1
+      if lnum >= start_line and lnum <= end_line then
+        local rel = lnum - start_line + 1
+        local action = q.smap[rel]
+        if action then
+          dispatch_smap(bufnr, q, action)
+          return true
         end
+      end
+    elseif q.region and q.smap and lnum >= q.region.start_line and lnum <= q.region.end_line then
+      -- Fallback if extmark is not available
+      local rel = lnum - q.region.start_line + 1
+      local action = q.smap[rel]
+      if action then
+        dispatch_smap(bufnr, q, action)
+        return true
       end
     end
   end
