@@ -756,6 +756,9 @@ local function on_write_pre(bufnr)
 end
 
 local function on_write_post(bufnr)
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath ~= "" then indexer.invalidate(filepath) end
+
   local state = get_state(bufnr)
   if not state._had_queries then return end
   state._had_queries = false
@@ -852,6 +855,20 @@ function M.setup_buf(bufnr)
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(bufnr) then M.render_all(bufnr) end
   end)
+end
+
+--- One-time global setup: when ANY vault .md file is written, invalidate its
+--- cache entry so that subsequent query executions see fresh file data.
+function M.setup_global()
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group   = vim.api.nvim_create_augroup("LogseqQueryGlobal", { clear = true }),
+    pattern = "*.md",
+    callback = function(ev)
+      local vault = config.current.vault_path
+      if not vault or not util.is_vault_file(ev.file, vault) then return end
+      indexer.invalidate(ev.file)
+    end,
+  })
 end
 
 return M

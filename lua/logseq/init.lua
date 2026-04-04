@@ -141,6 +141,7 @@ local function bootstrap(opts)
 
   -- One-time global setup
   pcall(function() require("logseq.backlinks").setup_global() end)
+  pcall(function() require("logseq.query_ui").setup_global() end)
 
   local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
 
