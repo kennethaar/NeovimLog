@@ -51,7 +51,13 @@ end
 M._state = {}   -- bufnr → { queries = [...] }
 
 local function get_state(bufnr)
-  if not M._state[bufnr] then M._state[bufnr] = { queries = {} } end
+  if not M._state[bufnr] then 
+    M._state[bufnr] = { 
+      queries = {},  -- array of query objects
+      regions = {},  -- query_idx → { start_line, end_line }
+      source_map = {}, -- abs_line -> { action=..., file=..., line=... }
+    } 
+  end
   return M._state[bufnr]
 end
 
@@ -75,20 +81,27 @@ local function query_row_0(bufnr, q)
   return (pos and #pos > 0) and pos[1] or nil
 end
 
---- Return the 0-indexed row of the first line of a query's rendered section.
-local function section_row_0(bufnr, q)
-  if not q.section_mark then return nil end
-  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, q.section_mark, {})
-  return (pos and #pos > 0) and pos[1] or nil
-end
-
 -- ── Section management ─────────────────────────────────────────────────
 
 local function remove_section(bufnr, q)
-  if not q.section_mark then return end
-  pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
-  q.section_mark       = nil
-  q.section_line_count = nil
+  if not q.region then return end
+  local state = get_state(bufnr)
+
+  -- Remove any entries we registered in the global source_map for this query
+  if q.abs_lines then
+    for _, abs in ipairs(q.abs_lines) do state.source_map[abs] = nil end
+    q.abs_lines = nil
+  end
+
+  -- Remove the lines from the buffer
+  with_modifiable(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, q.region.start_line - 1, q.region.end_line, false, {})
+  end)
+
+  -- Clear the region and header info
+  q.region = nil
+  q.header_abs = nil
+  q.header_buttons = nil
 end
 
 local function remove_all_sections(bufnr)
@@ -96,8 +109,7 @@ local function remove_all_sections(bufnr)
   -- Collect sections with their current absolute start rows.
   local with_rows = {}
   for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then with_rows[#with_rows + 1] = { q = q, s0 = s0 } end
+    if q.region then with_rows[#with_rows + 1] = { q = q, s0 = q.region.start_line } end
   end
   -- Remove bottom-to-top so earlier sections aren't shifted by later removals.
   table.sort(with_rows, function(a, b) return a.s0 > b.s0 end)
@@ -376,28 +388,52 @@ end
 local function render_one(bufnr, q)
   local qrow = query_row_0(bufnr, q)
   if not qrow then return end
-  if q.hidden then return end
-  local lines, smap, header_rel, header_buttons = build_display(q)
-  q.source_map     = smap
-  q.header_rel     = header_rel
-  q.header_buttons = header_buttons
-
-  local virt_lines = virt_lines_from_lines(lines)
-
-  if q.section_mark then
-    pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
+  if q.hidden then 
+    -- Remove the section if it exists
+    if q.region then
+      remove_section(bufnr, q)
+    end
+    return 
   end
 
-  q.section_mark = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow, 0, {
-    virt_lines       = virt_lines,
-    virt_lines_above = false,
-  })
-  q.section_line_count = #lines
+  -- Build display lines and source map (smap: rel_idx -> action)
+  local lines, smap, header_rel, header_buttons = build_display(q)
 
-  -- Apply additional highlights that need absolute positions
-  pcall(function()
-    apply_highlights(bufnr, qrow, lines, header_rel, header_buttons, q)
+  -- Remove existing section if it exists
+  if q.region then
+    remove_section(bufnr, q)
+  end
+
+  -- Insert the lines into the buffer immediately after the query line
+  local insert_pos = qrow + 1  -- 0-based insertion index (after query row)
+  local final_lines = {""}  -- leading blank separator line
+  vim.list_extend(final_lines, lines)
+
+  with_modifiable(bufnr, function()
+    vim.api.nvim_buf_set_lines(bufnr, insert_pos, insert_pos, false, final_lines)
   end)
+
+  -- Set up the region
+  local start_line = insert_pos + 1   -- 1-indexed first visible display line (lines[1])
+  local end_line = insert_pos + #final_lines
+  q.region = { start_line = start_line, end_line = end_line }
+
+  -- Register source_map entries at the buffer level (state.source_map)
+  local state = get_state(bufnr)
+  q.abs_lines = {}
+  for rel_line, info in pairs(smap) do
+    local abs_line = start_line + rel_line - 1
+    state.source_map[abs_line] = info
+    q.abs_lines[#q.abs_lines + 1] = abs_line
+  end
+
+  -- Store header info for button handling
+  q.header_rel = header_rel
+  q.header_buttons = header_buttons
+  q.header_abs = start_line + header_rel - 1
+
+  -- Apply highlights
+  apply_highlights(bufnr, start_line, lines, header_rel, header_buttons, q)
 end
 
 -- ── Query scanning ─────────────────────────────────────────────────────
@@ -464,17 +500,16 @@ function M.render_all(bufnr)
       query_str          = f.query_str,
       ast                = ast,
       parse_error        = err,
-      section_mark       = nil,
-      section_line_count = nil,
+      region             = nil,
       mode               = "list",
       columns            = vim.deepcopy(DEFAULT_COLUMNS),
       show_columns       = false,
       hidden             = false,
       results            = nil,
       loading            = false,
-      source_map         = nil,
       header_rel         = nil,
       header_buttons     = nil,
+      header_abs         = nil,
     }
     state.queries[#state.queries + 1] = q
 
@@ -514,12 +549,7 @@ function M.in_any_region(bufnr, lnum)
     if qrow and lnum == qrow + 1 then return true end
     
     -- Check if in the results section
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_start_1 = s0 + 1
-      local sec_end_1   = s0 + (q.section_line_count or 0)
-      if lnum >= sec_start_1 and lnum <= sec_end_1 then return true end
-    end
+    if q.region and lnum >= q.region.start_line and lnum <= q.region.end_line then return true end
   end
   return false
 end
@@ -561,39 +591,54 @@ end
 
 --- Handle <CR> inside a query section. Returns true if the press was consumed.
 function M.navigate(bufnr)
-  bufnr      = bufnr or vim.api.nvim_get_current_buf()
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  local lnum = cursor[1]        -- 1-indexed
-  local col  = cursor[2] + 1   -- 1-indexed byte
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local lnum = vim.api.nvim_win_get_cursor(0)[1]
+
+  if not M.in_any_region(bufnr, lnum) then return false end
 
   local state = get_state(bufnr)
+
+  -- First: header buttons (per-query)
   for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_start_1 = s0 + 1
-      local sec_end_1   = s0 + (q.section_line_count or 0)
+    if q.header_abs and lnum == q.header_abs then
+      local col = vim.api.nvim_win_get_cursor(0)[2] + 1  -- 1-indexed byte
+      for _, btn in ipairs(q.header_buttons or {}) do
+        if col >= btn.from and col <= btn.to then
+          handle_button(bufnr, q, btn.action, btn.data)
+          return true
+        end
+      end
+      return true
+    end
+  end
 
-      if lnum >= sec_start_1 and lnum <= sec_end_1 then
-        local rel = lnum - sec_start_1 + 1  -- 1-indexed within section
-
-        -- Header line: dispatch column-based buttons.
-        if rel == q.header_rel then
-          for _, btn in ipairs(q.header_buttons or {}) do
-            if col >= btn.from and col <= btn.to then
-              handle_button(bufnr, q, btn.action, btn.data)
+  -- Then: buffer-level source_map (shared across query sections)
+  if state.source_map and state.source_map[lnum] then
+    local target = state.source_map[lnum]
+    if target.action == "navigate" then
+      vim.cmd("normal! m'")
+      vim.cmd("edit " .. vim.fn.fnameescape(target.file))
+      if target.line and target.line > 0 then
+        pcall(vim.api.nvim_win_set_cursor, 0, { target.line, 0 })
+      end
+      return true
+    elseif target.action == "toggle_column" then
+      -- Find the owning query to update its columns and re-render
+      for _, q in ipairs(state.queries) do
+        if q.abs_lines then
+          for _, al in ipairs(q.abs_lines) do
+            if al == lnum then
+              remove_section(bufnr, q)
+              q.columns[target.column] = not q.columns[target.column]
+              render_one(bufnr, q)
               return true
             end
           end
-          return true
         end
-
-        -- Source map entry (navigation, column toggle, etc.)
-        local sa = q.source_map and q.source_map[rel]
-        if sa then dispatch_smap(bufnr, q, sa) end
-        return true
       end
     end
   end
+
   return false
 end
 
