@@ -40,10 +40,10 @@ local BOTTOMBAR_DEFS = {
   { key = "follow_link", label = "🔗↩️",  desc = "Follow link" },
   { key = "fold_toggle", label = "⚡za",   desc = "Toggle fold" },
   { key = "todo_cycle",  label = "✅^t",   desc = "Cycle TODO state" },
-  { key = "indent",      label = ">>",     desc = "Indent" },
-  { key = "unindent",    label = "<<",     desc = "Outdent" },
-  { key = "move_up",     label = "alt⬆️",  desc = "Move block up" },
-  { key = "move_down",   label = "alt⬇️",  desc = "Move block down" },
+  { key = "indent",      label = "▶️>>",   desc = "Indent" },
+  { key = "unindent",    label = "◀️<<",   desc = "Outdent" },
+  { key = "move_up",     label = "alt🔼",  desc = "Move block up" },
+  { key = "move_down",   label = "alt🔽",  desc = "Move block down" },
 }
 
 -- ── State ─────────────────────────────────────────────────────────────

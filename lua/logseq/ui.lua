@@ -767,18 +767,18 @@ function M.build_statusline()
     if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 %X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ %X") end
     if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@ ✅ %X") end
-    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ➡️ %X") end
-    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ⬅️ %X") end
-    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ ⬆️ %X") end
-    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ ⬇️ %X") end
+    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ▶️ %X") end
+    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ◀️ %X") end
+    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ 🔼 %X") end
+    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ 🔽 %X") end
   else
     if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 ↩️ %X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ za %X") end
     if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@ ✅ ^t %X") end
-    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ➡️ >> %X") end
-    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ⬅️ << %X") end
-    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ alt ⬆️ %X") end
-    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ alt ⬇️ %X") end
+    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ▶️ >> %X") end
+    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ◀️ << %X") end
+    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ alt 🔼 %X") end
+    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ alt 🔽 %X") end
   end
   
   if is_mobile then
