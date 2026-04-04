@@ -50,7 +50,7 @@ local function block_links_page(block, page_lower, namespace)
   while cur do
     for _, link in ipairs(cur.links) do
       local l = link:lower()
-      if l == page_lower or (namespace and l:find("^" .. page_lower .. "/", 1, true)) then return true end
+      if l == page_lower or (namespace and l:find(page_lower .. "/", 1, true)) then return true end
     end
     cur = cur.parent
   end
@@ -118,22 +118,22 @@ evaluators["between"] = function(ast, _block, ctx)
   return ctx.journal_date >= ast.from and ctx.journal_date <= ast.to
 end
 
-evaluators["and"] = function(ast, block, ctx)
+evaluators["and"] = function(ast, block, ctx, current_page_lower)
   for _, child in ipairs(ast.children) do
-    if not eval(child, block, ctx) then return false end
+    if not eval(child, block, ctx, current_page_lower) then return false end
   end
   return true
 end
 
-evaluators["or"] = function(ast, block, ctx)
+evaluators["or"] = function(ast, block, ctx, current_page_lower)
   for _, child in ipairs(ast.children) do
-    if eval(child, block, ctx) then return true end
+    if eval(child, block, ctx, current_page_lower) then return true end
   end
   return false
 end
 
-evaluators["not"] = function(ast, block, ctx)
-  return not eval(ast.children[1], block, ctx)
+evaluators["not"] = function(ast, block, ctx, current_page_lower)
+  return not eval(ast.children[1], block, ctx, current_page_lower)
 end
 
 eval = function(ast, block, ctx, current_page_lower)
