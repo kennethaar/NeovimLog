@@ -1,3 +1,12 @@
+-- DEBUG: Log autosave and query state events
+local function debug_log(msg)
+  local f = io.open('/tmp/logseq_query_debug.log', 'a')
+  if f then
+    f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' ' .. msg .. '\n')
+    f:close()
+  end
+end
+
 --- logseq.nvim query UI
 --- Renders Logseq simple query results inline, directly below each {{query}} block.
 --- Uses Neovim extmarks to track section positions across edits.
