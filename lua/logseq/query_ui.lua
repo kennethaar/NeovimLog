@@ -502,6 +502,7 @@ end
 --- Re-render all queries in the buffer (called on BufReadPost and after save).
 --- Optionally accepts preserved_state to restore query results across write cycles.
 function M.render_all(bufnr, preserved_state)
+  debug_log('render_all: bufnr=' .. tostring(bufnr) .. ' preserved_state=' .. tostring(preserved_state ~= nil))
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
 
@@ -748,6 +749,7 @@ end
 -- ── Buffer lifecycle ───────────────────────────────────────────────────
 
 local function on_write_pre(bufnr)
+  debug_log('on_write_pre: bufnr=' .. tostring(bufnr))
   local state = get_state(bufnr)
   state._had_queries = #state.queries > 0
   
@@ -775,6 +777,7 @@ local function on_write_pre(bufnr)
 end
 
 local function on_write_post(bufnr)
+  debug_log('on_write_post: bufnr=' .. tostring(bufnr))
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if filepath ~= "" then indexer.invalidate(filepath) end
 
