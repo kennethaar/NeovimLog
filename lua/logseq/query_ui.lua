@@ -370,33 +370,24 @@ local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, 
     end
   end
 
-  -- Page name highlighting
+  -- Page name / result highlighting — highlight the whole result line
   if q.mode == "list" then
     for i, line in ipairs(lines) do
       if line:match("^ • ") and not line:match("^  %(no results%)") and not line:match("^  Loading...") then
-        local page_part = line:match(" · (.+)$") or line:match("   (.+)$")
-        if page_part then
-          local page_start = line:find(page_part, 1, true)
-          if page_start then
-            vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, page_start - 1, -1)
-          end
-        end
+        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, 0, -1)
       end
     end
   elseif q.mode == "table" then
-    local page_col_start = 1
-    for _, key in ipairs(COLUMN_ORDER) do
-      if q.columns[key] then
-        if key == "page" then
-          local page_col_end = page_col_start + COLUMN_WIDTHS[key]
-          for i, line in ipairs(lines) do
-            if line:match("^ │ ") or line:match("^ ") then
-              vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, page_col_start, page_col_end)
-            end
-          end
-          break
-        end
-        page_col_start = page_col_start + COLUMN_WIDTHS[key] + 3
+    -- Find the column-separator line (contains '─┼─') after header, then highlight rows after it
+    local col_sep_rel = nil
+    for rel = header_rel + 1, #lines do
+      if lines[rel] == SEP then break end
+      if lines[rel]:find("─┼─", 1, true) then col_sep_rel = rel; break end
+    end
+    if col_sep_rel then
+      for i = col_sep_rel + 1, #lines do
+        if lines[i] == SEP then break end
+        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, 0, -1)
       end
     end
   end
