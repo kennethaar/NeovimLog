@@ -246,7 +246,8 @@ end
 ---@param ast        table
 ---@param on_complete function
 ---@param current_page string|nil  current page name for "current page" placeholder
-function M.run(ast, on_complete, current_page)
+---@param on_progress function|nil  optional progress callback (current, total)
+function M.run(ast, on_complete, current_page, on_progress)
   local raw_vault = config.current.vault_path
   if not raw_vault or raw_vault == "" then
     return vim.schedule(function() on_complete({}) end)
@@ -293,6 +294,8 @@ function M.run(ast, on_complete, current_page)
     for j = i, chunk_end do
       process_file(all_files[j], ast, uv, results, current_page_lower)
     end
+    if on_progress then on_progress(chunk_end, #all_files) end
+
     if chunk_end < #all_files then
       i = chunk_end + 1
       vim.schedule(process_chunk)

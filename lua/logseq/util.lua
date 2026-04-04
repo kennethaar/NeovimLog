@@ -198,6 +198,20 @@ function M.serialize_edn_dict(t)
   return "{" .. table.concat(parts, ", ") .. "}"
 end
 
+--- Render a simple text progress bar.
+---@param current number
+---@param total number
+---@param width number
+---@return string
+function M.make_progress_bar(current, total, width)
+  width = width or 20
+  local ratio = total > 0 and (current / total) or 1
+  local filled = math.floor(ratio * width)
+  local empty = width - filled
+  local pct = math.floor(ratio * 100)
+  return string.format("[%s%s] %d%%", string.rep("█", filled), string.rep(" ", empty), pct)
+end
+
 -- ── Filename Encoding/Decoding ────────────────────────────────────────
 
 --- Encode a page name to its on-disk filename.

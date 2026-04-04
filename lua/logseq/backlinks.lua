@@ -115,14 +115,7 @@ local function recalculate_region(bufnr)
   state.source_map = new_smap
 end
 
-local function make_progress_bar(current, total, width)
-  width = width or 20
-  local ratio = total > 0 and (current / total) or 1
-  local filled = math.floor(ratio * width)
-  local empty = width - filled
-  local pct = math.floor(ratio * 100)
-  return string.format("[%s%s] %d%%", string.rep("█", filled), string.rep(" ", empty), pct)
-end
+-- Progress bar: moved to util.make_progress_bar for reuse
 
 -- ── Filter helpers ────────────────────────────────────────────────────
 
@@ -525,7 +518,7 @@ function M.render_section(bufnr)
   -- Show loading indicator
   local line_count    = vim.api.nvim_buf_line_count(bufnr)
   local section_start = line_count + 1
-  local initial_bar   = make_progress_bar(0, 100, 20)
+  local initial_bar   = util.make_progress_bar(0, 100, 20)
   with_modifiable(bufnr, function()
     vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false,
       { SEPARATOR, string.format("── Loading Linked References... %s ──", initial_bar) })
@@ -574,7 +567,7 @@ function M.render_section(bufnr)
     -- ON PROGRESS: animate loading bar while either scan is still running
     function(current, total)
       if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible or not state.region then return end
-      local bar  = make_progress_bar(current, total, 20)
+      local bar  = util.make_progress_bar(current, total, 20)
       local text = string.format("── Loading Linked References... %s ──", bar)
       local text_line_0 = state.region.start_line
       with_modifiable(bufnr, function()

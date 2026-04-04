@@ -24,6 +24,7 @@ local config      = require("logseq.config")
 local qparser     = require("logseq.query_parser")
 local engine      = require("logseq.query_engine")
 local indexer     = require("logseq.indexer")
+local util        = require("logseq.util")
 
 local M = {}
 
@@ -257,7 +258,10 @@ local function build_display(q)
 
   if #results == 0 then
     if q.loading then
-      add("  Loading...")
+      local cur = q.progress_current or 0
+      local tot = q.progress_total or 100
+      local bar = util.make_progress_bar(cur, tot, 20)
+      add("  Loading... " .. bar)
     else
       add("  (no results)")
     end
@@ -373,19 +377,27 @@ local function render_one(bufnr, q)
   local qrow = query_row_0(bufnr, q)
   if not qrow then return end
   if q.hidden then return end
+  local lines, smap, header_rel, header_buttons = build_display(q)
+  q.source_map     = smap
+  q.header_rel     = header_rel
+  q.header_buttons = header_buttons
 
-  local lines = build_display(q)
   local virt_lines = virt_lines_from_lines(lines)
 
   if q.section_mark then
     pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
   end
 
-  q.section_mark       = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow, 0, {
-    virt_lines      = virt_lines,
+  q.section_mark = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow, 0, {
+    virt_lines       = virt_lines,
     virt_lines_above = false,
   })
   q.section_line_count = #lines
+
+  -- Apply additional highlights that need absolute positions
+  pcall(function()
+    apply_highlights(bufnr, qrow, lines, header_rel, header_buttons, q)
+  end)
 end
 
 -- ── Query scanning ─────────────────────────────────────────────────────
@@ -411,10 +423,20 @@ local function refresh_query(bufnr, q)
   end
   local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
   engine.run(q.ast, function(results)
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    q.results = results
-    render_one(bufnr, q)
-  end, current_page)
+      if not vim.api.nvim_buf_is_valid(bufnr) then return end
+      q.results = results
+      q.loading = false
+      q.progress_current = nil
+      q.progress_total = nil
+      render_one(bufnr, q)
+    end, current_page,
+    function(current, total)
+      if not vim.api.nvim_buf_is_valid(bufnr) then return end
+      q.loading = true
+      q.progress_current = current
+      q.progress_total = total
+      render_one(bufnr, q)
+    end)
 end
 
 --- Re-render all queries in the buffer (called on BufReadPost and after save).
@@ -460,8 +482,18 @@ function M.render_all(bufnr)
       engine.run(ast, function(results)
         if not vim.api.nvim_buf_is_valid(bufnr) then return end
         q.results = results
+        q.loading = false
+        q.progress_current = nil
+        q.progress_total = nil
         render_one(bufnr, q)
-      end, current_page)
+      end, current_page,
+      function(current, total)
+        if not vim.api.nvim_buf_is_valid(bufnr) then return end
+        q.loading = true
+        q.progress_current = current
+        q.progress_total = total
+        render_one(bufnr, q)
+      end)
     else
       q.results = {}
       vim.schedule(function()
@@ -629,8 +661,17 @@ function M.toggle_render_at_cursor(bufnr)
             if not vim.api.nvim_buf_is_valid(bufnr) then return end
             q.results = results
             q.loading = false
+            q.progress_current = nil
+            q.progress_total = nil
             render_one(bufnr, q)
-          end, current_page)
+          end, current_page,
+          function(current, total)
+            if not vim.api.nvim_buf_is_valid(bufnr) then return end
+            q.loading = true
+            q.progress_current = current
+            q.progress_total = total
+            render_one(bufnr, q)
+          end)
         else
           render_one(bufnr, q)
         end
