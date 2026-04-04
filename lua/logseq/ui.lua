@@ -700,11 +700,9 @@ local function setup_syntax(bufnr)
     pcall(vim.cmd, [[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
 
     -- TODO state keywords (matched at start of bullet content)
-    pcall(vim.cmd, [[syntax match LogseqTodoKw    /\v(^\s*- )\zsTODO\ze(\s|$)/ conceal cchar=◻]])
-    pcall(vim.cmd, [[syntax match LogseqDoingKw   /\v(^\s*- )\zsDOING\ze(\s|$)/ conceal cchar=⚙️]])
-    pcall(vim.cmd, [[syntax match LogseqWaitingKw /\v(^\s*- )\zsWAITING\ze(\s|$)/ conceal cchar=⏳]])
-    pcall(vim.cmd, [[syntax match LogseqDoneKw    /\v(^\s*- )\zsDONE\ze(\s|$)/ conceal cchar=✅]])
-    pcall(vim.cmd, [[syntax match LogseqCancelKw  /\v(^\s*- )\zsCANCELLED\ze(\s|$)/ conceal cchar=🚫]])
+    pcall(vim.cmd, [[syntax match LogseqTodoKw   /\v(^\s*- )\zs(TODO|WAITING|DOING)\ze(\s|$)/]])
+    pcall(vim.cmd, [[syntax match LogseqDoneKw   /\v(^\s*- )\zsDONE\ze(\s|$)/]])
+    pcall(vim.cmd, [[syntax match LogseqCancelKw /\v(^\s*- )\zsCANCELLED\ze(\s|$)/]])
 
     -- Block-level formatting: root=bold, level2=italic, level3+=normal
     -- contains=ALL lets nested items (links, tags) still apply their own highlight
@@ -743,8 +741,6 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqDeadline",     { fg = "#ea6962", ctermfg = 203 })
   vim.api.nvim_set_hl(0, "LogseqBreadcrumb",   { fg = "#7c6f64", ctermfg = 243 })
   vim.api.nvim_set_hl(0, "LogseqTodoKw",       { fg = "#e8a827", bold = true, ctermfg = 214, cterm = { bold = true } })
-  vim.api.nvim_set_hl(0, "LogseqDoingKw",      { fg = "#d8a657", bold = true, ctermfg = 214, cterm = { bold = true } })
-  vim.api.nvim_set_hl(0, "LogseqWaitingKw",    { fg = "#fabd2f", bold = true, ctermfg = 220, cterm = { bold = true } })
   vim.api.nvim_set_hl(0, "LogseqDoneKw",       { fg = "#a9b665", bold = true, ctermfg = 142, cterm = { bold = true } })
   vim.api.nvim_set_hl(0, "LogseqCancelKw",     { fg = "#928374", bold = true, ctermfg = 245, cterm = { bold = true } })
   vim.api.nvim_set_hl(0, "LogseqOverdueTodoKw",{ fg = "#ea6962", bold = true, ctermfg = 203, cterm = { bold = true } })
