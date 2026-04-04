@@ -209,7 +209,10 @@ local function make_header(q)
   end
 
   push(" ")
-  push("[~]",   "toggle_render")
+  -- Show the query string in the toggle button (truncated to 40 chars)
+  local query_display = q.query_str:sub(1, 40)
+  if #q.query_str > 40 then query_display = query_display .. "…" end
+  push("[" .. query_display .. "]",   "toggle_render")
   push("  ")
   push(q.mode == "list"  and "[LIST]"  or "[list]",  "set_mode", "list")
   push("  ")
@@ -525,8 +528,8 @@ function M.render_all(bufnr)
       mode               = "list",
       columns            = vim.deepcopy(DEFAULT_COLUMNS),
       show_columns       = false,
-      hidden             = false,
-      results            = nil,
+      hidden             = true,  -- Start with query toggled off
+      results            = nil,   -- No results yet; will execute when toggled on
       loading            = false,
       header_rel         = nil,
       header_buttons     = nil,
@@ -535,9 +538,11 @@ function M.render_all(bufnr)
     state.queries[#state.queries + 1] = q
 
     if ast then
-      execute_query(bufnr, q)
+      -- Don't execute by default; just render the collapsed view
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(bufnr) then render_one(bufnr, q) end
+      end)
     else
-      q.results = {}
       vim.schedule(function()
         if vim.api.nvim_buf_is_valid(bufnr) then render_one(bufnr, q) end
       end)
