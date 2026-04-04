@@ -781,6 +781,10 @@ function M.build_statusline()
     if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ alt ⬇️ %X") end
   end
   
+  if is_mobile then
+    return table.concat(parts, string.rep(" ", 5))
+  end
+
   return table.concat(parts, "")
 end
 
