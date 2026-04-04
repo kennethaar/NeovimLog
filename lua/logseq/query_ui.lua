@@ -99,13 +99,17 @@ end
 
 local function execute_query(bufnr, q)
   if not q.ast then return end
+  -- Prevent duplicate concurrent executions for the same query object.
+  if q._running then return end
+  q._running = true
   local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
   engine.run(q.ast, function(results)
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    if not vim.api.nvim_buf_is_valid(bufnr) then q._running = false; return end
     q.results = results
     q.loading = false
     q.progress_current = nil
     q.progress_total = nil
+    q._running = false
     render_one(bufnr, q)
   end, current_page,
   function(current, total)
@@ -436,7 +440,9 @@ render_one = function(bufnr, q)
   end)
 
   -- Set up the region
-  local start_line = insert_pos + 1   -- 1-indexed first visible display line (lines[1])
+  -- `final_lines` includes a leading blank, so the first `lines[1]` lands
+  -- at buffer line `insert_pos + 2` (1-indexed). Use that as `start_line`.
+  local start_line = insert_pos + 2   -- 1-indexed first visible display line (lines[1])
   local end_line = insert_pos + #final_lines
   q.region = { start_line = start_line, end_line = end_line }
 
