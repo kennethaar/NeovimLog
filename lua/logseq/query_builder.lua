@@ -243,6 +243,7 @@ end
 local PRED_TYPES = {
   "[[page link]]",
   "todo states",
+  "task states",
   "tags",
   "property key/value",
   "page-property key/value",

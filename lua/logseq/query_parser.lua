@@ -7,6 +7,7 @@
 ---   (or  EXPR...)              boolean or
 ---   (not EXPR)                 boolean not
 ---   (todo STATE...)            TODO state filter
+---   (task STATE...)            leaf-TODO (task) filter
 ---   (tags TAG...)              tag filter
 ---   (property KEY [VAL])       block property filter
 ---   (page-property KEY [VAL])  page-level property filter
@@ -152,6 +153,13 @@ predicate_parsers["todo"] = function(tokens, pos)
   return { type = "todo", states = states }, new_pos, nil
 end
 
+predicate_parsers["task"] = function(tokens, pos)
+  local words, new_pos = collect_words(tokens, pos)
+  local states = {}
+  for _, w in ipairs(words) do states[#states + 1] = w:upper() end
+  return { type = "task", states = states }, new_pos, nil
+end
+
 predicate_parsers["tags"] = function(tokens, pos)
   local words, new_pos = collect_words(tokens, pos)
   return { type = "tags", tags = words }, new_pos, nil
@@ -252,6 +260,7 @@ function M.to_string(ast)
   local serializers = {
     page_link     = function(n) return "[[" .. n.page .. "]]" end,
     todo          = function(n) return "(todo " .. table.concat(n.states or {}, " ") .. ")" end,
+    task          = function(n) return "(task " .. table.concat(n.states or {}, " ") .. ")" end,
     tags          = function(n) return "(tags " .. table.concat(n.tags  or {}, " ") .. ")" end,
     between       = function(n) return "(between <" .. n.from .. "> <" .. n.to .. ">)" end,
     property      = function(n)
