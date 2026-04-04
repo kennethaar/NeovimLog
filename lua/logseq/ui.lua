@@ -106,34 +106,77 @@ function M.winbar()
   local norm_path   = util.normalize(filepath)
   local is_journal  = norm_path:find(util.normalize(vault .. "/journals"), 1, true) ~= nil
 
+  -- Responsive behavior based on current window width
+  local ok_w, win_width = pcall(vim.api.nvim_win_get_width, winid)
+  if not ok_w or not win_width then
+    win_width = vim.api.nvim_win_get_width(0)
+  end
+
+  local function format_time(time_str)
+    local formatted = time_str:gsub("<1 hr", "0h"):gsub(" hr", "h"):gsub(" min", "m")
+    return formatted
+  end
+
+  -- Build nav buttons differently for narrow vs wide windows
   local nav_parts = {}
-  if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
-  if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
-  if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
-  if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+  if win_width < 60 then
+    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@🔍%X") end
+    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@🖇️%X") end
+    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@🗓️%X") end
+    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
 
-  local nav_btns  = "    %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
-  local close_btn = ""
+    local nav_btns  = "  %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
+    local close_btn = ""
 
-  if M._state.saved_buffers[bufnr] then
-    return " " .. WINBAR_LEFT .. nav_btns .. "%<   ✓ Saved"
-  end
-
-  local ok, reminders = pcall(require, "logseq.reminders")
-  if ok then
-    local event_text = reminders.next_meeting_str()
-    if event_text ~= "" then
-      return " " .. WINBAR_LEFT .. nav_btns .. "%<  │  " .. event_text
+    if M._state.saved_buffers[bufnr] then
+      return " " .. WINBAR_LEFT .. nav_btns .. "%<   ✓ Saved"
     end
-  end
 
-  local crumb = get_breadcrumb(winid, bufnr)
-  if crumb ~= "" then
-    local safe = crumb:gsub("%%", "%%%%")
-    return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
-  end
+    local ok, reminders = pcall(require, "logseq.reminders")
+    if ok then
+      local event_text = reminders.next_meeting_str()
+      if event_text ~= "" then
+        local short_time = format_time(event_text)
+        return " " .. WINBAR_LEFT .. nav_btns .. "%<  " .. short_time .. "  "
+      end
+    end
 
-  return " " .. WINBAR_LEFT .. nav_btns .. close_btn
+    local crumb = get_breadcrumb(winid, bufnr)
+    if crumb ~= "" then
+      local safe = crumb:gsub("%%", "%%%%")
+      return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
+    end
+
+    return " " .. WINBAR_LEFT .. nav_btns .. close_btn
+  else
+    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@^k🔍%X") end
+    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@b🖇️%X") end
+    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@c🗓️%X") end
+    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@n🌳%X") end
+
+    local nav_btns  = "    %#Comment#" .. table.concat(nav_parts, "  ") .. "%#Normal#"
+    local close_btn = ""
+
+    if M._state.saved_buffers[bufnr] then
+      return " " .. WINBAR_LEFT .. nav_btns .. "%<   ✓ Saved"
+    end
+
+    local ok, reminders = pcall(require, "logseq.reminders")
+    if ok then
+      local event_text = reminders.next_meeting_str()
+      if event_text ~= "" then
+        return " " .. WINBAR_LEFT .. nav_btns .. "%<  │  " .. event_text
+      end
+    end
+
+    local crumb = get_breadcrumb(winid, bufnr)
+    if crumb ~= "" then
+      local safe = crumb:gsub("%%", "%%%%")
+      return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
+    end
+
+    return " " .. WINBAR_LEFT .. nav_btns .. close_btn
+  end
 end
 
 -- ── Page/Journal Tabline (above winbar) ──────────────────────────────
@@ -592,6 +635,13 @@ local function setup_syntax(bufnr)
     -- Hide id:: property lines entirely
     pcall(vim.cmd, [[syntax match LogseqUID /^\s*id::.*$/ conceal]])
 
+    -- Conceal leading '-' and render as a centered bullet •
+    pcall(vim.cmd, [[syntax match LogseqDash /^\s*\zs-\ze\s/ conceal cchar=•]])
+
+    -- Dim all property lines like "key:: value" by linking to Comment
+    pcall(vim.cmd, [[syntax match LogseqAllProperties /^\s*[a-zA-Z0-9_-]\+::.*/]])
+    pcall(vim.cmd, [[highlight default link LogseqAllProperties Comment]])
+
     -- Calendar time slots
     pcall(vim.fn.matchadd, "LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
     pcall(vim.fn.matchadd, "LogseqTime", [[(Heldags)]])
@@ -858,6 +908,7 @@ function M.setup_buf(bufnr)
   })
 
   vim.opt_local.conceallevel = 2
+  vim.opt_local.concealcursor = "nc"
   setup_syntax(bufnr)
   setup_highlights()
 
