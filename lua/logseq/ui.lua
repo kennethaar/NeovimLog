@@ -700,11 +700,11 @@ local function setup_syntax(bufnr)
     pcall(vim.cmd, [[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
 
     -- TODO state keywords (matched at start of bullet content)
-    pcall(vim.cmd, [[syntax match LogseqTodoKw    /\v(^\s*- )\zsTODO\ze(\s|$)/ contained containedin=ALL conceal cchar=◻]])
-    pcall(vim.cmd, [[syntax match LogseqDoingKw   /\v(^\s*- )\zsDOING\ze(\s|$)/ contained containedin=ALL conceal cchar=⚙]])
-    pcall(vim.cmd, [[syntax match LogseqWaitingKw /\v(^\s*- )\zsWAITING\ze(\s|$)/ contained containedin=ALL conceal cchar=⏳]])
-    pcall(vim.cmd, [[syntax match LogseqDoneKw    /\v(^\s*- )\zsDONE\ze(\s|$)/ contained containedin=ALL conceal cchar=✅]])
-    pcall(vim.cmd, [[syntax match LogseqCancelKw  /\v(^\s*- )\zsCANCELLED\ze(\s|$)/ contained containedin=ALL conceal cchar=🚫]])
+    pcall(vim.cmd, [[syntax match LogseqTodoKw    /\v(^\s*- )\zsTODO\ze(\s|$)/ conceal cchar=◻]])
+    pcall(vim.cmd, [[syntax match LogseqDoingKw   /\v(^\s*- )\zsDOING\ze(\s|$)/ conceal cchar=⚙️]])
+    pcall(vim.cmd, [[syntax match LogseqWaitingKw /\v(^\s*- )\zsWAITING\ze(\s|$)/ conceal cchar=⏳]])
+    pcall(vim.cmd, [[syntax match LogseqDoneKw    /\v(^\s*- )\zsDONE\ze(\s|$)/ conceal cchar=✅]])
+    pcall(vim.cmd, [[syntax match LogseqCancelKw  /\v(^\s*- )\zsCANCELLED\ze(\s|$)/ conceal cchar=🚫]])
 
     -- Block-level formatting: root=bold, level2=italic, level3+=normal
     -- contains=ALL lets nested items (links, tags) still apply their own highlight
