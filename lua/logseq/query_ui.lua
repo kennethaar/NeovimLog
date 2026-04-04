@@ -500,7 +500,8 @@ local function refresh_query(bufnr, q)
 end
 
 --- Re-render all queries in the buffer (called on BufReadPost and after save).
-function M.render_all(bufnr)
+--- Optionally accepts preserved_state to restore query results across write cycles.
+function M.render_all(bufnr, preserved_state)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
 
@@ -519,18 +520,22 @@ function M.render_all(bufnr)
   local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
   for _, f in ipairs(found) do
     local ast, err = qparser.parse(f.query_str)
+    
+    -- Restore preserved state if available for this query
+    local preserved = preserved_state and preserved_state[f.query_str]
+    
     local q = {
       query_mark         = vim.api.nvim_buf_set_extmark(bufnr, NS, f.row_0, 0, {}),
       query_str          = f.query_str,
       ast                = ast,
       parse_error        = err,
       region             = nil,
-      mode               = "list",
-      columns            = vim.deepcopy(DEFAULT_COLUMNS),
-      show_columns       = false,
-      hidden             = true,  -- Start with query toggled off
-      results            = nil,   -- No results yet; will execute when toggled on
-      loading            = false,
+      mode               = preserved and preserved.mode or "list",
+      columns            = preserved and vim.deepcopy(preserved.columns) or vim.deepcopy(DEFAULT_COLUMNS),
+      show_columns       = preserved and preserved.show_columns or false,
+      hidden             = preserved and preserved.hidden or true,  -- Start with query toggled off
+      results            = preserved and preserved.results or nil,   -- Restore results if available
+      loading            = preserved and preserved.loading or false,
       header_rel         = nil,
       header_buttons     = nil,
       header_abs         = nil,
@@ -745,6 +750,20 @@ end
 local function on_write_pre(bufnr)
   local state = get_state(bufnr)
   state._had_queries = #state.queries > 0
+  
+  -- Preserve query results/state before clearing (keyed by query string)
+  state._preserved_state = {}
+  for _, q in ipairs(state.queries) do
+    state._preserved_state[q.query_str] = {
+      results = q.results,
+      mode = q.mode,
+      columns = vim.deepcopy(q.columns),
+      show_columns = q.show_columns,
+      hidden = q.hidden,
+      loading = q.loading,
+    }
+  end
+  
   remove_all_sections(bufnr)
   for _, q in ipairs(state.queries) do
     if q.query_mark then
@@ -762,8 +781,13 @@ local function on_write_post(bufnr)
   local state = get_state(bufnr)
   if not state._had_queries then return end
   state._had_queries = false
+  
+  -- Pass the preserved state to render_all so it can restore results
+  local preserved = state._preserved_state
+  state._preserved_state = nil
+  
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then M.render_all(bufnr) end
+    if vim.api.nvim_buf_is_valid(bufnr) then M.render_all(bufnr, preserved) end
   end)
 end
 
