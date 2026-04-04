@@ -106,9 +106,40 @@ local remove_section
 
 -- Small helpers to reduce duplicated code and nested conditionals
 local function open_file_at(file, line)
+  if not file or file == "" then return end
   vim.cmd("normal! m'")
   vim.cmd("edit " .. vim.fn.fnameescape(file))
   if line and line > 0 then pcall(vim.api.nvim_win_set_cursor, 0, { line, 0 }) end
+end
+
+local function open_result_target(r)
+  if not r then return false end
+
+  if r.source_file and r.source_file ~= "" then
+    open_file_at(r.source_file, r.line_start)
+    return true
+  end
+
+  if not r.source_page or r.source_page == "" then return false end
+  local vault = util.normalize(config.current.vault_path or "")
+  if vault == "" then return false end
+
+  local candidate = vault .. "/pages/" .. util.encode_filename(r.source_page)
+  if vim.fn.filereadable(candidate) == 1 then
+    open_file_at(candidate, r.line_start or 1)
+    return true
+  end
+
+  return false
+end
+
+local function list_result_index_at_line(bufnr, start_line, lnum)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, lnum, false)
+  local idx = 0
+  for _, line in ipairs(lines) do
+    if line:match("^ • ") then idx = idx + 1 end
+  end
+  return idx > 0 and idx or nil
 end
 
 local function update_and_render(bufnr, q, updater)
@@ -347,7 +378,12 @@ local function build_display(q)
   local line_fn = q.mode == "table" and table_line or list_line
 
   for _, r in ipairs(results) do
-    add(line_fn(r), { action = "navigate", file = r.source_file, line = r.line_start })
+    add(line_fn(r), {
+      action = "navigate",
+      file = r.source_file,
+      line = r.line_start,
+      page = r.source_page,
+    })
   end
 
   if #results == 0 then
@@ -649,13 +685,23 @@ end
 
 local function dispatch_smap(bufnr, q, action)
   if action.action == "navigate" then
-    open_file_at(action.file, action.line)
+    if open_result_target({
+      source_file = action.file,
+      line_start = action.line,
+      source_page = action.page,
+    }) then
+      return true
+    end
+    return false
 
   elseif action.action == "toggle_column" then
     update_and_render(bufnr, q, function()
       q.columns[action.column] = not q.columns[action.column]
     end)
+    return true
   end
+
+  return false
 end
 
 --- Handle <CR> inside a query section. Returns true if the press was consumed.
@@ -694,8 +740,16 @@ function M.navigate(bufnr)
         local rel = lnum - start_line + 1
         local action = q.smap[rel]
         if action then
-          dispatch_smap(bufnr, q, action)
-          return true
+          if dispatch_smap(bufnr, q, action) then return true end
+        end
+
+        -- Fallback: infer list-row result index so Enter still works even if
+        -- row mappings are stale/missing for this render cycle.
+        if q.mode == "list" and q.results and #q.results > 0 then
+          local idx = list_result_index_at_line(bufnr, start_line, lnum)
+          if idx and q.results[idx] and open_result_target(q.results[idx]) then
+            return true
+          end
         end
       end
     elseif q.region and q.smap and lnum >= q.region.start_line and lnum <= q.region.end_line then
@@ -703,8 +757,7 @@ function M.navigate(bufnr)
       local rel = lnum - q.region.start_line + 1
       local action = q.smap[rel]
       if action then
-        dispatch_smap(bufnr, q, action)
-        return true
+        if dispatch_smap(bufnr, q, action) then return true end
       end
     end
   end
