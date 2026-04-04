@@ -561,6 +561,14 @@ function M.render_all(bufnr, preserved_state)
       header_buttons     = nil,
       header_abs         = nil,
     }
+
+    -- Debug log per query: query string, hidden state, number of results
+    local num_results = (q.results and type(q.results) == 'table') and tostring(#q.results) or tostring(q.results)
+    debug_log(string.format(
+      'render_all: query="%s" hidden=%s results=%s',
+      tostring(q.query_str), tostring(q.hidden), tostring(num_results)
+    ))
+
     state.queries[#state.queries + 1] = q
 
     if ast then
