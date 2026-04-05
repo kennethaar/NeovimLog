@@ -361,13 +361,14 @@ end
 
 -- ── Action dispatcher ──────────────────────────────────────────────────
 
-local function execute_action(state, action, data)
-  if action == "cancel" then
+local action_handlers = {
+  cancel = function(state, _data)
     if state.win_id and vim.api.nvim_win_is_valid(state.win_id) then
       vim.api.nvim_win_close(state.win_id, true)
     end
+  end,
 
-  elseif action == "insert" then
+  insert = function(state, _data)
     local qs = build_query_str(state)
     if qs == "" then
       vim.notify("[logseq.nvim] Add at least one predicate.", vim.log.levels.WARN)
@@ -377,12 +378,14 @@ local function execute_action(state, action, data)
       vim.api.nvim_win_close(state.win_id, true)
     end
     if state.on_insert then state.on_insert(qs, state.replace_line) end
+  end,
 
-  elseif action == "set_combine" then
+  set_combine = function(state, data)
     state.combine = data
     refresh_form(state)
+  end,
 
-  elseif action == "add_pred" then
+  add_pred = function(state, _data)
     vim.ui.select(PRED_TYPES, { prompt = "Add predicate:" }, function(choice)
       if not choice then return end
       ask_predicate(choice, nil, function(pred)
@@ -390,12 +393,11 @@ local function execute_action(state, action, data)
         refresh_form(state)
       end)
     end)
+  end,
 
-  elseif action == "edit_pred" then
-    local idx = data
-    local p   = state.predicates[idx]
+  edit_pred = function(state, idx)
+    local p = state.predicates[idx]
     if not p then return end
-
     local type_map = {
       page_link     = PRED_TYPES[1], todo          = PRED_TYPES[2],
       task          = PRED_TYPES[3], tags          = PRED_TYPES[4],
@@ -404,16 +406,21 @@ local function execute_action(state, action, data)
     }
     local choice = type_map[p.type]
     if not choice then return end
-
     ask_predicate(choice, p, function(new_pred)
       state.predicates[idx] = new_pred
       refresh_form(state)
     end)
+  end,
 
-  elseif action == "delete_pred" then
-    table.remove(state.predicates, data)
+  delete_pred = function(state, idx)
+    table.remove(state.predicates, idx)
     refresh_form(state)
-  end
+  end,
+}
+
+local function execute_action(state, action, data)
+  local fn = action_handlers[action]
+  if fn then fn(state, data) end
 end
 
 --- Dispatch a <CR> press inside the builder at (cursor_line, cursor_col).

@@ -53,6 +53,7 @@ end
 
 _G.logseq_rename_page  = function(...) M.rename_page(...) end
 _G.logseq_close_win    = function(...) M.close_win(...) end
+_G.logseq_toggle_query_render = function() require("logseq.query_ui").toggle_render() end
 
 -- Winbar buttons (file/nav)
 _G.logseq_sl_search    = function() require("logseq.file_search").open() end

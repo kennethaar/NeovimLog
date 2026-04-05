@@ -362,6 +362,7 @@ end
 function M.render_all(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  if get_state(bufnr).render_disabled then return end
 
   local state = get_state(bufnr)
   remove_all_sections(bufnr)
@@ -411,35 +412,41 @@ end
 
 -- ── Navigation & interaction ───────────────────────────────────────────
 
---- True if lnum (1-indexed) is inside any rendered query section.
-function M.in_any_region(bufnr, lnum)
-  local state = get_state(bufnr)
-  for _, q in ipairs(state.queries) do
+--- Return the query whose rendered section contains lnum (1-indexed), or nil.
+local function find_query_at(bufnr, lnum)
+  for _, q in ipairs(get_state(bufnr).queries) do
     local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_start_1 = s0 + 1
-      local sec_end_1   = s0 + (q.section_line_count or 0)
-      if lnum >= sec_start_1 and lnum <= sec_end_1 then return true end
+    if s0 and lnum >= s0 + 1 and lnum <= s0 + (q.section_line_count or 0) then
+      return q, s0
     end
   end
-  return false
 end
 
-local function handle_button(bufnr, q, action, data)
-  if action == "refresh" then
-    refresh_query(bufnr, q)
+--- True if lnum (1-indexed) is inside any rendered query section.
+function M.in_any_region(bufnr, lnum)
+  return find_query_at(bufnr, lnum) ~= nil
+end
 
-  elseif action == "set_mode" then
+local button_actions = {
+  refresh = function(bufnr, q, _data)
+    refresh_query(bufnr, q)
+  end,
+  set_mode = function(bufnr, q, data)
     remove_section(bufnr, q)
     q.mode         = data
     q.show_columns = false
     render_one(bufnr, q)
-
-  elseif action == "toggle_col_picker" then
+  end,
+  toggle_col_picker = function(bufnr, q, _data)
     remove_section(bufnr, q)
     q.show_columns = not q.show_columns
     render_one(bufnr, q)
-  end
+  end,
+}
+
+local function handle_button(bufnr, q, action, data)
+  local fn = button_actions[action]
+  if fn then fn(bufnr, q, data) end
 end
 
 local function dispatch_smap(bufnr, q, action)
@@ -459,88 +466,64 @@ end
 function M.navigate(bufnr)
   bufnr      = bufnr or vim.api.nvim_get_current_buf()
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local lnum = cursor[1]        -- 1-indexed
-  local col  = cursor[2] + 1   -- 1-indexed byte
+  local lnum = cursor[1]
+  local col  = cursor[2] + 1
 
-  local state = get_state(bufnr)
-  for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_start_1 = s0 + 1
-      local sec_end_1   = s0 + (q.section_line_count or 0)
+  local q, s0 = find_query_at(bufnr, lnum)
+  if not q then return false end
 
-      if lnum >= sec_start_1 and lnum <= sec_end_1 then
-        local rel = lnum - sec_start_1 + 1  -- 1-indexed within section
+  local rel = lnum - s0   -- 1-indexed within section
 
-        -- Header line: dispatch column-based buttons.
-        if rel == q.header_rel then
-          for _, btn in ipairs(q.header_buttons or {}) do
-            if col >= btn.from and col <= btn.to then
-              handle_button(bufnr, q, btn.action, btn.data)
-              return true
-            end
-          end
-          return true
-        end
-
-        -- Source map entry (navigation, column toggle, etc.)
-        local sa = q.source_map and q.source_map[rel]
-        if sa then dispatch_smap(bufnr, q, sa) end
+  if rel == q.header_rel then
+    for _, btn in ipairs(q.header_buttons or {}) do
+      if col >= btn.from and col <= btn.to then
+        handle_button(bufnr, q, btn.action, btn.data)
         return true
       end
     end
+    return true
   end
-  return false
+
+  local sa = q.source_map and q.source_map[rel]
+  if sa then dispatch_smap(bufnr, q, sa) end
+  return true
 end
 
 --- Refresh the query whose section contains lnum (1-indexed).
 local function refresh_at(bufnr, lnum)
-  local state = get_state(bufnr)
-  for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_end_1 = s0 + (q.section_line_count or 0)
-      if lnum >= s0 + 1 and lnum <= sec_end_1 then
-        refresh_query(bufnr, q)
-        return
-      end
-    end
-  end
+  local q = find_query_at(bufnr, lnum)
+  if q then refresh_query(bufnr, q) end
 end
 
 --- Toggle list/table mode for the query under the cursor.
 local function toggle_mode_at(bufnr, lnum)
-  local state = get_state(bufnr)
-  for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_end_1 = s0 + (q.section_line_count or 0)
-      if lnum >= s0 + 1 and lnum <= sec_end_1 then
-        remove_section(bufnr, q)
-        q.mode         = q.mode == "list" and "table" or "list"
-        q.show_columns = false
-        render_one(bufnr, q)
-        return
-      end
-    end
-  end
+  local q = find_query_at(bufnr, lnum)
+  if not q then return end
+  remove_section(bufnr, q)
+  q.mode         = q.mode == "list" and "table" or "list"
+  q.show_columns = false
+  render_one(bufnr, q)
 end
 
 --- Toggle the column picker for the query under the cursor (table mode only).
 local function toggle_cols_at(bufnr, lnum)
+  local q = find_query_at(bufnr, lnum)
+  if not q or q.mode ~= "table" then return end
+  remove_section(bufnr, q)
+  q.show_columns = not q.show_columns
+  render_one(bufnr, q)
+end
+
+--- Toggle query rendering on/off for bufnr.
+function M.toggle_render(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
   local state = get_state(bufnr)
-  for _, q in ipairs(state.queries) do
-    local s0 = q.section_mark and section_row_0(bufnr, q)
-    if s0 then
-      local sec_end_1 = s0 + (q.section_line_count or 0)
-      if lnum >= s0 + 1 and lnum <= sec_end_1 then
-        if q.mode ~= "table" then return end
-        remove_section(bufnr, q)
-        q.show_columns = not q.show_columns
-        render_one(bufnr, q)
-        return
-      end
-    end
+  if state.render_disabled then
+    state.render_disabled = false
+    M.render_all(bufnr)
+  else
+    state.render_disabled = true
+    remove_all_sections(bufnr)
   end
 end
 
