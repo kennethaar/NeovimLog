@@ -41,6 +41,7 @@ end
 ---   c     toggle column picker (table mode only)
 
 local config      = require("logseq.config")
+local indexer     = require("logseq.indexer")
 local qparser     = require("logseq.query_parser")
 local engine      = require("logseq.query_engine")
 local indexer     = require("logseq.indexer")
@@ -154,20 +155,22 @@ local function execute_query(bufnr, q)
   if q._running then return end
   q._running = true
   local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
-  engine.run(q.ast, function(results)
+  engine.run(q.ast, {
+    current_page = current_page,
+    on_progress  = function(current, total)
+      if not vim.api.nvim_buf_is_valid(bufnr) then return end
+      q.loading = true
+      q.progress_current = current
+      q.progress_total = total
+      render_one(bufnr, q)
+    end,
+  }, function(results)
     if not vim.api.nvim_buf_is_valid(bufnr) then q._running = false; return end
     q.results = results
     q.loading = false
     q.progress_current = nil
     q.progress_total = nil
     q._running = false
-    render_one(bufnr, q)
-  end, current_page,
-  function(current, total)
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    q.loading = true
-    q.progress_current = current
-    q.progress_total = total
     render_one(bufnr, q)
   end)
 end
@@ -533,6 +536,10 @@ end
 
 -- ── Query scanning ─────────────────────────────────────────────────────
 
+local function current_page_name(bufnr)
+  return indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
+end
+
 local function scan_queries(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local found = {}
@@ -552,7 +559,15 @@ local function refresh_query(bufnr, q)
     render_one(bufnr, q)
     return
   end
+<<<<<<< HEAD
   execute_query(bufnr, q)
+=======
+  engine.run(q.ast, { current_page = current_page_name(bufnr) }, function(results)
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    q.results = results
+    render_one(bufnr, q)
+  end)
+>>>>>>> 007b83a (feat: current-page placeholder and namespace parent matching in queries)
 end
 
 --- Re-render all queries in the buffer (called on BufReadPost and after save).
@@ -613,9 +628,16 @@ function M.render_all(bufnr, preserved_state)
     state.queries[#state.queries + 1] = q
 
     if ast then
+<<<<<<< HEAD
       -- Don't execute by default; just render the collapsed view
       vim.schedule(function()
         if vim.api.nvim_buf_is_valid(bufnr) then render_one(bufnr, q) end
+=======
+      engine.run(ast, { current_page = current_page_name(bufnr) }, function(results)
+        if not vim.api.nvim_buf_is_valid(bufnr) then return end
+        q.results = results
+        render_one(bufnr, q)
+>>>>>>> 007b83a (feat: current-page placeholder and namespace parent matching in queries)
       end)
     else
       vim.schedule(function()

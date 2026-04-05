@@ -27,16 +27,6 @@ local function get_direct_todo_state(block)
   return get_todo_state(block.content)
 end
 
---- Walk up the parent chain to find the nearest TODO state.
-local function effective_todo(block)
-  local cur = block
-  while cur do
-    local s = get_todo_state(cur.content)
-    if s then return s end
-    cur = cur.parent
-  end
-end
-
 --- Collect tags from the block and all its ancestors (Logseq tag inheritance).
 local function effective_tags(block)
   local tags, seen = {}, {}
@@ -50,13 +40,15 @@ local function effective_tags(block)
   return tags
 end
 
---- True if the block (or any ancestor) links to page_lower (or namespace).
-local function block_links_page(block, page_lower, namespace)
+--- True if the block (or any ancestor) links to page_lower or any of its
+--- namespace children (page_lower + "/" prefix).
+local function block_links_page(block, page_lower)
+  local ns_prefix = page_lower .. "/"
   local cur = block
   while cur do
     for _, link in ipairs(cur.links) do
-      local l = link:lower()
-      if l == page_lower or (namespace and l:find(page_lower .. "/", 1, true)) then return true end
+      local ll = link:lower()
+      if ll == page_lower or ll:sub(1, #ns_prefix) == ns_prefix then return true end
     end
     cur = cur.parent
   end
@@ -69,12 +61,12 @@ local eval  -- forward declaration
 
 local evaluators = {}
 
-evaluators["page_link"] = function(ast, block, ctx, current_page_lower)
-  local query_page = ast.page:lower()
-  if query_page == "current page" then
-    query_page = current_page_lower or ""
-  end
-  return block_links_page(block, query_page, true)
+evaluators["page_link"] = function(ast, block, ctx)
+  -- "current page" is a dynamic placeholder resolved at run-time.
+  local page = ast.page:lower() == "current page"
+    and (ctx.current_page or ""):lower()
+    or   ast.page:lower()
+  return page ~= "" and block_links_page(block, page)
 end
 
 evaluators["todo"] = function(ast, _block, ctx)
@@ -97,9 +89,7 @@ end
 
 local function normalize_property_key(key)
   if not key or key == "" then return "" end
-  if key:sub(1, 1) == ":" then
-    return key:sub(2):lower()
-  end
+  if key:sub(1, 1) == ":" then return key:sub(2):lower() end
   return key:lower()
 end
 
@@ -124,28 +114,28 @@ evaluators["between"] = function(ast, _block, ctx)
   return ctx.journal_date >= ast.from and ctx.journal_date <= ast.to
 end
 
-evaluators["and"] = function(ast, block, ctx, current_page_lower)
+evaluators["and"] = function(ast, block, ctx)
   for _, child in ipairs(ast.children) do
-    if not eval(child, block, ctx, current_page_lower) then return false end
+    if not eval(child, block, ctx) then return false end
   end
   return true
 end
 
-evaluators["or"] = function(ast, block, ctx, current_page_lower)
+evaluators["or"] = function(ast, block, ctx)
   for _, child in ipairs(ast.children) do
-    if eval(child, block, ctx, current_page_lower) then return true end
+    if eval(child, block, ctx) then return true end
   end
   return false
 end
 
-evaluators["not"] = function(ast, block, ctx, current_page_lower)
-  return not eval(ast.children[1], block, ctx, current_page_lower)
+evaluators["not"] = function(ast, block, ctx)
+  return not eval(ast.children[1], block, ctx)
 end
 
-eval = function(ast, block, ctx, current_page_lower)
+eval = function(ast, block, ctx)
   if not ast then return false end
   local fn = evaluators[ast.type]
-  return fn and fn(ast, block, ctx, current_page_lower) or false
+  return fn and fn(ast, block, ctx) or false
 end
 
 -- ── File I/O ───────────────────────────────────────────────────────────
@@ -184,8 +174,7 @@ local function load_file(filepath, uv)
 end
 
 --- Scan one file and append any matching blocks to results.
-
-local function process_file(filepath, ast, uv, results, current_page_lower)
+local function process_file(filepath, ast, opts, uv, results)
   local _lines, parsed = load_file(filepath, uv)
   if not parsed then return end
 
@@ -194,18 +183,20 @@ local function process_file(filepath, ast, uv, results, current_page_lower)
   local jdate       = journal_date(filepath)
   local page_props  = parsed.page_properties
 
-  -- Special handling for page_property queries: only return the page if it matches, once.
-  if ast.type == "page_property" or (ast.type == "and" and ast.children and vim.tbl_contains(vim.tbl_map(function(child) return child.type end, ast.children), "page_property")) then
+  -- Special handling for page_property queries: match at page level, return once.
+  local is_page_prop_query = ast.type == "page_property"
+    or (ast.type == "and" and ast.children and vim.tbl_contains(
+          vim.tbl_map(function(c) return c.type end, ast.children), "page_property"))
+
+  if is_page_prop_query then
     local ctx = {
       todo_state   = nil,
       tags         = {},
       journal_date = jdate,
       page_props   = page_props,
+      current_page = opts.current_page,
     }
-    -- For compound queries, require all predicates to match at the page level.
-    local page_match = eval(ast, nil, ctx, current_page_lower)
-    if page_match then
-      -- Only add the page once.
+    if eval(ast, nil, ctx) then
       results[#results + 1] = {
         source_page = source_page,
         source_file = filepath,
@@ -228,8 +219,9 @@ local function process_file(filepath, ast, uv, results, current_page_lower)
       tags         = effective_tags(block),
       journal_date = jdate,
       page_props   = page_props,
+      current_page = opts.current_page,
     }
-    if eval(ast, block, ctx, current_page_lower) then
+    if eval(ast, block, ctx) then
       results[#results + 1] = {
         source_page = source_page,
         source_file = filepath,
@@ -249,17 +241,16 @@ end
 --- Async: evaluate ast against every block in the vault.
 --- Calls on_complete(results[]) when done.
 --- Reuses the indexer's file cache so repeated queries are fast.
----@param ast        table
+---@param ast         table
+---@param opts        table   { current_page: string|nil, on_progress: function|nil }
 ---@param on_complete function
----@param current_page string|nil  current page name for "current page" placeholder
----@param on_progress function|nil  optional progress callback (current, total)
-function M.run(ast, on_complete, current_page, on_progress)
+function M.run(ast, opts, on_complete)
+  opts = opts or {}
   local raw_vault = config.current.vault_path
   if not raw_vault or raw_vault == "" then
     return vim.schedule(function() on_complete({}) end)
   end
   local vault = util.normalize(raw_vault)
-  local current_page_lower = current_page and current_page:lower() or nil
 
   local search_dirs = {}
   if vim.fn.isdirectory(vault .. "/pages")   == 1 then
@@ -298,9 +289,9 @@ function M.run(ast, on_complete, current_page, on_progress)
   local function process_chunk()
     local chunk_end = math.min(i + 49, #all_files)
     for j = i, chunk_end do
-      process_file(all_files[j], ast, uv, results, current_page_lower)
+      process_file(all_files[j], ast, opts, uv, results)
     end
-    if on_progress then on_progress(chunk_end, #all_files) end
+    if opts.on_progress then opts.on_progress(chunk_end, #all_files) end
 
     if chunk_end < #all_files then
       i = chunk_end + 1
