@@ -334,12 +334,27 @@ local function ask_predicate(choice, existing, callback)
   elseif choice == PRED_TYPES[2] then
     ask_todo(existing and existing.states, callback)
   elseif choice == PRED_TYPES[3] then
-    ask_tags(existing and existing.tags, callback)
+    -- task states: same UI as todo but produces type="task"
+    local default = existing and table.concat(existing.states or {}, ",") or "TODO,DOING"
+    vim.ui.input({
+      prompt  = "Task states (comma-separated, e.g. TODO,DOING): ",
+      default = default,
+    }, function(input)
+      if not input then return end
+      local states = {}
+      for s in input:gmatch("[^,]+") do
+        local trimmed = s:match("^%s*(.-)%s*$"):upper()
+        if trimmed ~= "" then states[#states + 1] = trimmed end
+      end
+      if #states > 0 then callback({ type = "task", states = states }) end
+    end)
   elseif choice == PRED_TYPES[4] then
-    ask_kv("property", "Property", existing and existing.key, existing and existing.value, callback)
+    ask_tags(existing and existing.tags, callback)
   elseif choice == PRED_TYPES[5] then
-    ask_kv("page_property", "Page-property", existing and existing.key, existing and existing.value, callback)
+    ask_kv("property", "Property", existing and existing.key, existing and existing.value, callback)
   elseif choice == PRED_TYPES[6] then
+    ask_kv("page_property", "Page-property", existing and existing.key, existing and existing.value, callback)
+  elseif choice == PRED_TYPES[7] then
     ask_between(existing and existing.from, existing and existing.to, callback)
   end
 end
@@ -382,9 +397,10 @@ local function execute_action(state, action, data)
     if not p then return end
 
     local type_map = {
-      page_link    = PRED_TYPES[1], todo         = PRED_TYPES[2],
-      tags         = PRED_TYPES[3], property     = PRED_TYPES[4],
-      page_property = PRED_TYPES[5], between     = PRED_TYPES[6],
+      page_link     = PRED_TYPES[1], todo          = PRED_TYPES[2],
+      task          = PRED_TYPES[3], tags          = PRED_TYPES[4],
+      property      = PRED_TYPES[5], page_property = PRED_TYPES[6],
+      between       = PRED_TYPES[7],
     }
     local choice = type_map[p.type]
     if not choice then return end

@@ -81,6 +81,8 @@ evaluators["todo"] = function(ast, _block, ctx)
   return false
 end
 
+evaluators["task"] = evaluators["todo"]
+
 evaluators["tags"] = function(ast, _block, ctx)
   -- Block must carry ALL of the required tags.
   local tag_set = {}
