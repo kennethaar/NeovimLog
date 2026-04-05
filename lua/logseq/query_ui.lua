@@ -18,6 +18,7 @@
 ---   c     toggle column picker (table mode only)
 
 local config      = require("logseq.config")
+local indexer     = require("logseq.indexer")
 local qparser     = require("logseq.query_parser")
 local engine      = require("logseq.query_engine")
 
@@ -327,6 +328,10 @@ end
 
 -- ── Query scanning ─────────────────────────────────────────────────────
 
+local function current_page_name(bufnr)
+  return indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
+end
+
 local function scan_queries(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local found = {}
@@ -346,7 +351,7 @@ local function refresh_query(bufnr, q)
     render_one(bufnr, q)
     return
   end
-  engine.run(q.ast, function(results)
+  engine.run(q.ast, { current_page = current_page_name(bufnr) }, function(results)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     q.results = results
     render_one(bufnr, q)
@@ -390,7 +395,7 @@ function M.render_all(bufnr)
     state.queries[#state.queries + 1] = q
 
     if ast then
-      engine.run(ast, function(results)
+      engine.run(ast, { current_page = current_page_name(bufnr) }, function(results)
         if not vim.api.nvim_buf_is_valid(bufnr) then return end
         q.results = results
         render_one(bufnr, q)

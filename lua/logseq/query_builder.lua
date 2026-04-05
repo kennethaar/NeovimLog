@@ -245,10 +245,21 @@ local PRED_TYPES = {
 }
 
 local function ask_page(callback)
-  vim.ui.input({ prompt = "Page name: " }, function(input)
-    if not input or input:match("^%s*$") then return end
-    callback({ type = "page_link", page = input:match("^%s*(.-)%s*$") })
-  end)
+  vim.ui.select(
+    { "current page", "other page..." },
+    { prompt = "Page link:" },
+    function(choice)
+      if not choice then return end
+      if choice == "current page" then
+        callback({ type = "page_link", page = "current page" })
+        return
+      end
+      vim.ui.input({ prompt = "Page name: " }, function(input)
+        if not input or input:match("^%s*$") then return end
+        callback({ type = "page_link", page = input:match("^%s*(.-)%s*$") })
+      end)
+    end
+  )
 end
 
 local function ask_todo(existing, callback)
