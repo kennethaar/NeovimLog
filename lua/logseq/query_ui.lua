@@ -24,7 +24,8 @@ local engine      = require("logseq.query_engine")
 
 local M = {}
 
-local NS = vim.api.nvim_create_namespace("logseq_query")
+local NS       = vim.api.nvim_create_namespace("logseq_query")        -- highlights only
+local NS_TRACK = vim.api.nvim_create_namespace("logseq_query_track")   -- position extmarks
 
 -- ── Constants ──────────────────────────────────────────────────────────
 
@@ -61,14 +62,14 @@ end
 --- Return the 0-indexed row of a query's {{query}} line via its extmark.
 local function query_row_0(bufnr, q)
   if not q.query_mark then return nil end
-  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, q.query_mark, {})
+  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS_TRACK, q.query_mark, {})
   return (pos and #pos > 0) and pos[1] or nil
 end
 
 --- Return the 0-indexed row of the first line of a query's rendered section.
 local function section_row_0(bufnr, q)
   if not q.section_mark then return nil end
-  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, q.section_mark, {})
+  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS_TRACK, q.section_mark, {})
   return (pos and #pos > 0) and pos[1] or nil
 end
 
@@ -82,7 +83,7 @@ local function remove_section(bufnr, q)
       vim.api.nvim_buf_set_lines(bufnr, s0, s0 + (q.section_line_count or 0), false, {})
     end)
   end
-  pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
+  pcall(vim.api.nvim_buf_del_extmark, bufnr, NS_TRACK, q.section_mark)
   q.section_mark       = nil
   q.section_line_count = nil
 end
@@ -313,16 +314,18 @@ local function render_one(bufnr, q)
     vim.api.nvim_buf_set_lines(bufnr, qrow + 1, qrow + 1, false, lines)
   end)
 
-  -- Track the section start with an extmark so future edits shift it correctly.
-  q.section_mark       = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow + 1, 0, {})
+  -- Clear stale highlights before adding new ones.
+  -- NS_TRACK is a separate namespace so this never touches query_mark/section_mark.
+  local abs0 = qrow + 1  -- 0-indexed absolute row of section start
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, abs0, abs0 + #lines)
+
+  -- Set the tracking extmark in NS_TRACK (safe from the clear above).
+  q.section_mark       = vim.api.nvim_buf_set_extmark(bufnr, NS_TRACK, abs0, 0, {})
   q.section_line_count = #lines
   q.source_map         = smap
   q.header_rel         = header_rel
   q.header_buttons     = header_buttons
 
-  -- Syntax highlights
-  local abs0 = qrow + 1  -- 0-indexed absolute row of section start
-  vim.api.nvim_buf_clear_namespace(bufnr, NS, abs0, abs0 + #lines)
   apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, q)
 end
 
@@ -371,7 +374,7 @@ function M.render_all(bufnr)
   -- Release old query marks.
   for _, q in ipairs(state.queries) do
     if q.query_mark then
-      pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.query_mark)
+      pcall(vim.api.nvim_buf_del_extmark, bufnr, NS_TRACK, q.query_mark)
     end
   end
   state.queries = {}
@@ -380,7 +383,7 @@ function M.render_all(bufnr)
   for _, f in ipairs(found) do
     local ast, err = qparser.parse(f.query_str)
     local q = {
-      query_mark         = vim.api.nvim_buf_set_extmark(bufnr, NS, f.row_0, 0, {}),
+      query_mark         = vim.api.nvim_buf_set_extmark(bufnr, NS_TRACK, f.row_0, 0, {}),
       query_str          = f.query_str,
       ast                = ast,
       parse_error        = err,
@@ -537,7 +540,7 @@ local function on_write_pre(bufnr)
   remove_all_sections(bufnr)
   for _, q in ipairs(state.queries) do
     if q.query_mark then
-      pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.query_mark)
+      pcall(vim.api.nvim_buf_del_extmark, bufnr, NS_TRACK, q.query_mark)
       q.query_mark = nil
     end
   end
