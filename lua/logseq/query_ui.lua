@@ -1,33 +1,13 @@
--- DEBUG: Log autosave and query state events
-local function debug_log(msg)
-  -- Cross-platform temp file path for debug log
-  local function get_debug_log_path()
-    local sep = package.config:sub(1,1)
-    if sep == '\\' then -- Windows
-      return os.getenv('TEMP') .. '\\logseq_query_debug.log'
-    else -- Unix
-      return '/tmp/logseq_query_debug.log'
-    end
-  end
-
-  local path = get_debug_log_path()
-  local f = io.open(path, 'a')
-  if f then
-    f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' ' .. msg .. '\n')
-    f:close()
-  end
-end
-
 --- logseq.nvim query UI
 --- Renders Logseq simple query results inline, directly below each {{query}} block.
 --- Uses Neovim extmarks to track section positions across edits.
 ---
 --- Layout (per query block):
----   ──────────────────────────────────────────────────────────────────────
+---   ──────────────────────────────────────────────────────────────
 ---    [~]  [LIST]  [table]    N results
----   ──────────────────────────────────────────────────────────────────────
+---   ──────────────────────────────────────────────────────────────
 ---    • Block content                       page-name · date
----   ──────────────────────────────────────────────────────────────────────
+---   ──────────────────────────────────────────────────────────────
 ---
 --- Table mode adds column headers, optional column picker, and │-separated cells.
 ---
@@ -36,15 +16,11 @@ end
 ---   r     refresh this query
 ---   t     toggle list ↔ table mode
 ---   c     toggle column picker (table mode only)
----   r     refresh this query
----   t     toggle list ↔ table mode
----   c     toggle column picker (table mode only)
 
 local config      = require("logseq.config")
+local indexer     = require("logseq.indexer")
 local qparser     = require("logseq.query_parser")
 local engine      = require("logseq.query_engine")
-local indexer     = require("logseq.indexer")
-local util        = require("logseq.util")
 
 local M = {}
 
@@ -52,7 +28,7 @@ local NS = vim.api.nvim_create_namespace("logseq_query")
 
 -- ── Constants ──────────────────────────────────────────────────────────
 
-local SEP = string.rep("─", 70)
+local SEP = string.rep("─", 62)
 
 local COLUMN_ORDER  = { "block", "page", "date", "todo", "tags" }
 local COLUMN_LABELS = { block = "Block", page = "Page", date = "Date", todo = "TODO", tags = "Tags" }
@@ -60,23 +36,12 @@ local COLUMN_WIDTHS = { block = 34, page = 15, date = 12, todo = 9, tags = 16 }
 
 local DEFAULT_COLUMNS = { block = true, page = true, date = true, todo = false, tags = false }
 
---- Extract the leaf segment of a (possibly namespaced) page name.
---- "1/Project" → "Project", "Foo Bar" → "Foo Bar"
-local function leaf_name(name)
-  return name:match("[^/]+$") or name
-end
-
 -- ── State ──────────────────────────────────────────────────────────────
 
 M._state = {}   -- bufnr → { queries = [...] }
 
 local function get_state(bufnr)
-  if not M._state[bufnr] then
-    M._state[bufnr] = {
-      queries = {},  -- array of query objects
-      regions = {},  -- query_idx → { start_line, end_line }
-    }
-  end
+  if not M._state[bufnr] then M._state[bufnr] = { queries = {} } end
   return M._state[bufnr]
 end
 
@@ -100,130 +65,37 @@ local function query_row_0(bufnr, q)
   return (pos and #pos > 0) and pos[1] or nil
 end
 
--- forward declaration for functions that are referenced before definition
-local render_one
-local remove_section
-
--- Small helpers to reduce duplicated code and nested conditionals
-local function open_file_at(file, line)
-  if not file or file == "" then return end
-  vim.cmd("normal! m'")
-  vim.cmd("edit " .. vim.fn.fnameescape(file))
-  if line and line > 0 then pcall(vim.api.nvim_win_set_cursor, 0, { line, 0 }) end
-end
-
-local function open_result_target(r)
-  if not r then return false end
-
-  if r.source_file and r.source_file ~= "" then
-    open_file_at(r.source_file, r.line_start)
-    return true
-  end
-
-  if not r.source_page or r.source_page == "" then return false end
-  local vault = util.normalize(config.current.vault_path or "")
-  if vault == "" then return false end
-
-  local candidate = vault .. "/pages/" .. util.encode_filename(r.source_page)
-  if vim.fn.filereadable(candidate) == 1 then
-    open_file_at(candidate, r.line_start or 1)
-    return true
-  end
-
-  return false
-end
-
-local function list_result_index_at_line(bufnr, start_line, lnum)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, lnum, false)
-  local idx = 0
-  for _, line in ipairs(lines) do
-    if line:match("^ • ") then idx = idx + 1 end
-  end
-  return idx > 0 and idx or nil
-end
-
-local function update_and_render(bufnr, q, updater)
-  remove_section(bufnr, q)
-  updater()
-  render_one(bufnr, q)
-end
-
-local function execute_query(bufnr, q)
-  if not q.ast then return end
-  -- Prevent duplicate concurrent executions for the same query object.
-  if q._running then return end
-  q._running = true
-  local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
-  engine.run(q.ast, function(results)
-    if not vim.api.nvim_buf_is_valid(bufnr) then q._running = false; return end
-    q.results = results
-    q.loading = false
-    q.progress_current = nil
-    q.progress_total = nil
-    q._running = false
-    render_one(bufnr, q)
-  end, current_page,
-  function(current, total)
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    q.loading = true
-    q.progress_current = current
-    q.progress_total = total
-    render_one(bufnr, q)
-  end)
+--- Return the 0-indexed row of the first line of a query's rendered section.
+local function section_row_0(bufnr, q)
+  if not q.section_mark then return nil end
+  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, q.section_mark, {})
+  return (pos and #pos > 0) and pos[1] or nil
 end
 
 -- ── Section management ─────────────────────────────────────────────────
 
 local function remove_section(bufnr, q)
-  local state = get_state(bufnr)
-
-  -- Remove any entries we registered in the (older) global source_map for this query
-  if q.abs_lines and state.source_map then
-    for _, abs in ipairs(q.abs_lines) do state.source_map[abs] = nil end
-    q.abs_lines = nil
+  if not q.section_mark then return end
+  local s0 = section_row_0(bufnr, q)
+  if s0 then
+    with_modifiable(bufnr, function()
+      vim.api.nvim_buf_set_lines(bufnr, s0, s0 + (q.section_line_count or 0), false, {})
+    end)
   end
-
-  -- Compute the current region (prefer extmark-derived positions so shifts are handled).
-  local start_line, end_line
-  local qrow = query_row_0(bufnr, q)
-  if qrow and q._lines_count then
-    start_line = qrow + 3
-    end_line = start_line + q._lines_count - 1
-  elseif q.region then
-    start_line = q.region.start_line
-    end_line   = q.region.end_line
-  else
-    return
-  end
-
-  -- Remove the lines from the buffer
-  with_modifiable(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, start_line - 1, end_line, false, {})
-  end)
-
-  -- Clear stored display bookkeeping
-  q.region = nil
-  q.header_abs = nil
-  q.header_buttons = nil
-  q._lines_count = nil
-  q.smap = nil
+  pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, q.section_mark)
+  q.section_mark       = nil
+  q.section_line_count = nil
 end
 
 local function remove_all_sections(bufnr)
   local state = get_state(bufnr)
-  -- Collect sections with their current absolute start rows (compute from extmarks
-  -- when possible so we remove bottom-to-top correctly even when things shifted).
+  -- Collect sections with their current absolute start rows.
   local with_rows = {}
   for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    local s0
-    if qrow and q._lines_count then
-      s0 = qrow + 3
-    elseif q.region then
-      s0 = q.region.start_line
-    end
+    local s0 = q.section_mark and section_row_0(bufnr, q)
     if s0 then with_rows[#with_rows + 1] = { q = q, s0 = s0 } end
   end
+  -- Remove bottom-to-top so earlier sections aren't shifted by later removals.
   table.sort(with_rows, function(a, b) return a.s0 > b.s0 end)
   for _, entry in ipairs(with_rows) do remove_section(bufnr, entry.q) end
 end
@@ -260,10 +132,7 @@ local function make_header(q)
   end
 
   push(" ")
-  -- Show the query string in the toggle button (truncated to 40 chars)
-  local query_display = q.query_str:sub(1, 40)
-  if #q.query_str > 40 then query_display = query_display .. "…" end
-  push("[" .. query_display .. "]",   "toggle_render")
+  push("[~]",   "refresh")
   push("  ")
   push(q.mode == "list"  and "[LIST]"  or "[list]",  "set_mode", "list")
   push("  ")
@@ -343,27 +212,17 @@ local function build_display(q)
   -- Results
   local results = q.results or {}
 
-
   local function list_line(r)
-    local display_page = leaf_name(r.source_page)
-    local suffix
-    local content
-    if r.is_page then
-      suffix = r.date and (" · " .. r.date) or ""
-      content = truncate(display_page, 46)
-    else
-      suffix = display_page .. (r.date and (" · " .. r.date) or "")
-      content = truncate(r.content, 46)
-    end
-    local padding = math.max(1, 58 - #content - #suffix)
+    local suffix   = r.source_page .. (r.date and (" · " .. r.date) or "")
+    local content  = truncate(r.content, 46)
+    local padding  = math.max(1, 58 - #content - #suffix)
     return " • " .. content .. string.rep(" ", padding) .. suffix
   end
 
   local function table_line(r)
-    local display_page = leaf_name(r.source_page)
     local vals = {
       block = truncate(r.content,    COLUMN_WIDTHS.block),
-      page  = truncate(display_page, COLUMN_WIDTHS.page),
+      page  = truncate(r.source_page, COLUMN_WIDTHS.page),
       date  = truncate(r.date or "", COLUMN_WIDTHS.date),
       todo  = truncate(r.todo_state or "", COLUMN_WIDTHS.todo),
       tags  = truncate(table.concat(r.tags or {}, " "), COLUMN_WIDTHS.tags),
@@ -378,23 +237,11 @@ local function build_display(q)
   local line_fn = q.mode == "table" and table_line or list_line
 
   for _, r in ipairs(results) do
-    add(line_fn(r), {
-      action = "navigate",
-      file = r.source_file,
-      line = r.line_start,
-      page = r.source_page,
-    })
+    add(line_fn(r), { action = "navigate", file = r.source_file, line = r.line_start })
   end
 
   if #results == 0 then
-    if q.loading then
-      local cur = q.progress_current or 0
-      local tot = q.progress_total or 100
-      local bar = util.make_progress_bar(cur, tot, 20)
-      add("  Loading... " .. bar)
-    else
-      add("  (no results)")
-    end
+    add("  (no results)")
   end
 
   -- Bottom separator
@@ -406,30 +253,33 @@ end
 -- ── Rendering ──────────────────────────────────────────────────────────
 
 local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, q)
-  -- Mark separators quickly
+  -- Separator lines → Comment
   for i, line in ipairs(lines) do
     if line == SEP then
       vim.api.nvim_buf_add_highlight(bufnr, NS, "Comment", abs0 + i - 1, 0, -1)
     end
   end
 
-  -- Header + buttons
+  -- Header line
   local hdr_abs = abs0 + header_rel - 1
   vim.api.nvim_buf_add_highlight(bufnr, NS, "Normal", hdr_abs, 0, -1)
   for _, btn in ipairs(header_buttons or {}) do
     local hl = (btn.action == "set_mode" and btn.data == q.mode) and "Bold"
-            or (btn.action == "toggle_render") and "Special"
+            or (btn.action == "refresh")                          and "Special"
             or "Comment"
+    -- col args are 0-based byte offsets: from-1 and to (exclusive end)
     vim.api.nvim_buf_add_highlight(bufnr, NS, hl, hdr_abs, btn.from - 1, btn.to)
   end
 
-  -- Column picker (table mode)
+  -- Column picker checkmarks
   if q.mode == "table" and q.show_columns then
+    -- Lines after the header until the next SEP are picker lines.
     for i = header_rel + 1, #lines do
       if lines[i] == SEP then break end
       vim.api.nvim_buf_add_highlight(bufnr, NS, "Comment", abs0 + i - 1, 0, -1)
+      -- Highlight [x] in green, [ ] in Normal
       local line = lines[i]
-      local mark_s, mark_e = line:find("%[.%]")
+      local mark_s, mark_e = line:find("%[.%]", 1, false)
       if mark_s then
         local hl = line:sub(mark_s + 1, mark_s + 1) == "x" and "DiagnosticOk" or "Comment"
         vim.api.nvim_buf_add_highlight(bufnr, NS, hl, abs0 + i - 1, mark_s - 1, mark_e)
@@ -437,11 +287,12 @@ local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, 
     end
   end
 
-  -- Column header row (first row after the picker/separator)
+  -- Table column-header line (the line right after the post-picker SEP)
   if q.mode == "table" then
-    for i = header_rel + 1, #lines do
-      if lines[i] == SEP then
-        local col_hdr_abs = abs0 + i
+    for i, line in ipairs(lines) do
+      -- The second SEP is the results separator; the line after it is the column header.
+      if line == SEP and i > header_rel then
+        local col_hdr_abs = abs0 + i  -- line after SEP (0-indexed = abs0+i)
         if col_hdr_abs < abs0 + #lines then
           vim.api.nvim_buf_add_highlight(bufnr, NS, "Bold", col_hdr_abs, 0, -1)
         end
@@ -449,89 +300,37 @@ local function apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, 
       end
     end
   end
-
-  -- Page name / result highlighting — highlight the whole result line
-  if q.mode == "list" then
-    for i, line in ipairs(lines) do
-      if line:match("^ • ") and not line:match("^  %(no results%)") and not line:match("^  Loading...") then
-        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, 0, -1)
-      end
-    end
-  elseif q.mode == "table" then
-    -- Find the column-separator line (contains '─┼─') after header, then highlight rows after it
-    local col_sep_rel = nil
-    for rel = header_rel + 1, #lines do
-      if lines[rel] == SEP then break end
-      if lines[rel]:find("─┼─", 1, true) then col_sep_rel = rel; break end
-    end
-    if col_sep_rel then
-      for i = col_sep_rel + 1, #lines do
-        if lines[i] == SEP then break end
-        vim.api.nvim_buf_add_highlight(bufnr, NS, "LogseqLink", abs0 + i - 1, 0, -1)
-      end
-    end
-  end
 end
 
-local function virt_lines_from_lines(lines)
-  local virt_lines = {}
-  for i, line in ipairs(lines) do
-    local hl = (line == SEP) and "Comment" or "Normal"
-    virt_lines[#virt_lines + 1] = { { line, hl } }
-  end
-  return virt_lines
-end
-
-render_one = function(bufnr, q)
+local function render_one(bufnr, q)
   local qrow = query_row_0(bufnr, q)
   if not qrow then return end
-  if q.hidden then 
-    -- Remove the section if it exists
-    if q.region then
-      remove_section(bufnr, q)
-    end
-    return 
-  end
 
-  -- Build display lines and source map (smap: rel_idx -> action)
   local lines, smap, header_rel, header_buttons = build_display(q)
 
-  -- Remove existing section if it exists
-  if q.region then
-    remove_section(bufnr, q)
-  end
-
-  -- Insert the lines into the buffer immediately after the query line
-  local insert_pos = qrow + 1  -- 0-based insertion index (after query row)
-  local final_lines = {""}  -- leading blank separator line
-  vim.list_extend(final_lines, lines)
-
+  -- Insert section immediately after the {{query}} line.
   with_modifiable(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, insert_pos, insert_pos, false, final_lines)
+    vim.api.nvim_buf_set_lines(bufnr, qrow + 1, qrow + 1, false, lines)
   end)
 
-  -- Set up the region
-  -- `final_lines` includes a leading blank, so the first `lines[1]` lands
-  -- at buffer line `insert_pos + 2` (1-indexed). Use that as `start_line`.
-  local start_line = insert_pos + 2   -- 1-indexed first visible display line (lines[1])
-  local end_line = insert_pos + #final_lines
-  q.region = { start_line = start_line, end_line = end_line }
+  -- Track the section start with an extmark so future edits shift it correctly.
+  q.section_mark       = vim.api.nvim_buf_set_extmark(bufnr, NS, qrow + 1, 0, {})
+  q.section_line_count = #lines
+  q.source_map         = smap
+  q.header_rel         = header_rel
+  q.header_buttons     = header_buttons
 
-  local state = get_state(bufnr)
-
-  -- Store per-query source map (relative indices) and display length so we can
-  -- recompute absolute positions from the query extmark when needed.
-  q.smap = smap
-  q._lines_count = #lines
-  q.header_rel = header_rel
-  q.header_buttons = header_buttons
-  q.region = { start_line = start_line, end_line = end_line }
-
-  -- Apply highlights
-  apply_highlights(bufnr, start_line, lines, header_rel, header_buttons, q)
+  -- Syntax highlights
+  local abs0 = qrow + 1  -- 0-indexed absolute row of section start
+  vim.api.nvim_buf_clear_namespace(bufnr, NS, abs0, abs0 + #lines)
+  apply_highlights(bufnr, abs0, lines, header_rel, header_buttons, q)
 end
 
 -- ── Query scanning ─────────────────────────────────────────────────────
+
+local function current_page_name(bufnr)
+  return indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
+end
 
 local function scan_queries(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -552,13 +351,15 @@ local function refresh_query(bufnr, q)
     render_one(bufnr, q)
     return
   end
-  execute_query(bufnr, q)
+  engine.run(q.ast, { current_page = current_page_name(bufnr) }, function(results)
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    q.results = results
+    render_one(bufnr, q)
+  end)
 end
 
 --- Re-render all queries in the buffer (called on BufReadPost and after save).
---- Optionally accepts preserved_state to restore query results across write cycles.
-function M.render_all(bufnr, preserved_state)
-  debug_log('render_all: bufnr=' .. tostring(bufnr) .. ' preserved_state=' .. tostring(preserved_state ~= nil))
+function M.render_all(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
 
@@ -574,50 +375,33 @@ function M.render_all(bufnr, preserved_state)
   state.queries = {}
 
   local found = scan_queries(bufnr)
-  local current_page = indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
   for _, f in ipairs(found) do
     local ast, err = qparser.parse(f.query_str)
-    
-    -- Restore preserved state if available for this query
-    local preserved = preserved_state and preserved_state[f.query_str]
-    
-    local hidden = true
-    if preserved and preserved.hidden ~= nil then
-      hidden = preserved.hidden
-    end
-
     local q = {
       query_mark         = vim.api.nvim_buf_set_extmark(bufnr, NS, f.row_0, 0, {}),
       query_str          = f.query_str,
       ast                = ast,
       parse_error        = err,
-      region             = nil,
-      mode               = preserved and preserved.mode or "list",
-      columns            = preserved and vim.deepcopy(preserved.columns) or vim.deepcopy(DEFAULT_COLUMNS),
-      show_columns       = preserved and preserved.show_columns or false,
-      hidden             = hidden,  -- Preserve prior expanded/collapsed state; default collapsed
-      results            = preserved and preserved.results or nil,   -- Restore results if available
-      loading            = preserved and preserved.loading or false,
+      section_mark       = nil,
+      section_line_count = nil,
+      mode               = "list",
+      columns            = vim.deepcopy(DEFAULT_COLUMNS),
+      show_columns       = false,
+      results            = nil,
+      source_map         = nil,
       header_rel         = nil,
       header_buttons     = nil,
-      header_abs         = nil,
     }
-
-    -- Debug log per query: query string, hidden state, number of results
-    local num_results = (q.results and type(q.results) == 'table') and tostring(#q.results) or tostring(q.results)
-    debug_log(string.format(
-      'render_all: query="%s" hidden=%s results=%s',
-      tostring(q.query_str), tostring(q.hidden), tostring(num_results)
-    ))
-
     state.queries[#state.queries + 1] = q
 
     if ast then
-      -- Don't execute by default; just render the collapsed view
-      vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(bufnr) then render_one(bufnr, q) end
+      engine.run(ast, { current_page = current_page_name(bufnr) }, function(results)
+        if not vim.api.nvim_buf_is_valid(bufnr) then return end
+        q.results = results
+        render_one(bufnr, q)
       end)
     else
+      q.results = {}
       vim.schedule(function()
         if vim.api.nvim_buf_is_valid(bufnr) then render_one(bufnr, q) end
       end)
@@ -627,231 +411,144 @@ end
 
 -- ── Navigation & interaction ───────────────────────────────────────────
 
---- True if lnum (1-indexed) is on a query line or within a query results section.
+--- True if lnum (1-indexed) is inside any rendered query section.
 function M.in_any_region(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    -- Check if on the query line
-    local qrow = query_row_0(bufnr, q)
-    if qrow and lnum == qrow + 1 then return true end
-    
-    -- Check if in the results section (compute current region from extmark)
-    if qrow and q._lines_count then
-      local start_line = qrow + 3
-      local end_line = start_line + q._lines_count - 1
-      if lnum >= start_line and lnum <= end_line then return true end
-    elseif q.region and lnum >= q.region.start_line and lnum <= q.region.end_line then
-      return true
+    local s0 = q.section_mark and section_row_0(bufnr, q)
+    if s0 then
+      local sec_start_1 = s0 + 1
+      local sec_end_1   = s0 + (q.section_line_count or 0)
+      if lnum >= sec_start_1 and lnum <= sec_end_1 then return true end
     end
   end
   return false
 end
 
 local function handle_button(bufnr, q, action, data)
-  if action == "toggle_render" then
-    q.hidden = not q.hidden
-    if q.hidden then
-      remove_section(bufnr, q)
-      q.loading = false
-      return
-    end
+  if action == "refresh" then
+    refresh_query(bufnr, q)
 
-    -- If no results yet, show loading and execute the query; otherwise just render.
-    if not q.results and q.ast then
-      q.loading = true
-      render_one(bufnr, q)
-      execute_query(bufnr, q)
-    else
-      render_one(bufnr, q)
-    end
-    return
-  end
+  elseif action == "set_mode" then
+    remove_section(bufnr, q)
+    q.mode         = data
+    q.show_columns = false
+    render_one(bufnr, q)
 
-  if action == "set_mode" then
-    update_and_render(bufnr, q, function()
-      q.mode = data
-      q.show_columns = false
-    end)
-    return
-  end
-
-  if action == "toggle_col_picker" then
-    update_and_render(bufnr, q, function()
-      q.show_columns = not q.show_columns
-    end)
-    return
+  elseif action == "toggle_col_picker" then
+    remove_section(bufnr, q)
+    q.show_columns = not q.show_columns
+    render_one(bufnr, q)
   end
 end
 
 local function dispatch_smap(bufnr, q, action)
   if action.action == "navigate" then
-    if open_result_target({
-      source_file = action.file,
-      line_start = action.line,
-      source_page = action.page,
-    }) then
-      return true
-    end
-    return false
+    vim.cmd("normal! m'")
+    vim.cmd("edit " .. vim.fn.fnameescape(action.file))
+    pcall(vim.api.nvim_win_set_cursor, 0, { action.line, 0 })
 
   elseif action.action == "toggle_column" then
-    update_and_render(bufnr, q, function()
-      q.columns[action.column] = not q.columns[action.column]
-    end)
-    return true
+    remove_section(bufnr, q)
+    q.columns[action.column] = not q.columns[action.column]
+    render_one(bufnr, q)
   end
-
-  return false
 end
 
 --- Handle <CR> inside a query section. Returns true if the press was consumed.
 function M.navigate(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local lnum = vim.api.nvim_win_get_cursor(0)[1]
-
-  if not M.in_any_region(bufnr, lnum) then return false end
+  bufnr      = bufnr or vim.api.nvim_get_current_buf()
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local lnum = cursor[1]        -- 1-indexed
+  local col  = cursor[2] + 1   -- 1-indexed byte
 
   local state = get_state(bufnr)
-
-  -- First: header buttons (per-query). Compute header position from extmark so
-  -- it remains correct even if other sections shifted the buffer.
   for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    if qrow and q.header_rel and lnum == (qrow + q.header_rel + 2) then
-      local col = vim.api.nvim_win_get_cursor(0)[2] + 1  -- 1-indexed byte
-      for _, btn in ipairs(q.header_buttons or {}) do
-        if col >= btn.from and col <= btn.to then
-          handle_button(bufnr, q, btn.action, btn.data)
+    local s0 = q.section_mark and section_row_0(bufnr, q)
+    if s0 then
+      local sec_start_1 = s0 + 1
+      local sec_end_1   = s0 + (q.section_line_count or 0)
+
+      if lnum >= sec_start_1 and lnum <= sec_end_1 then
+        local rel = lnum - sec_start_1 + 1  -- 1-indexed within section
+
+        -- Header line: dispatch column-based buttons.
+        if rel == q.header_rel then
+          for _, btn in ipairs(q.header_buttons or {}) do
+            if col >= btn.from and col <= btn.to then
+              handle_button(bufnr, q, btn.action, btn.data)
+              return true
+            end
+          end
           return true
         end
-      end
-      return true
-    end
-  end
 
-  -- Then: per-query relative source maps. Recompute absolute rows from the
-  -- query extmark so mappings don't go stale when other sections insert/remove.
-  for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    if qrow and q._lines_count and q.smap then
-      local start_line = qrow + 3
-      local end_line = start_line + q._lines_count - 1
-      if lnum >= start_line and lnum <= end_line then
-        local rel = lnum - start_line + 1
-        local action = q.smap[rel]
-        if action then
-          if dispatch_smap(bufnr, q, action) then return true end
-        end
-
-        -- Fallback: infer list-row result index so Enter still works even if
-        -- row mappings are stale/missing for this render cycle.
-        if q.mode == "list" and q.results and #q.results > 0 then
-          local idx = list_result_index_at_line(bufnr, start_line, lnum)
-          if idx and q.results[idx] and open_result_target(q.results[idx]) then
-            return true
-          end
-        end
-      end
-    elseif q.region and q.smap and lnum >= q.region.start_line and lnum <= q.region.end_line then
-      -- Fallback if extmark is not available
-      local rel = lnum - q.region.start_line + 1
-      local action = q.smap[rel]
-      if action then
-        if dispatch_smap(bufnr, q, action) then return true end
+        -- Source map entry (navigation, column toggle, etc.)
+        local sa = q.source_map and q.source_map[rel]
+        if sa then dispatch_smap(bufnr, q, sa) end
+        return true
       end
     end
   end
-
   return false
 end
 
---- Refresh the query on the current query line.
+--- Refresh the query whose section contains lnum (1-indexed).
 local function refresh_at(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    if qrow and lnum == qrow + 1 then
-      refresh_query(bufnr, q)
-      return
+    local s0 = q.section_mark and section_row_0(bufnr, q)
+    if s0 then
+      local sec_end_1 = s0 + (q.section_line_count or 0)
+      if lnum >= s0 + 1 and lnum <= sec_end_1 then
+        refresh_query(bufnr, q)
+        return
+      end
     end
   end
 end
 
---- Toggle list/table mode for the current query line.
+--- Toggle list/table mode for the query under the cursor.
 local function toggle_mode_at(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    if qrow and lnum == qrow + 1 then
-      remove_section(bufnr, q)
-      q.mode         = q.mode == "list" and "table" or "list"
-      q.show_columns = false
-      render_one(bufnr, q)
-      return
+    local s0 = q.section_mark and section_row_0(bufnr, q)
+    if s0 then
+      local sec_end_1 = s0 + (q.section_line_count or 0)
+      if lnum >= s0 + 1 and lnum <= sec_end_1 then
+        remove_section(bufnr, q)
+        q.mode         = q.mode == "list" and "table" or "list"
+        q.show_columns = false
+        render_one(bufnr, q)
+        return
+      end
     end
   end
 end
 
---- Toggle the column picker for the current query line (table mode only).
+--- Toggle the column picker for the query under the cursor (table mode only).
 local function toggle_cols_at(bufnr, lnum)
   local state = get_state(bufnr)
   for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    if qrow and lnum == qrow + 1 then
-      if q.mode ~= "table" then return end
-      remove_section(bufnr, q)
-      q.show_columns = not q.show_columns
-      render_one(bufnr, q)
-      return
-    end
-  end
-end
---- Toggle rendering for the query under the cursor.
-function M.toggle_render_at_cursor(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local lnum = vim.api.nvim_win_get_cursor(0)[1]
-  local state = get_state(bufnr)
-  for _, q in ipairs(state.queries) do
-    local qrow = query_row_0(bufnr, q)
-    if qrow and lnum == qrow + 1 then
-      q.hidden = not q.hidden
-      if q.hidden then
+    local s0 = q.section_mark and section_row_0(bufnr, q)
+    if s0 then
+      local sec_end_1 = s0 + (q.section_line_count or 0)
+      if lnum >= s0 + 1 and lnum <= sec_end_1 then
+        if q.mode ~= "table" then return end
         remove_section(bufnr, q)
-        q.loading = false
-      else
-        -- Show loading indicator if we don't have results yet
-        if not q.results and q.ast then
-          q.loading = true
-          render_one(bufnr, q)
-          execute_query(bufnr, q)
-        else
-          render_one(bufnr, q)
-        end
+        q.show_columns = not q.show_columns
+        render_one(bufnr, q)
+        return
       end
-      return
     end
   end
 end
+
 -- ── Buffer lifecycle ───────────────────────────────────────────────────
 
 local function on_write_pre(bufnr)
-  debug_log('on_write_pre: bufnr=' .. tostring(bufnr))
   local state = get_state(bufnr)
   state._had_queries = #state.queries > 0
-  
-  -- Preserve query results/state before clearing (keyed by query string)
-  state._preserved_state = {}
-  for _, q in ipairs(state.queries) do
-    state._preserved_state[q.query_str] = {
-      results = q.results,
-      mode = q.mode,
-      columns = vim.deepcopy(q.columns),
-      show_columns = q.show_columns,
-      hidden = q.hidden,
-      loading = q.loading,
-    }
-  end
-  
   remove_all_sections(bufnr)
   for _, q in ipairs(state.queries) do
     if q.query_mark then
@@ -863,20 +560,11 @@ local function on_write_pre(bufnr)
 end
 
 local function on_write_post(bufnr)
-  debug_log('on_write_post: bufnr=' .. tostring(bufnr))
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-  if filepath ~= "" then indexer.invalidate(filepath) end
-
   local state = get_state(bufnr)
   if not state._had_queries then return end
   state._had_queries = false
-  
-  -- Pass the preserved state to render_all so it can restore results
-  local preserved = state._preserved_state
-  state._preserved_state = nil
-  
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then M.render_all(bufnr, preserved) end
+    if vim.api.nvim_buf_is_valid(bufnr) then M.render_all(bufnr) end
   end)
 end
 
@@ -892,12 +580,6 @@ end
 function M.setup_buf(bufnr)
   local km      = config.current.keymaps or {}
   local bld_key = km.query_builder or "<leader>Q"
-
-  if _G.logseq_toggle_query_render == nil then
-    _G.logseq_toggle_query_render = function()
-      require("logseq.query_ui").toggle_render_at_cursor()
-    end
-  end
 
   -- Query builder: open empty or pre-filled when on a {{query}} line.
   vim.keymap.set("n", bld_key, function()
@@ -928,22 +610,38 @@ function M.setup_buf(bufnr)
     })
   end, { buffer = bufnr, silent = true, desc = "Logseq: open query builder" })
 
-  -- Helper to bind keys that should act only when inside a query section,
-  -- otherwise fall through to the original key behavior.
-  local function bind_section_key(key, handler)
-    vim.keymap.set("n", key, function()
-      local lnum = vim.api.nvim_win_get_cursor(0)[1]
-      if M.in_any_region(bufnr, lnum) then
-        handler(bufnr, lnum)
-      else
-        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "n", false)
-      end
-    end, { buffer = bufnr, silent = true })
-  end
+  -- r  — refresh query (only active inside a query section; pass-through otherwise).
+  vim.keymap.set("n", "r", function()
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    if M.in_any_region(bufnr, lnum) then
+      refresh_at(bufnr, lnum)
+    else
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes("r", true, false, true), "n", false)
+    end
+  end, { buffer = bufnr, silent = true })
 
-  bind_section_key("r", function(b, l) refresh_at(b, l) end)
-  bind_section_key("t", function(b, l) toggle_mode_at(b, l) end)
-  bind_section_key("c", function(b, l) toggle_cols_at(b, l) end)
+  -- t  — toggle list/table (only inside a section).
+  vim.keymap.set("n", "t", function()
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    if M.in_any_region(bufnr, lnum) then
+      toggle_mode_at(bufnr, lnum)
+    else
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes("t", true, false, true), "n", false)
+    end
+  end, { buffer = bufnr, silent = true })
+
+  -- c  — toggle column picker (only inside a section, table mode).
+  vim.keymap.set("n", "c", function()
+    local lnum = vim.api.nvim_win_get_cursor(0)[1]
+    if M.in_any_region(bufnr, lnum) then
+      toggle_cols_at(bufnr, lnum)
+    else
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes("c", true, false, true), "n", false)
+    end
+  end, { buffer = bufnr, silent = true })
 
   local group = vim.api.nvim_create_augroup("LogseqQuery_" .. bufnr, { clear = true })
 
@@ -968,20 +666,6 @@ function M.setup_buf(bufnr)
   vim.schedule(function()
     if vim.api.nvim_buf_is_valid(bufnr) then M.render_all(bufnr) end
   end)
-end
-
---- One-time global setup: when ANY vault .md file is written, invalidate its
---- cache entry so that subsequent query executions see fresh file data.
-function M.setup_global()
-  vim.api.nvim_create_autocmd("BufWritePost", {
-    group   = vim.api.nvim_create_augroup("LogseqQueryGlobal", { clear = true }),
-    pattern = "*.md",
-    callback = function(ev)
-      local vault = config.current.vault_path
-      if not vault or not util.is_vault_file(ev.file, vault) then return end
-      indexer.invalidate(ev.file)
-    end,
-  })
 end
 
 return M
