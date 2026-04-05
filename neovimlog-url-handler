@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# neovimlog-url-handler — OS-level handler for neovimlog:// and logseq:// URLs.
+#
+# Registers with the desktop environment so that clicking a neovimlog:// link
+# (from a browser, another app, or the terminal) opens the target block or page
+# inside a running Neovim session.
+#
+# Install (Linux/XDG):
+#   1. Copy or symlink this script somewhere on your PATH, e.g.:
+#        ln -s "$PWD/neovimlog-url-handler" ~/.local/bin/neovimlog-url-handler
+#   2. Install the desktop file:
+#        cp neovimlog.desktop ~/.local/share/applications/
+#        xdg-mime default neovimlog.desktop x-scheme-handler/neovimlog
+#        xdg-mime default neovimlog.desktop x-scheme-handler/logseq
+#        update-desktop-database ~/.local/share/applications/
+#
+# Install (Termux):
+#   Add a case to ~/bin/termux-url-opener for neovimlog:// URLs, or set the
+#   default browser/handler to this script.
+
+set -euo pipefail
+
+URL="${1:-}"
+if [ -z "$URL" ]; then
+  echo "Usage: neovimlog-url-handler <neovimlog://... | logseq://...>" >&2
+  exit 1
+fi
+
+# ── Escape URL for embedding in a single-quoted Lua string ───────────────────
+# Replace ' with '\'' so the shell single-quote wrapping survives.
+ESCAPED_URL="${URL//\'/\'\\\'\'}"
+LUA_CMD="require('logseq').open_url('${ESCAPED_URL}')"
+
+# ── Find a running Neovim server ─────────────────────────────────────────────
+NVIM_SOCKET=""
+CANDIDATES=(
+  "/tmp/nvim.sock"
+  "/tmp/nvim"
+  "/run/user/$(id -u)/nvim.sock"
+)
+for sock in "${CANDIDATES[@]}"; do
+  if [ -S "$sock" ]; then
+    NVIM_SOCKET="$sock"
+    break
+  fi
+done
+
+# Broader search in /tmp if none of the well-known paths matched
+if [ -z "$NVIM_SOCKET" ]; then
+  NVIM_SOCKET=$(find /tmp -maxdepth 3 -name "nvim*" -type s 2>/dev/null | head -1 || true)
+fi
+
+# ── Dispatch ─────────────────────────────────────────────────────────────────
+if [ -n "$NVIM_SOCKET" ]; then
+  # Send to the running instance without stealing focus
+  nvim --server "$NVIM_SOCKET" --remote-send ":lua ${LUA_CMD}<CR>"
+else
+  # No running instance — open one, wait for the plugin to load, then navigate.
+  VAULT=$(cat ~/.local/share/nvim/logseq_vault 2>/dev/null || true)
+  OPEN_TARGET="${VAULT:-}"
+
+  nvim ${OPEN_TARGET:+"$OPEN_TARGET"} \
+    -c "lua vim.defer_fn(function() ${LUA_CMD} end, 400)"
+fi

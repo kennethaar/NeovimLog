@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=NeovimLog
+Comment=Open logseq:// and neovimlog:// URLs in Neovim
+# Adjust Exec to the full path of neovimlog-url-handler if it is not on PATH
+Exec=neovimlog-url-handler %u
+Type=Application
+NoDisplay=true
+Categories=Utility;
+MimeType=x-scheme-handler/neovimlog;x-scheme-handler/logseq;

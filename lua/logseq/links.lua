@@ -48,6 +48,17 @@ function M.link_under_cursor()
     pos = e + 1
   end
 
+  -- Check logseq:// and neovimlog:// deep-link URLs
+  for _, scheme in ipairs({ "neovimlog://", "logseq://" }) do
+    pos = 1
+    while true do
+      local s, e, url = line:find("(" .. scheme .. "[^%s%]%)]*)", pos)
+      if not s then break end
+      if col >= s and col <= e then return "url", url end
+      pos = e + 1
+    end
+  end
+
   -- Check #tags (but not inside [[...]])
   pos = 1
   while true do
@@ -151,6 +162,57 @@ local function follow_wikilink(vault, value)
   open_or_create(filepath, value)
 end
 
+--- Percent-decode a URL-encoded string.
+---@param s string
+---@return string
+local function url_decode(s)
+  return s:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)
+end
+
+--- Follow a logseq:// or neovimlog:// deep-link URL.
+--- Supports:
+---   logseq://graph/<name>?block-id=<uuid>
+---   logseq://graph/<name>?page=<name>
+---   neovimlog://block/<uuid>
+---   neovimlog://page/<name>
+---@param vault string
+---@param url string
+local function follow_url(vault, url)
+  -- ?block-id=UUID  (logseq:// style)
+  local block_id = url:match("[?&]block%-id=([%w%-]+)")
+  if block_id then
+    follow_block_ref(vault, block_id)
+    return
+  end
+
+  -- neovimlog://block/UUID  (short form)
+  local block_id2 = url:match("://block/([%w%-]+)")
+  if block_id2 then
+    follow_block_ref(vault, block_id2)
+    return
+  end
+
+  -- ?page=PageName  (logseq:// style)
+  local page = url:match("[?&]page=([^&]+)")
+  if page then
+    follow_wikilink(vault, url_decode(page))
+    return
+  end
+
+  -- neovimlog://page/PageName  (short form)
+  local page2 = url:match("://page/(.+)")
+  if page2 then
+    follow_wikilink(vault, url_decode(page2))
+    return
+  end
+
+  -- Fallback: hand off to the OS (e.g. open in Logseq desktop)
+  vim.ui.open(url)
+end
+
+--- Expose follow_url for external callers (e.g. M.open_url in init.lua).
+M.follow_url = follow_url
+
 --- Follow a ((block-ref)) by grepping the vault for `id:: <uuid>`.
 local function follow_block_ref(vault, value)
   local search_dirs = {}
@@ -213,6 +275,7 @@ function M.follow()
   if     link_type == "link"      then follow_wikilink(vault, value)
   elseif link_type == "block_ref" then follow_block_ref(vault, value)
   elseif link_type == "tag"       then follow_tag(vault, value)
+  elseif link_type == "url"       then follow_url(vault, value)
   end
 end
 

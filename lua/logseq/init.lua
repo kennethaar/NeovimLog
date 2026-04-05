@@ -273,6 +273,10 @@ local function bootstrap(opts)
     end
   end, { nargs = "?", desc = "Create a new Logseq page" })
 
+  vim.api.nvim_create_user_command("LogseqOpenURL", function(cmd_opts)
+    M.open_url(cmd_opts.args)
+  end, { nargs = 1, desc = "Open a logseq:// or neovimlog:// URL" })
+
   vim.api.nvim_create_user_command("LogseqDedup", function()
     require("logseq.dedup").dedup_buf()
   end, { desc = "Remove duplicate lines in the current buffer" })
@@ -338,6 +342,21 @@ local function bootstrap(opts)
     vim.schedule(function()
       vim.notify("[logseq.nvim] Meeting reminders defaulted to 3 min. Use :LogseqCalRemind to change.", vim.log.levels.INFO)
     end)
+  end
+end
+
+--- Open a logseq:// or neovimlog:// URL, navigating to the target block or page.
+--- Intended for use from the OS-level URL handler (neovimlog-url-handler script).
+---@param url string
+function M.open_url(url)
+  local cfg = config.current
+  if not cfg or not cfg.vault_path then
+    vim.notify("[logseq.nvim] No vault configured. Cannot open URL.", vim.log.levels.WARN)
+    return
+  end
+  local ok, links = pcall(require, "logseq.links")
+  if ok then
+    links.follow_url(cfg.vault_path, url)
   end
 end
 
