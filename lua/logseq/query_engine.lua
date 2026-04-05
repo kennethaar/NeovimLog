@@ -94,14 +94,16 @@ evaluators["tags"] = function(ast, _block, ctx)
 end
 
 evaluators["property"] = function(ast, block, _ctx)
-  local val = util.prop_ci(block.properties, ast.key:lower())
+  local key = ast.key:lower():gsub("^:", "")
+  local val = util.prop_ci(block.properties, key)
   if not val then return false end
-  if not ast.value then return true end           -- property exists
+  if not ast.value then return true end
   return val:lower() == ast.value:lower()
 end
 
 evaluators["page_property"] = function(ast, _block, ctx)
-  local val = util.prop_ci(ctx.page_props, ast.key:lower())
+  local key = ast.key:lower():gsub("^:", "")
+  local val = util.prop_ci(ctx.page_props, key)
   if not val then return false end
   if not ast.value then return true end
   return val:lower() == ast.value:lower()

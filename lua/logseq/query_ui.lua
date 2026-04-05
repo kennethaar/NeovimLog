@@ -353,6 +353,7 @@ local function refresh_query(bufnr, q)
   end
   engine.run(q.ast, { current_page = current_page_name(bufnr) }, function(results)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    if get_state(bufnr).render_disabled then return end
     q.results = results
     render_one(bufnr, q)
   end)
@@ -398,6 +399,7 @@ function M.render_all(bufnr)
     if ast then
       engine.run(ast, { current_page = current_page_name(bufnr) }, function(results)
         if not vim.api.nvim_buf_is_valid(bufnr) then return end
+        if get_state(bufnr).render_disabled then return end
         q.results = results
         render_one(bufnr, q)
       end)
