@@ -280,7 +280,7 @@ function M.close_win(_minwid, _clicks, _button, _mods)
   -- Pre-strip all panels so no vim.schedule restore can re-dirty the buffer
   -- between the write and quit phases of :wq (which would cause E37).
   pcall(function() require("logseq.panels").close_all(bufnr) end)
-  vim.cmd("wq")
+  vim.cmd("write | quit!")
 end
 
 -- ── Page Renaming ─────────────────────────────────────────────────────
