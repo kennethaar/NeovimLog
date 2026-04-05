@@ -522,7 +522,7 @@ render_one = function(bufnr, q)
   -- Store per-query source map (relative indices) and display length so we can
   -- recompute absolute positions from the query extmark when needed.
   q.smap = smap
-  q._lines_count = #final_lines
+  q._lines_count = #lines
   q.header_rel = header_rel
   q.header_buttons = header_buttons
   q.region = { start_line = start_line, end_line = end_line }

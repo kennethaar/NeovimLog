@@ -196,7 +196,10 @@ function M.follow()
   if nt_ok and ns_tree.in_region(bufnr, row) and ns_tree.navigate() then return end
 
   local qu_ok, query_ui = pcall(require, "logseq.query_ui")
-  if qu_ok and query_ui.in_any_region(bufnr, row) and query_ui.navigate(bufnr) then return end
+  if qu_ok and query_ui.in_any_region(bufnr, row) then
+    query_ui.navigate(bufnr)
+    return
+  end
 
   local link_type, value = M.link_under_cursor()
 
