@@ -245,8 +245,11 @@ function M.insert_tab_indent(bufnr)
   local motions_ok, motions = pcall(require, "logseq.motions")
   if motions_ok and motions.demote then
     motions.demote()
-    -- Restore cursor to roughly the same position
-    pcall(vim.api.nvim_win_set_cursor, 0, { row, col + indent_size() })
+    -- Schedule cursor update after Neovim's post-buf_set_lines cursor pass
+    local new_col = col + indent_size()
+    vim.schedule(function()
+      pcall(vim.api.nvim_win_set_cursor, 0, { row, new_col })
+    end)
   else
     -- Fallback to Vim's built-in
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-t>", true, false, true), "n", true)
@@ -260,7 +263,10 @@ function M.insert_tab_outdent(bufnr)
   local motions_ok, motions = pcall(require, "logseq.motions")
   if motions_ok and motions.promote then
     motions.promote()
-    pcall(vim.api.nvim_win_set_cursor, 0, { row, math.max(0, col - indent_size()) })
+    local new_col = math.max(0, col - indent_size())
+    vim.schedule(function()
+      pcall(vim.api.nvim_win_set_cursor, 0, { row, new_col })
+    end)
   else
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "n", true)
   end
