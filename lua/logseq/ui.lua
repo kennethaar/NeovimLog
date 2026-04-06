@@ -28,6 +28,21 @@ local TODO_HL_NS = vim.api.nvim_create_namespace("logseq_todo_hl")
 -- (e.g. during the write lifecycle when sections are removed).
 local _vl_pending = {}
 
+-- Shared helpers for compact time formatting used by winbar and tabline.
+local function format_time(time_str)
+  return time_str:gsub("<1 hr", "0h"):gsub(" hr", "h"):gsub(" min", "m")
+end
+
+-- Strip event name, return only the duration portion for mobile display.
+local function mobile_event_time(text)
+  local first = text:match("^(.-) │") or text
+  local dur = first:match(" in (.+)$")
+  if dur then return dur end
+  dur = first:match("%((.+) left%)")
+  if dur then return dur end
+  return first
+end
+
 local function truncate_display_width(text, max_cols)
   if not text or text == "" then return "" end
   if vim.fn.strdisplaywidth(text) <= max_cols then return text end
@@ -131,52 +146,25 @@ function M.winbar()
     win_width = vim.api.nvim_win_get_width(0)
   end
 
-  local function format_time(time_str)
-    local formatted = time_str:gsub("<1 hr", "0h"):gsub(" hr", "h"):gsub(" min", "m")
-    return formatted
-  end
-
-  -- Mobile: strip event name, return only the time portion.
-  local function mobile_event_time(text)
-    local first = text:match("^(.-) │") or text
-    local dur = first:match(" in (.+)$")
-    if dur then return dur end
-    dur = first:match("%((.+) left%)")
-    if dur then return dur end
-    return first
-  end
-
   -- Build nav buttons differently for mobile vs wider windows
   local nav_parts = {}
   if win_width < MOBILE_WIDTH then
-    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@🔍%X") end
-    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@🖇️%X") end
-    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@🗓️%X") end
-    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
+    -- All buttons evenly spaced across the full window width.
+    local all_parts = {
+      "%@v:lua.logseq_sl_prev_day@◀️%X",
+      "%@v:lua.logseq_sl_today@📅%X",
+      "%@v:lua.logseq_sl_next_day@▶️%X",
+    }
+    if wb.search    ~= false then table.insert(all_parts, "%@v:lua.logseq_sl_search@🔍%X") end
+    if wb.backlinks ~= false then table.insert(all_parts, "%@v:lua.logseq_sl_backlinks@🖇️%X") end
+    if wb.calsync   ~= false and is_journal     then table.insert(all_parts, "%@v:lua.logseq_sl_calsync@🗓️%X") end
+    if wb.ns_tree   ~= false and not is_journal then table.insert(all_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
+    table.insert(all_parts, "%@v:lua.logseq_toggle_query_render@🪄%X")
 
-    local nav_btns  = " %#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
-    local close_btn = ""
-
-    if M._state.saved_buffers[bufnr] then
-      return WINBAR_LEFT_MOBILE .. nav_btns .. "%< ✅"
-    end
-
-    local ok, reminders = pcall(require, "logseq.reminders")
-    if ok then
-      local event_text = reminders.next_meeting_str()
-      if event_text ~= "" then
-        local dur = mobile_event_time(format_time(event_text))
-        return WINBAR_LEFT_MOBILE .. nav_btns .. "%< " .. dur
-      end
-    end
-
-    local crumb = get_breadcrumb(winid, bufnr)
-    if crumb ~= "" then
-      local safe = crumb:gsub("%%", "%%%%")
-      return WINBAR_LEFT_MOBILE .. nav_btns .. " %#LogseqBreadcrumb#%<" .. safe .. "%#Normal#" .. close_btn
-    end
-
-    return WINBAR_LEFT_MOBILE .. nav_btns .. close_btn
+    local n     = #all_parts
+    local gap_w = math.max(1, math.floor((win_width - n * 2) / (n + 1)))
+    local sp    = string.rep(" ", gap_w)
+    return sp .. table.concat(all_parts, sp) .. sp
   else
     if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ ^k 🔍 %X") end
     if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ b 🖇️ %X") end
@@ -237,23 +225,30 @@ function M.tabline()
 
   local safe_label = label:gsub("%%", "%%%%")
   local is_mobile = vim.o.columns < MOBILE_WIDTH
-  local rename_btn
-  local toggle_btn
-  local close_btn
 
   if is_mobile then
-    rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝%X%#TabLine#"
-    toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@🪄%X%#TabLine#"
-    close_btn  = "%#Comment#%@v:lua.logseq_close_win@❌%X%#TabLine#"
+    local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝%X%#TabLine#"
+    local close_btn  = "%#Comment#%@v:lua.logseq_close_win@❌%X%#TabLine#"
+    -- Show meeting duration (e.g. "(70m)") right before ❌ when there's an event.
+    local dur_str = ""
+    local ok, reminders = pcall(require, "logseq.reminders")
+    if ok then
+      local event_text = reminders.next_meeting_str()
+      if event_text ~= "" then
+        local dur = mobile_event_time(format_time(event_text))
+        if dur ~= "" then dur_str = "%#Comment#(" .. dur .. ")%#TabLine#" end
+      end
+    end
+    -- %< is the truncation point: label shrinks, buttons are never cut.
+    return " " .. rename_btn .. " %#TabLineSel#%<" .. safe_label
+         .. "%#TabLine#%=" .. dur_str .. close_btn .. " "
   else
-    rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 rn %X%#TabLine#"
-    toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
-    close_btn  = "%#Comment#%@v:lua.logseq_close_win@ :wq ❌ %X%#TabLine#"
+    local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 rn %X%#TabLine#"
+    local toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
+    local close_btn  = "%#Comment#%@v:lua.logseq_close_win@ :wq ❌ %X%#TabLine#"
+    return " " .. rename_btn .. toggle_btn .. " %#TabLineSel#%<" .. safe_label
+         .. "%#TabLine#%=" .. close_btn .. " "
   end
-  -- %< is the truncation point: content before it is never cut, content
-  -- after it shrinks first. Buttons are before %<; label truncates instead.
-  return " " .. rename_btn .. toggle_btn .. " %#TabLineSel#%<" .. safe_label
-       .. "%#TabLine#%=" .. close_btn .. " "
 end
 
 --- Activate the custom tabline (called when entering a logseq buffer).
@@ -778,11 +773,11 @@ function M.build_statusline()
   if is_mobile then
     if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗%X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡%X") end
-    if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅%X") end
     if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@▶️%X") end
     if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@◀️%X") end
     if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@🔼%X") end
     if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@🔽%X") end
+    if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅%X") end
   else
     if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 ↩️ %X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ za %X") end
