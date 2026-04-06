@@ -106,8 +106,23 @@ _G.logseq_sl_prev_day = function() _open_journal_day(-1) end
 _G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
 _G.logseq_sl_next_day = function() _open_journal_day(1) end
 
+-- Dynamic label for the follow/back button: 🔗 when on a link, 🔙 otherwise.
+_G.logseq_sl_follow_label = function()
+  local ok, links = pcall(require, "logseq.links")
+  local on_link = ok and links.link_under_cursor() ~= nil
+  if vim.o.columns < MOBILE_WIDTH then
+    return on_link and "🔗" or "🔙"
+  else
+    return on_link and " 🔗 ↩️ " or " 🔙 ^o "
+  end
+end
+
 -- Statusline buttons (editing/cursor)
-_G.logseq_sl_follow    = function() require("logseq.links").follow() end
+_G.logseq_sl_follow = function()
+  require("logseq.links").follow(function()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "n", false)
+  end)
+end
 _G.logseq_sl_backlinks = function() require("logseq.panels").toggle_key("backlinks") end
 _G.logseq_sl_nstree    = function() require("logseq.panels").toggle_key("ns_tree")   end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
@@ -771,7 +786,7 @@ function M.build_statusline()
   local parts = {}
 
   if is_mobile then
-    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗%X") end
+    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@%{%v:lua.logseq_sl_follow_label()%}%X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡%X") end
     if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@▶️%X") end
     if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@◀️%X") end
@@ -779,7 +794,7 @@ function M.build_statusline()
     if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@🔽%X") end
     if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅%X") end
   else
-    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 ↩️ %X") end
+    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@%{%v:lua.logseq_sl_follow_label()%}%X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ za %X") end
     if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@ ✅ ^t %X") end
     if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ▶️ >> %X") end
