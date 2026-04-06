@@ -185,7 +185,8 @@ local function follow_tag(vault, value)
 end
 
 --- Follow the link under the cursor.
-function M.follow()
+---@param fallback_fn function|nil  Called when cursor is not on a link. Defaults to keymap fallback.
+function M.follow(fallback_fn)
   local bufnr = vim.api.nvim_get_current_buf()
   local row   = vim.api.nvim_win_get_cursor(0)[1]
 
@@ -204,8 +205,12 @@ function M.follow()
   local link_type, value = M.link_under_cursor()
 
   if not link_type then
-    local key = config.current.keymaps.follow_link
-    pcall(vim.cmd, "normal! " .. (key == "<CR>" and "j" or key))
+    if fallback_fn then
+      fallback_fn()
+    else
+      local key = config.current.keymaps.follow_link
+      pcall(vim.cmd, "normal! " .. (key == "<CR>" and "j" or key))
+    end
     return
   end
 
