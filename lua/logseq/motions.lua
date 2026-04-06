@@ -63,10 +63,30 @@ end
 
 -- ── Block move (swap with sibling) ───────────────────────────────────
 
+--- Find the block containing lnum. When cursor is on a non-bullet line
+--- (property, continuation) that falls outside any block's cached range,
+--- fall back to the nearest block whose line_start <= lnum.
+local function block_for_lnum(parsed, lnum)
+  local block = parser.block_at_line(parsed.blocks, lnum)
+  if block then return block end
+
+  -- Fallback: scan all blocks (DFS order) for the closest one above lnum.
+  local flat = parser.flatten(parsed.blocks)
+  local best
+  for _, b in ipairs(flat) do
+    if b.line_start <= lnum then
+      best = b
+    elseif b.line_start > lnum then
+      break
+    end
+  end
+  return best
+end
+
 function M.move_down()
   local parsed, lines = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
-  local block = parser.block_at_line(parsed.blocks, lnum)
+  local block = block_for_lnum(parsed, lnum)
   if not block then return end
 
   local sibs = parser.siblings(block, parsed.blocks)
@@ -91,7 +111,7 @@ end
 function M.move_up()
   local parsed, lines = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
-  local block = parser.block_at_line(parsed.blocks, lnum)
+  local block = block_for_lnum(parsed, lnum)
   if not block then return end
 
   local sibs = parser.siblings(block, parsed.blocks)

@@ -184,17 +184,34 @@ function M.smart_property(bufnr)
   local parsed = parser.parse_buf()
   local block = parser.block_at_line(parsed.blocks, row)
 
+  -- Fallback: find nearest block above cursor when block_at_line misses
+  if not block then
+    local flat = parser.flatten(parsed.blocks)
+    for i = #flat, 1, -1 do
+      if flat[i].line_start <= row then
+        block = flat[i]
+        break
+      end
+    end
+  end
+
   local ind = 0
   local insert_after = row
 
   if block then
     ind = block.indent + indent_size()
-    -- Walk from bullet line to find last property/continuation before first child
-    insert_after = block.line_start
-    for i = block.line_start + 1, block.line_end do
-      local l = lines[i]
-      if l:match("^%s*%- ") then break end -- child bullet → stop
-      insert_after = i
+    if row == block.line_start then
+      -- Cursor is on the bullet line: insert after last existing property/
+      -- continuation, but before the first child bullet.
+      insert_after = block.line_start
+      for i = block.line_start + 1, block.line_end do
+        local l = lines[i]
+        if l:match("^%s*%- ") then break end
+        insert_after = i
+      end
+    else
+      -- Cursor is already on a property/continuation line: insert right below it.
+      insert_after = row
     end
   end
 
