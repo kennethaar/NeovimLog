@@ -136,6 +136,16 @@ function M.winbar()
     return formatted
   end
 
+  -- Mobile: strip event name, return only the time portion.
+  local function mobile_event_time(text)
+    local first = text:match("^(.-) │") or text
+    local dur = first:match(" in (.+)$")
+    if dur then return dur end
+    dur = first:match("%((.+) left%)")
+    if dur then return dur end
+    return first
+  end
+
   -- Build nav buttons differently for mobile vs wider windows
   local nav_parts = {}
   if win_width < MOBILE_WIDTH then
@@ -155,8 +165,8 @@ function M.winbar()
     if ok then
       local event_text = reminders.next_meeting_str()
       if event_text ~= "" then
-        local short_time = truncate_display_width(format_time(event_text), NEXT_APPT_MAX_COLS)
-        return WINBAR_LEFT_MOBILE .. nav_btns .. "%< " .. short_time
+        local dur = mobile_event_time(format_time(event_text))
+        return WINBAR_LEFT_MOBILE .. nav_btns .. "%< " .. dur
       end
     end
 
@@ -784,7 +794,11 @@ function M.build_statusline()
   end
   
   if is_mobile then
-    return table.concat(parts, " ")
+    local n = #parts
+    if n == 0 then return "" end
+    local gap_w = math.max(1, math.floor((vim.o.columns - n * 2) / (n + 1)))
+    local sp = string.rep(" ", gap_w)
+    return sp .. table.concat(parts, sp) .. sp
   end
 
   return table.concat(parts, "")
