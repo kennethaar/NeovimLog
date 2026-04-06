@@ -16,7 +16,8 @@ M._state = {
   orig_tabline = nil,
 }
 
-local WINBAR_LEFT = "%@v:lua.logseq_sl_prev_day@ ◀ %X%@v:lua.logseq_sl_today@ 📅 %X%@v:lua.logseq_sl_next_day@ ▶ %X"
+local WINBAR_LEFT        = "%@v:lua.logseq_sl_prev_day@ ◀ %X%@v:lua.logseq_sl_today@ 📅 %X%@v:lua.logseq_sl_next_day@ ▶ %X"
+local WINBAR_LEFT_MOBILE = "%@v:lua.logseq_sl_prev_day@◀️%X%@v:lua.logseq_sl_today@📅%X%@v:lua.logseq_sl_next_day@▶️%X"
 
 local BLOCK_NS   = vim.api.nvim_create_namespace("logseq_block_ui")
 local SCHED_NS   = vim.api.nvim_create_namespace("logseq_scheduled")
@@ -138,16 +139,16 @@ function M.winbar()
   -- Build nav buttons differently for mobile vs wider windows
   local nav_parts = {}
   if win_width < MOBILE_WIDTH then
-    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ 🔍 %X") end
-    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ 🖇️ %X") end
-    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@ 🗓️ %X") end
-    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ 🌳 %X") end
+    if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@🔍%X") end
+    if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@🖇️%X") end
+    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@🗓️%X") end
+    if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
 
-    local nav_btns  = " %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
+    local nav_btns  = " %#Comment#" .. table.concat(nav_parts, " ") .. "%#Normal#"
     local close_btn = ""
 
     if M._state.saved_buffers[bufnr] then
-      return " " .. WINBAR_LEFT .. nav_btns .. "%<   ✓ Saved"
+      return WINBAR_LEFT_MOBILE .. nav_btns .. "%< ✅"
     end
 
     local ok, reminders = pcall(require, "logseq.reminders")
@@ -155,17 +156,17 @@ function M.winbar()
       local event_text = reminders.next_meeting_str()
       if event_text ~= "" then
         local short_time = truncate_display_width(format_time(event_text), NEXT_APPT_MAX_COLS)
-        return " " .. WINBAR_LEFT .. nav_btns .. "%<  " .. short_time .. "  "
+        return WINBAR_LEFT_MOBILE .. nav_btns .. "%< " .. short_time
       end
     end
 
     local crumb = get_breadcrumb(winid, bufnr)
     if crumb ~= "" then
       local safe = crumb:gsub("%%", "%%%%")
-      return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
+      return WINBAR_LEFT_MOBILE .. nav_btns .. " %#LogseqBreadcrumb#%<" .. safe .. "%#Normal#" .. close_btn
     end
 
-    return " " .. WINBAR_LEFT .. nav_btns .. close_btn
+    return WINBAR_LEFT_MOBILE .. nav_btns .. close_btn
   else
     if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ ^k 🔍 %X") end
     if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ b 🖇️ %X") end
@@ -231,9 +232,9 @@ function M.tabline()
   local close_btn
 
   if is_mobile then
-    rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 %X%#TabLine#"
-    toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
-    close_btn  = "%#Comment#%@v:lua.logseq_close_win@ ❌ %X%#TabLine#"
+    rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝%X%#TabLine#"
+    toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@🪄%X%#TabLine#"
+    close_btn  = "%#Comment#%@v:lua.logseq_close_win@❌%X%#TabLine#"
   else
     rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 rn %X%#TabLine#"
     toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
@@ -765,13 +766,13 @@ function M.build_statusline()
   local parts = {}
 
   if is_mobile then
-    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 %X") end
-    if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ %X") end
-    if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@ ✅ %X") end
-    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@ ▶️ %X") end
-    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@ ◀️ %X") end
-    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@ 🔼 %X") end
-    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@ 🔽 %X") end
+    if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@🔗%X") end
+    if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@⚡%X") end
+    if bb.todo_cycle  ~= false then table.insert(parts, "%@v:lua.logseq_sl_todo@✅%X") end
+    if bb.indent      ~= false then table.insert(parts, "%@v:lua.logseq_sl_indent@▶️%X") end
+    if bb.unindent    ~= false then table.insert(parts, "%@v:lua.logseq_sl_unindent@◀️%X") end
+    if bb.move_up     ~= false then table.insert(parts, "%@v:lua.logseq_sl_moveup@🔼%X") end
+    if bb.move_down   ~= false then table.insert(parts, "%@v:lua.logseq_sl_movedown@🔽%X") end
   else
     if bb.follow_link ~= false then table.insert(parts, "%@v:lua.logseq_sl_follow@ 🔗 ↩️ %X") end
     if bb.fold_toggle ~= false then table.insert(parts, "%@v:lua.logseq_sl_fold@ ⚡ za %X") end
@@ -783,7 +784,7 @@ function M.build_statusline()
   end
   
   if is_mobile then
-    return table.concat(parts, string.rep(" ", 3))
+    return table.concat(parts, " ")
   end
 
   return table.concat(parts, "")
