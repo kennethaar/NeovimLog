@@ -63,24 +63,19 @@ end
 
 -- ── Block move (swap with sibling) ───────────────────────────────────
 
---- Find the block containing lnum. When cursor is on a non-bullet line
---- (property, continuation) that falls outside any block's cached range,
---- fall back to the nearest block whose line_start <= lnum.
+--- Find the block whose bullet line is at or directly above lnum.
+--- Walks backward from lnum to the nearest "^%s*%- " line, then looks up
+--- that block. This is reliable for property/continuation lines regardless
+--- of how far `line_end` was propagated by Pass 4 in the parser.
 local function block_for_lnum(parsed, lnum)
-  local block = parser.block_at_line(parsed.blocks, lnum)
-  if block then return block end
-
-  -- Fallback: scan all blocks (DFS order) for the closest one above lnum.
-  local flat = parser.flatten(parsed.blocks)
-  local best
-  for _, b in ipairs(flat) do
-    if b.line_start <= lnum then
-      best = b
-    elseif b.line_start > lnum then
-      break
+  local buf_lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  for i = lnum, 1, -1 do
+    if buf_lines[i] and buf_lines[i]:match("^%s*%- ") then
+      local b = parser.block_at_line(parsed.blocks, i)
+      if b then return b end
     end
   end
-  return best
+  return nil
 end
 
 function M.move_down()
