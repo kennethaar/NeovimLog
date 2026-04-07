@@ -88,4 +88,24 @@ function M.add_task(opts_json)
   return "ok"
 end
 
+--- Add a task by reading JSON from a temp file written by LogseqQuickAdd.
+--- This avoids command-line escaping issues with nested quotes.
+--- The temp file is deleted after reading.
+---@return string
+function M.add_task_from_file()
+  local temp = os.getenv("TEMP") or os.getenv("TMP") or ""
+  if temp == "" then
+    return "err:TEMP environment variable not set"
+  end
+  local filepath = temp .. "\\logseq_quickadd_task.json"
+  local f = io.open(filepath, "r")
+  if not f then
+    return "err:task file not found at " .. filepath
+  end
+  local json_str = f:read("*a")
+  f:close()
+  os.remove(filepath)
+  return M.add_task(json_str)
+end
+
 return M
