@@ -70,7 +70,9 @@ end
 local function block_for_lnum(parsed, lnum)
   local buf_lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
   for i = lnum, 1, -1 do
-    if buf_lines[i] and buf_lines[i]:match("^%s*%- ") then
+    local line = buf_lines[i]
+    if line and line:match("^%s*%- ") then
+      -- Found what looks like a bullet line; verify via parser
       local b = parser.block_at_line(parsed.blocks, i)
       if b then return b end
     end
@@ -78,11 +80,28 @@ local function block_for_lnum(parsed, lnum)
   return nil
 end
 
+--- Swap lnum with the adjacent line in direction (+1 down, -1 up).
+--- Used for page-property lines that are not part of any block.
+local function swap_plain_lines(lnum, dir)
+  local buf_lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local target = lnum + dir
+  if target < 1 or target > #buf_lines then return end
+  local lo = math.min(lnum, target)
+  -- Always put the lower-indexed line at lo and the upper at lo+1 → swap effect
+  vim.api.nvim_buf_set_lines(0, lo - 1, lo + 1, false, { buf_lines[lo + 1], buf_lines[lo] })
+  vim.api.nvim_win_set_cursor(0, { target, vim.api.nvim_win_get_cursor(0)[2] })
+end
+
 function M.move_down()
   local parsed, lines = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local block = block_for_lnum(parsed, lnum)
-  if not block then return end
+  if not block then
+    -- Cursor is not inside any block (e.g. page-property line before first
+    -- bullet). Swap the current line with the one below as plain text.
+    swap_plain_lines(lnum, 1)
+    return
+  end
 
   local sibs = parser.siblings(block, parsed.blocks)
   local idx = parser.sibling_index(block, sibs)
@@ -107,7 +126,11 @@ function M.move_up()
   local parsed, lines = parser.parse_buf()
   local lnum = vim.api.nvim_win_get_cursor(0)[1]
   local block = block_for_lnum(parsed, lnum)
-  if not block then return end
+  if not block then
+    -- Cursor is not inside any block. Swap with the line above as plain text.
+    swap_plain_lines(lnum, -1)
+    return
+  end
 
   local sibs = parser.siblings(block, parsed.blocks)
   local idx = parser.sibling_index(block, sibs)
