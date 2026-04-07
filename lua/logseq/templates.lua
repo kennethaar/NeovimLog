@@ -15,6 +15,25 @@ local function get_template_content(namespace)
   return content
 end
 
+-- Build stacked journal template content from year and/or month templates.
+-- Returns combined content string or nil if no templates found.
+local function get_journal_template_content(year, month)
+  local year_content = get_template_content(year)
+  local month_key = year .. "_" .. month
+  local month_content = get_template_content(month_key)
+
+  if not year_content and not month_content then return nil end
+
+  if year_content and month_content then
+    -- Strip trailing newlines before joining to avoid extra blank lines
+    year_content = year_content:gsub("\n+$", "")
+    month_content = month_content:gsub("\n+$", "")
+    return year_content .. "\n" .. month_content
+  end
+
+  return year_content or month_content
+end
+
 -- Helper to determine the best prompt text for a placeholder.
 -- If the current line has text (like "status:: "), it uses it.
 -- If the current line is just a bullet ("- %TEXT%"), it scans up to find the parent.
@@ -106,22 +125,31 @@ end
 
 function M.apply_template(bufnr)
   local filepath = vim.api.nvim_buf_get_name(bufnr)
-  local filename = vim.fn.fnamemodify(filepath, ":t")
-  
-  local namespace = filename:match("^(.-)___")
+  local filename = vim.fn.fnamemodify(filepath, ":t:r") -- without extension
 
-  if namespace and namespace ~= "Templates" then
-    local raw_content = get_template_content(namespace)
-    if raw_content then
-      process_placeholders(raw_content, function(processed_lines)
-        vim.schedule(function()
-          if vim.api.nvim_buf_is_valid(bufnr) then
-            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
-            vim.cmd("silent! w")
-          end
-        end)
-      end)
+  local raw_content = nil
+
+  -- Check for journal date pattern: YYYY_MM_DD or YYYY-MM-DD
+  local year, month = filename:match("^(%d%d%d%d)[-_](%d%d)[-_]%d%d$")
+  if year then
+    raw_content = get_journal_template_content(year, month)
+  else
+    -- Fall back to namespace-based templates
+    local namespace = filename:match("^(.-)___")
+    if namespace and namespace ~= "Templates" then
+      raw_content = get_template_content(namespace)
     end
+  end
+
+  if raw_content then
+    process_placeholders(raw_content, function(processed_lines)
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(bufnr) then
+          vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, processed_lines)
+          vim.cmd("silent! w")
+        end
+      end)
+    end)
   end
 end
 
