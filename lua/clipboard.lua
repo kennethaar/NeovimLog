@@ -167,24 +167,86 @@ function M.setup()
 end
 
 -- ── Windows-style shortcuts ───────────────────────────────────────────────
--- Ctrl+A  select all          (normal / visual / insert)
--- Ctrl+C  copy to clipboard   (normal: current line; visual: selection)
--- Ctrl+X  cut  to clipboard   (normal: current line; visual: selection)
--- Ctrl+V  paste from clipboard (normal / visual / insert)
+-- Ctrl+Z  undo                            (normal / insert)
+-- Ctrl+Y  redo                            (normal / insert)
+-- Ctrl+A  select line (once); select all  (normal / visual / insert)
+-- Ctrl+C  copy to clipboard               (normal: current line; visual: selection)
+-- Ctrl+X  cut  to clipboard               (normal: current line; visual: selection)
+-- Ctrl+V  paste from clipboard            (normal / visual / insert)
+-- Shift+Arrow      extend selection by character  (normal / visual)
+-- Shift+Home/End   select to line boundary        (normal / visual)
+-- Ctrl+Arrow       move cursor by word            (normal / insert)
+-- Ctrl+Shift+Arrow extend selection by word       (normal / visual)  *terminal-dependent*
+-- Ctrl+Shift+Home/End  select to file boundary    (normal / visual)
+-- Ctrl+Delete      delete word forward            (normal / insert)
+-- Ctrl+Backspace   delete word backward           (normal / insert)  *terminal-dependent*
 function M.setup_shortcuts()
-  vim.keymap.set("n", "<C-a>", "ggVG",      { desc = "Select all" })
-  vim.keymap.set("v", "<C-a>", "<Esc>ggVG", { desc = "Select all" })
-  vim.keymap.set("i", "<C-a>", "<Esc>ggVG", { desc = "Select all" })
+  -- ── Undo / Redo ────────────────────────────────────────────────────────
+  vim.keymap.set("n", "<C-z>", "u",          { desc = "Undo" })
+  vim.keymap.set("i", "<C-z>", "<C-o>u",     { desc = "Undo" })
+  vim.keymap.set("n", "<C-y>", "<C-r>",      { desc = "Redo" })
+  vim.keymap.set("i", "<C-y>", "<C-o><C-r>", { desc = "Redo" })
 
+  -- ── Select line / Select all ───────────────────────────────────────────
+  -- Normal/insert: Ctrl+A selects all content on the current line
+  --   (first non-blank → last non-blank via ^vg_)
+  -- Visual: Ctrl+A expands to select the entire file (second-press = select all)
+  vim.keymap.set("n", "<C-a>", "^vg_",          { desc = "Select current line content" })
+  vim.keymap.set("v", "<C-a>", "ggVG",          { desc = "Select all (expand from line)" })
+  vim.keymap.set("i", "<C-a>", "<Esc>^vg_",     { desc = "Select current line content" })
+
+  -- ── Copy / Cut / Paste ─────────────────────────────────────────────────
   vim.keymap.set("n", "<C-c>", '"+yy', { desc = "Copy line to system clipboard" })
   vim.keymap.set("v", "<C-c>", '"+y',  { desc = "Copy selection to system clipboard" })
 
   vim.keymap.set("n", "<C-x>", '"+dd', { desc = "Cut line to system clipboard" })
   vim.keymap.set("v", "<C-x>", '"+d',  { desc = "Cut selection to system clipboard" })
 
-  vim.keymap.set("n", "<C-v>", '"+p',       { desc = "Paste from system clipboard" })
-  vim.keymap.set("v", "<C-v>", '"+p',       { desc = "Paste from system clipboard" })
-  vim.keymap.set("i", "<C-v>", "<C-r><C-o>+", { desc = "Paste from system clipboard" })
+  vim.keymap.set("n", "<C-v>", '"+p',          { desc = "Paste from system clipboard" })
+  vim.keymap.set("v", "<C-v>", '"+p',          { desc = "Paste from system clipboard" })
+  vim.keymap.set("i", "<C-v>", "<C-r><C-o>+",  { desc = "Paste from system clipboard" })
+
+  -- ── Shift+Arrow: character selection ──────────────────────────────────
+  -- Normal: enter charwise-visual then move; Visual: extend the selection
+  vim.keymap.set("n", "<S-Right>", "v<Right>", { desc = "Select right" })
+  vim.keymap.set("v", "<S-Right>", "<Right>",  { desc = "Extend selection right" })
+  vim.keymap.set("n", "<S-Left>",  "v<Left>",  { desc = "Select left" })
+  vim.keymap.set("v", "<S-Left>",  "<Left>",   { desc = "Extend selection left" })
+  vim.keymap.set("n", "<S-Down>",  "v<Down>",  { desc = "Select down" })
+  vim.keymap.set("v", "<S-Down>",  "<Down>",   { desc = "Extend selection down" })
+  vim.keymap.set("n", "<S-Up>",    "v<Up>",    { desc = "Select up" })
+  vim.keymap.set("v", "<S-Up>",    "<Up>",     { desc = "Extend selection up" })
+
+  -- ── Shift+Home/End: select to line boundary ────────────────────────────
+  vim.keymap.set("n", "<S-End>",  "v$",  { desc = "Select to end of line" })
+  vim.keymap.set("v", "<S-End>",  "$",   { desc = "Extend selection to end of line" })
+  vim.keymap.set("n", "<S-Home>", "v^",  { desc = "Select to start of line" })
+  vim.keymap.set("v", "<S-Home>", "^",   { desc = "Extend selection to start of line" })
+
+  -- ── Ctrl+Arrow: move cursor by word (no selection) ─────────────────────
+  vim.keymap.set("n", "<C-Right>", "w",       { desc = "Move word right" })
+  vim.keymap.set("n", "<C-Left>",  "b",       { desc = "Move word left" })
+  vim.keymap.set("i", "<C-Right>", "<C-o>w",  { desc = "Move word right" })
+  vim.keymap.set("i", "<C-Left>",  "<C-o>b",  { desc = "Move word left" })
+
+  -- ── Ctrl+Shift+Arrow: word selection (requires terminal modifyOtherKeys) ─
+  vim.keymap.set("n", "<C-S-Right>", "ve",  { desc = "Select to end of word" })
+  vim.keymap.set("v", "<C-S-Right>", "e",   { desc = "Extend selection to end of word" })
+  vim.keymap.set("n", "<C-S-Left>",  "vb",  { desc = "Select to start of word" })
+  vim.keymap.set("v", "<C-S-Left>",  "b",   { desc = "Extend selection to start of word" })
+
+  -- ── Ctrl+Shift+Home/End: select to file boundary ───────────────────────
+  vim.keymap.set("n", "<C-S-End>",  "vG$",  { desc = "Select to end of file" })
+  vim.keymap.set("v", "<C-S-End>",  "G$",   { desc = "Extend selection to end of file" })
+  vim.keymap.set("n", "<C-S-Home>", "vgg",  { desc = "Select to start of file" })
+  vim.keymap.set("v", "<C-S-Home>", "gg",   { desc = "Extend selection to start of file" })
+
+  -- ── Ctrl+Delete / Ctrl+Backspace: delete by word ───────────────────────
+  vim.keymap.set("n", "<C-Del>", "dw",       { desc = "Delete word forward" })
+  vim.keymap.set("i", "<C-Del>", "<C-o>dw",  { desc = "Delete word forward" })
+  -- Note: many terminals send <C-BS> as <C-h>; may not fire in all environments
+  vim.keymap.set("n", "<C-BS>", "db",    { desc = "Delete word backward" })
+  vim.keymap.set("i", "<C-BS>", "<C-w>", { desc = "Delete word backward" })
 end
 
 return M
