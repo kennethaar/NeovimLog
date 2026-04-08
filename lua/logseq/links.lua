@@ -48,6 +48,18 @@ function M.link_under_cursor()
     pos = e + 1
   end
 
+  -- Check [text](url) markdown links (not [[wikilinks]])
+  pos = 1
+  while true do
+    local ms, me, _, url = line:find("%[(.[^%]]-)](%b())", pos)
+    if not ms then break end
+    -- Skip if preceded by [ (that would be a [[wikilink]])
+    if col >= ms and col <= me and (ms == 1 or line:sub(ms - 1, ms - 1) ~= "[") then
+      return "md_link", url:sub(2, -2)  -- strip surrounding parens
+    end
+    pos = me + 1
+  end
+
   -- Check #tags (but not inside [[...]])
   pos = 1
   while true do
@@ -178,6 +190,18 @@ local function follow_block_ref(vault, value)
   pcall(vim.api.nvim_win_set_cursor, 0, { lnum, 0 })
 end
 
+--- Open a [text](url) markdown link in the browser.
+local function follow_md_link(url)
+  if vim.ui.open then
+    vim.ui.open(url)
+  else
+    local opener = vim.fn.has("mac") == 1 and "open"
+      or vim.fn.has("wsl") == 1 and "wslview"
+      or "xdg-open"
+    vim.fn.jobstart({ opener, url }, { detach = true })
+  end
+end
+
 --- Follow a #tag by opening its page file.
 local function follow_tag(vault, value)
   local filepath = vault .. "/pages/" .. M.page_to_filename(value)
@@ -211,6 +235,11 @@ function M.follow(fallback_fn)
       local key = config.current.keymaps.follow_link
       pcall(vim.cmd, "normal! " .. (key == "<CR>" and "j" or key))
     end
+    return
+  end
+
+  if link_type == "md_link" then
+    follow_md_link(value)
     return
   end
 

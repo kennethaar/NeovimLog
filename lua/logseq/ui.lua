@@ -710,7 +710,7 @@ local function setup_syntax(bufnr)
     pcall(vim.cmd, [[syntax match LogseqDash /^\s*\zs-\ze\s/ conceal cchar=•]])
 
     -- Dim all property lines like "key:: value" by linking to Comment
-    pcall(vim.cmd, [[syntax match LogseqAllProperties /^\s*[a-zA-Z0-9_-]\+::.*/]])
+    pcall(vim.cmd, [[syntax match LogseqAllProperties /^\s*[a-zA-Z0-9_-]\+::.*/ contains=LogseqMdLink,LogseqLink,LogseqBlockRef,LogseqTag]])
     pcall(vim.cmd, [[highlight default link LogseqAllProperties Comment]])
 
     -- Calendar time slots
@@ -1008,7 +1008,7 @@ function M.setup_buf(bufnr)
   })
 
   vim.opt_local.conceallevel = 2
-  vim.opt_local.concealcursor = "nc"
+  vim.opt_local.concealcursor = "c"
   setup_syntax(bufnr)
   setup_highlights()
 
