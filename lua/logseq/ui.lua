@@ -176,10 +176,24 @@ function M.winbar()
     if wb.ns_tree   ~= false and not is_journal then table.insert(all_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
     table.insert(all_parts, "%@v:lua.logseq_toggle_query_render@🪄%X")
 
-    local n     = #all_parts
-    local gap_w = math.max(1, math.floor((win_width - n * 2) / (n + 1)))
-    local sp    = string.rep(" ", gap_w)
-    return sp .. table.concat(all_parts, sp) .. sp
+    local n       = #all_parts
+    local pad     = 3
+    local avail   = win_width - 2 * pad
+    if n == 0 then return string.rep(" ", pad) end
+    if n == 1 then return string.rep(" ", pad) .. all_parts[1] .. string.rep(" ", pad) end
+    local tot_sp   = math.max(0, avail - n * 2)
+    local gaps     = n - 1
+    local base_gap = math.max(1, math.floor(tot_sp / gaps))
+    local extra    = math.max(0, tot_sp - base_gap * gaps)
+    local pad_str  = string.rep(" ", pad)
+    local result   = pad_str
+    for i, part in ipairs(all_parts) do
+      result = result .. part
+      if i < n then
+        result = result .. string.rep(" ", base_gap + (i <= extra and 1 or 0))
+      end
+    end
+    return result .. pad_str
   else
     if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ ^k 🔍 %X") end
     if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ b 🖇️ %X") end
@@ -255,8 +269,8 @@ function M.tabline()
       end
     end
     -- %< is the truncation point: label shrinks, buttons are never cut.
-    return " " .. rename_btn .. " %#TabLineSel#%<" .. safe_label
-         .. "%#TabLine#%=" .. dur_str .. close_btn .. " "
+    return rename_btn .. " %#TabLineSel#%<" .. safe_label
+         .. "%#TabLine#%=" .. dur_str .. close_btn
   else
     local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 rn %X%#TabLine#"
     local toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
@@ -811,9 +825,19 @@ function M.build_statusline()
   if is_mobile then
     local n = #parts
     if n == 0 then return "" end
-    local gap_w = math.max(1, math.floor((vim.o.columns - n * 2) / (n + 1)))
-    local sp = string.rep(" ", gap_w)
-    return sp .. table.concat(parts, sp) .. sp
+    if n == 1 then return parts[1] end
+    local tot_sp   = math.max(0, vim.o.columns - n * 2)
+    local gaps     = n - 1
+    local base_gap = math.max(1, math.floor(tot_sp / gaps))
+    local extra    = math.max(0, tot_sp - base_gap * gaps)
+    local result   = ""
+    for i, part in ipairs(parts) do
+      result = result .. part
+      if i < n then
+        result = result .. string.rep(" ", base_gap + (i <= extra and 1 or 0))
+      end
+    end
+    return result
   end
 
   return table.concat(parts, "")
