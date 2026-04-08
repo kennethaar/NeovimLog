@@ -77,6 +77,7 @@ _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
 
 -- Journal day navigation
 local function _open_journal_day(offset)
+  vim.cmd("stopinsert")  -- ensure Normal mode before navigating
   local config = require("logseq.config").current
   local vault  = config.vault_path or ""
   local fmt    = config.journal_format or "%Y_%m_%d"
@@ -103,7 +104,7 @@ local function _open_journal_day(offset)
 end
 
 _G.logseq_sl_prev_day = function() _open_journal_day(-1) end
-_G.logseq_sl_today    = function() vim.cmd("LogseqToday") end
+_G.logseq_sl_today    = function() vim.cmd("stopinsert") vim.cmd("LogseqToday") end
 _G.logseq_sl_next_day = function() _open_journal_day(1) end
 
 -- Dynamic label for the follow/back button: 🔗 when on a link, 🔙 otherwise.
