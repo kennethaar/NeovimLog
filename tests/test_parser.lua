@@ -304,14 +304,14 @@ local refs = parser.page_property_refs({
   area    = "#Work",
   nothing = "plain text",
 })
-assert_eq(refs["ProjectX"], true, "[[ProjectX]] in page props")
-assert_eq(refs["ProjectY"], true, "[[ProjectY]] in page props")
-assert_eq(refs["Work"],     true, "#Work in page props")
+assert_eq(refs["projectx"], true, "[[ProjectX]] in page props (lowercased)")
+assert_eq(refs["projecty"], true, "[[ProjectY]] in page props (lowercased)")
+assert_eq(refs["work"],     true, "#Work in page props (lowercased)")
 assert_eq(refs["plain"],    nil,  "plain text not in refs")
 
 -- Pipe alias stripping
 refs = parser.page_property_refs({ related = "[[Real Page|Display Name]]" })
-assert_eq(refs["Real Page"],    true, "pipe alias stripped to real page")
+assert_eq(refs["real page"],    true, "pipe alias stripped to real page (lowercased)")
 assert_eq(refs["Display Name"], nil,  "display name not in refs")
 
 -- ── Summary ──────────────────────────────────────────────────────────

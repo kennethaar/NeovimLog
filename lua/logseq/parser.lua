@@ -292,7 +292,7 @@ end
 function M.page_property_refs(page_properties)
   local refs = {}
   local function add(s)
-    refs[s:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3")] = true
+    refs[s:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3"):lower()] = true
   end
   for _, value in pairs(page_properties) do
     for link in value:gmatch("%[%[(.-)%]%]") do

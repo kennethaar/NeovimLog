@@ -99,8 +99,8 @@ local function compute_all_refs(flat)
   local memo = {}
   for _, block in ipairs(flat) do
     local refs = {}
-    for _, link in ipairs(block.links) do refs[norm_link(link)] = true end
-    for _, tag in ipairs(block.tags) do refs[tag] = true end
+    for _, link in ipairs(block.links) do refs[norm_link(link):lower()] = true end
+    for _, tag in ipairs(block.tags) do refs[tag:lower()] = true end
     if block.parent and memo[block.parent] then
       for ref in pairs(memo[block.parent]) do refs[ref] = true end
     end
@@ -276,6 +276,7 @@ end
 -- ── Candidate scanner ─────────────────────────────────────────────────
 
 local function build_needles(page_name)
+  page_name = page_name:lower()
   local needles = { "[[" .. page_name .. "]]" }
   -- Journal page title uses dashes (2024-01-15) but files are often named with underscores
   -- (2024_01_15).  Include both forms so content_matches catches either link style.
@@ -296,8 +297,9 @@ local function build_needles(page_name)
 end
 
 local function content_matches(haystack, needles)
+  local lower_haystack = haystack:lower()
   for _, needle in ipairs(needles) do
-    if haystack:find(needle, 1, true) then return true end
+    if lower_haystack:find(needle, 1, true) then return true end
   end
   return false
 end
@@ -424,16 +426,16 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
 
   -- Build the target set: canonical page name + every alias declared on the page.
   -- A link to any alias counts as a backlink to the canonical page.
-  local target_names = { [page_name] = true }
+  local target_names = { [page_name:lower()] = true }
   for _, alias in ipairs(get_page_aliases(exclude_file, uv)) do
-    target_names[alias] = true
+    target_names[alias:lower()] = true
   end
   -- For journal pages with a custom title format (e.g. "Apr 1st, 2026"), org-mode
   -- SCHEDULED/DEADLINE timestamps always embed the underlying ISO date <2026-04-01>.
   -- Add the ISO form so those tasks are found regardless of the vault's page-title format.
   if exclude_file then
     local stem = exclude_file:match("[/\\]journals[/\\](%d%d%d%d[_%-]%d%d[_%-]%d%d)%.md$")
-    if stem then target_names[stem:gsub("_", "-")] = true end
+    if stem then target_names[stem:gsub("_", "-"):lower()] = true end
   end
 
   -- Collect needles for every target name, deduped via a set.
