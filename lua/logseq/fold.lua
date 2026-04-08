@@ -1,11 +1,10 @@
 --- logseq.nvim folding
---- Per-line foldexpr using pattern matching. Does NOT parse the full tree.
 ---
 --- Fold level mapping:
 ---   bullet at indent 0  → >1
 ---   bullet at indent 2  → >2
 ---   bullet at indent N  → >(N/2 + 1)
----   property/continuation → same level as parent
+---   property/continuation → same level as owning block (via parser cache)
 ---   page property (col 0, no bullet) → 0
 ---   empty line → "="
 
@@ -14,7 +13,8 @@ local util   = require("logseq.util")
 
 local M = {}
 
-function M.foldexpr(lnum)
+function M.foldexpr(lnum, bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
   local line = vim.fn.getline(lnum)
   if line:match("^%s*$") then return "=" end
 
@@ -23,8 +23,20 @@ function M.foldexpr(lnum)
 
   if line:match("^%S+::") then return 0 end
 
+  -- Property / continuation: derive level from the owning block so that
+  -- same-indent properties (pi == block.indent) get the correct fold level
+  -- rather than one level too low. parse_buf is changedtick-cached, so fast.
+  local ok, result = pcall(parser.parse_buf, bufnr)
+  if ok then
+    local block = parser.block_at_line(result.blocks, lnum)
+    if block then
+      return math.floor(block.indent / 2) + 1
+    end
+  end
+
+  -- Fallback for pre-block lines or parse errors
   local indent = line:match("^(%s+)")
-  if indent then return math.max(1, math.floor(#indent / 2)) end
+  if indent then return math.floor(#indent / 2) + 1 end
 
   return "="
 end
@@ -87,7 +99,7 @@ end
 
 function M.setup_buf(bufnr)
   vim.opt_local.foldmethod = "expr"
-  vim.opt_local.foldexpr   = "v:lua.require('logseq.fold').foldexpr(v:lnum)"
+  vim.opt_local.foldexpr   = string.format("v:lua.require('logseq.fold').foldexpr(v:lnum,%d)", bufnr)
   vim.opt_local.foldtext   = "v:lua.require('logseq.fold').foldtext()"
   vim.opt_local.fillchars:append("fold: ")
 
