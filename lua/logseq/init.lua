@@ -22,6 +22,7 @@ local function activate(bufnr)
     "logseq.links",
     "logseq.ui",
     "logseq.editing",
+    "logseq.zoom",
     "logseq.autosave",
     "logseq.backlinks",
     "logseq.embeds",
@@ -73,6 +74,7 @@ local function activate(bufnr)
       -- Panels and UI
       { km.toggle_backlinks, desc = "Toggle backlinks panel",          buffer = bufnr, mode = "n" },
       { km.fold_toggle,      desc = "Toggle fold",                     buffer = bufnr, mode = "n" },
+      { km.zoom_block,       desc = "Zoom into block",                 buffer = bufnr, mode = "n" },
       { km.help,             desc = "Open Logseq help",                buffer = bufnr, mode = "n" },
       -- Fixed keymaps (not user-configurable but still worth showing)
       { "O",                 desc = "New sibling block above",         buffer = bufnr, mode = "n" },

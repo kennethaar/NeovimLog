@@ -954,6 +954,35 @@ end
 ---@param bufnr integer
 ---@return string
 get_breadcrumb = function(winid, bufnr)
+  -- ── Zoom mode: fixed breadcrumb showing page › [parent] › 🔍 zoomed ──
+  local zoom_ok, zoom = pcall(require, "logseq.zoom")
+  if zoom_ok and zoom.is_zoomed(bufnr) then
+    local zblock = zoom.get_zoom_block(bufnr)
+    if zblock then
+      local filepath = vim.api.nvim_buf_get_name(bufnr)
+      local filename = vim.fn.fnamemodify(filepath, ":t")
+      local page_name = util.decode_filename(filename)
+      if #page_name > 22 then page_name = page_name:sub(1, 20) .. "…" end
+
+      local crumbs = { page_name }
+
+      -- Immediate parent of the zoomed block (per spec: "last parent")
+      if zblock.parent then
+        local pt = vim.trim(zblock.parent.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""))
+        if #pt > 22 then pt = pt:sub(1, 20) .. "…" end
+        crumbs[#crumbs + 1] = pt ~= "" and pt or "…"
+      end
+
+      -- The zoomed block itself with indicator
+      local zt = vim.trim(zblock.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""))
+      if #zt > 22 then zt = zt:sub(1, 20) .. "…" end
+      crumbs[#crumbs + 1] = "🔍 " .. (zt ~= "" and zt or "…")
+
+      return table.concat(crumbs, " › ")
+    end
+  end
+
+  -- ── Normal mode: cursor-position ancestor chain ───────────────────────
   local ok, result = pcall(parser.parse_buf, bufnr)
   if not ok then return "" end
 

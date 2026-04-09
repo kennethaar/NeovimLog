@@ -15,6 +15,16 @@ local M = {}
 
 function M.foldexpr(lnum, bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  -- ── Zoom: fold lines outside the zoomed block at an unreachable level ──
+  local zoom_start = vim.b[bufnr].logseq_zoom_lnum
+  local zoom_end   = vim.b[bufnr].logseq_zoom_end
+  if zoom_start and zoom_end then
+    if lnum < zoom_start or lnum > zoom_end then
+      return ">99"
+    end
+  end
+
   local line = vim.fn.getline(lnum)
   if line:match("^%s*$") then return "=" end
 
