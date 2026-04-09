@@ -39,7 +39,7 @@ M.defaults = {
     search       = true,
     backlinks    = true,
     ns_tree      = true,
-    calsync      = true,
+    zoom         = true,
     close        = true,
     page_tabline = true,
   },

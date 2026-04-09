@@ -126,6 +126,7 @@ _G.logseq_sl_follow = function()
 end
 _G.logseq_sl_backlinks = function() require("logseq.panels").toggle_key("backlinks") end
 _G.logseq_sl_nstree    = function() require("logseq.panels").toggle_key("ns_tree")   end
+_G.logseq_sl_zoom      = function() require("logseq.zoom").toggle() end
 _G.logseq_sl_fold      = function() vim.cmd("normal! za") end
 _G.logseq_sl_todo      = function() require("logseq.editing").cycle_todo() end
 _G.logseq_sl_indent    = function() vim.cmd("normal! >>") end
@@ -173,8 +174,8 @@ function M.winbar()
     }
     if wb.search    ~= false then table.insert(all_parts, "%@v:lua.logseq_sl_search@🔍%X") end
     if wb.backlinks ~= false then table.insert(all_parts, "%@v:lua.logseq_sl_backlinks@🖇️%X") end
-    if wb.calsync   ~= false and is_journal     then table.insert(all_parts, "%@v:lua.logseq_sl_calsync@🗓️%X") end
     if wb.ns_tree   ~= false and not is_journal then table.insert(all_parts, "%@v:lua.logseq_sl_nstree@🌳%X") end
+    if wb.zoom      ~= false then table.insert(all_parts, "%@v:lua.logseq_sl_zoom@🧘‍♀️%X") end
     table.insert(all_parts, "%@v:lua.logseq_toggle_query_render@🪄%X")
 
     local n       = #all_parts
@@ -198,8 +199,8 @@ function M.winbar()
   else
     if wb.search    ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_search@ ^k 🔍 %X") end
     if wb.backlinks ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_backlinks@ b 🖇️ %X") end
-    if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@ c 🗓️ %X") end
     if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ n 🌳 %X") end
+    if wb.zoom      ~= false then table.insert(nav_parts, "%@v:lua.logseq_sl_zoom@ Z 🧘‍♀️ %X") end
 
     local nav_btns  = "  %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
     local close_btn = ""
