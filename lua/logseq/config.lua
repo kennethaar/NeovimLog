@@ -25,6 +25,7 @@ M.defaults = {
     demote           = ">>",
     new_sibling      = "o",
     fold_toggle      = "za",
+    zoom_block       = "<leader>Z",
     follow_link      = "<CR>",
     toggle_backlinks = "<leader>b",
     todo_cycle       = "<C-t>",
