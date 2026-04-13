@@ -6,63 +6,86 @@ local function update_mtime(bufnr)
   if st then vim.b[bufnr].logseq_mtime = st.mtime.sec end
 end
 
+--- Atomic write: write to a temp file then rename, so a crash mid-write
+--- cannot leave the target file half-written.
+local function atomic_write(filepath, lines)
+  local tmp = filepath .. ".nvim_autosave_tmp"
+  local f = io.open(tmp, "wb")
+  if not f then return false end
+  local ok = pcall(function() f:write(table.concat(lines, "\n") .. "\n") end)
+  f:close()
+  if not ok then os.remove(tmp); return false end
+  if not vim.uv.fs_rename(tmp, filepath) then os.remove(tmp); return false end
+  return true
+end
+
 function M.setup_buf(bufnr)
   local timer_id = nil
 
-  -- Record the file's mtime at buffer load so we can detect external changes.
+  -- Snapshot the file's mtime when the buffer is loaded.
   update_mtime(bufnr)
 
-  -- Cache dedup at setup time; graceful if the module is unavailable.
+  -- Cache dedup at setup time with graceful fallback.
   local ok_dedup, dedup = pcall(require, "logseq.dedup")
   if not ok_dedup then dedup = nil end
 
-  -- Merge external changes into the buffer right before writing.
-  -- Fires for BOTH manual :w and the autosave :write call, so nothing slips through.
-  vim.api.nvim_create_autocmd("BufWritePre", {
+  -- Take over ALL writes for this buffer via BufWriteCmd.
+  --
+  -- Why not BufWritePre?  BufWritePre fires before the write, but Neovim's
+  -- C-level write path runs its OWN mtime check AFTER BufWritePre and shows:
+  --   "WARNING: The file has been changed since reading it!!! (y/n)"
+  -- regardless of what BufWritePre did.  BufWriteCmd replaces the write
+  -- entirely, so Neovim's internal check never runs and the prompt never
+  -- appears.
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
     buffer = bufnr,
     callback = function()
       local filepath = vim.api.nvim_buf_get_name(bufnr)
       if filepath == "" then return end
 
-      local stat = vim.uv.fs_stat(filepath)
+      local stat      = vim.uv.fs_stat(filepath)
       local our_mtime = vim.b[bufnr].logseq_mtime
-      if not (stat and our_mtime and stat.mtime.sec > our_mtime) then return end
+      local final_lines
 
-      -- File was changed by another session.  Read disk content directly —
-      -- no edit! needed, which would wipe undo history and fire extra autocmds.
-      local f = io.open(filepath, "r")
-      if not f then return end
-      local disk_content = f:read("*a")
-      f:close()
-
-      if not dedup then
-        -- dedup unavailable: warn and let the write proceed as-is rather than
-        -- silently losing one side.
-        vim.notify(
-          "[logseq.nvim] External change detected but dedup module unavailable — save aborted. Fix logseq.dedup and retry.",
-          vim.log.levels.WARN
-        )
-        -- Returning from BufWritePre does not abort the write; use a Lua error to
-        -- surface the problem without corrupting anything.
-        error("logseq.autosave: aborting write — dedup unavailable")
-        return
+      if stat and our_mtime and stat.mtime.sec > our_mtime then
+        -- Another session wrote the file while we were editing.
+        if not dedup then
+          vim.notify(
+            "[logseq.nvim] External change detected — dedup unavailable, writing local version.",
+            vim.log.levels.WARN
+          )
+          final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        else
+          local f = io.open(filepath, "r")
+          if f then
+            local disk_content = f:read("*a")
+            f:close()
+            local disk_lines = vim.split(disk_content, "\n", { plain = true })
+            -- vim.split on "a\nb\n" produces {"a","b",""} — drop the trailing empty
+            if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
+            local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+            -- Disk first so the other session's content is the base; ours appends.
+            vim.list_extend(disk_lines, buf_lines)
+            final_lines = dedup.dedup_lines(disk_lines)
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, final_lines)
+            vim.notify("[logseq.nvim] Merged local edits with external changes", vim.log.levels.INFO)
+          else
+            final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+          end
+        end
+      else
+        final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
       end
 
-      local disk_lines = vim.split(disk_content, "\n", { plain = true })
-      -- vim.split("a\nb\n", "\n") produces {"a","b",""} — drop trailing empty entry
-      if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
-
-      local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-      -- Disk-first so the other session's content is the base; our new lines follow.
-      vim.list_extend(disk_lines, buf_lines)
-      local merged = dedup.dedup_lines(disk_lines)
-      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
-
-      -- Advance our mtime snapshot to the disk's current value so BufWritePost
-      -- (which also calls update_mtime) doesn't see a stale delta.
-      vim.b[bufnr].logseq_mtime = stat.mtime.sec
-
-      vim.notify("[logseq.nvim] Merged local edits with external changes", vim.log.levels.INFO)
+      if atomic_write(filepath, final_lines) then
+        -- BufWriteCmd requires us to clear 'modified' ourselves.
+        vim.bo[bufnr].modified = false
+        -- BufWriteCmd suppresses BufWritePost; fire it so other subscribers
+        -- (mtime update, date-file auto-move in init.lua, etc.) still run.
+        vim.api.nvim_exec_autocmds("BufWritePost", { buffer = bufnr, modeline = false })
+      else
+        vim.notify("[logseq.nvim] Write failed: " .. filepath, vim.log.levels.ERROR)
+      end
     end,
   })
 
@@ -71,7 +94,8 @@ function M.setup_buf(bufnr)
     if not vim.bo[bufnr].modified then return end
     local filepath = vim.api.nvim_buf_get_name(bufnr)
     if filepath == "" then return end
-    -- BufWritePre (above) handles any external-change merging automatically.
+    -- :write triggers BufWriteCmd above, which handles conflict detection
+    -- and the actual disk write.
     vim.api.nvim_buf_call(bufnr, function()
       pcall(function() vim.cmd("write") end)
     end)
@@ -94,7 +118,7 @@ function M.setup_buf(bufnr)
     callback = start_autosave_timer,
   })
 
-  -- Immediate save when leaving insert mode or the buffer, so :q never hits E37.
+  -- Immediate save on leaving insert mode or buffer, so :q never hits E37.
   vim.api.nvim_create_autocmd({ "InsertLeave", "BufLeave", "FocusLost" }, {
     buffer = bufnr,
     callback = function()
@@ -106,13 +130,15 @@ function M.setup_buf(bufnr)
     end,
   })
 
-  -- Keep stored mtime in sync after any write (autosave or manual :w).
+  -- Keep the mtime snapshot current after every write.
+  -- (Fired manually from BufWriteCmd above, and also fires for any external
+  -- :write that bypasses BufWriteCmd, e.g. from plugins that use nvim_buf_call.)
   vim.api.nvim_create_autocmd("BufWritePost", {
     buffer = bufnr,
     callback = function() update_mtime(bufnr) end,
   })
 
-  -- Clean up the timer when the buffer is closed.
+  -- Clean up the debounce timer when the buffer is closed.
   vim.api.nvim_create_autocmd("BufUnload", {
     buffer = bufnr,
     callback = function()
