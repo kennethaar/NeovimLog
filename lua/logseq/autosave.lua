@@ -22,13 +22,18 @@ function M.setup_buf(bufnr)
     local stat = vim.uv.fs_stat(filepath)
     local our_mtime = vim.b[bufnr].logseq_mtime
 
-    -- File changed externally (Syncthing) — reload instead of overwriting
+    -- File changed externally — merge local edits with disk version (not discard)
     if stat and our_mtime and stat.mtime.sec > our_mtime then
       vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(bufnr) then return end
+        local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
         vim.api.nvim_buf_call(bufnr, function() vim.cmd("edit!") end)
         update_mtime(bufnr)
-        vim.notify("[logseq.nvim] Reloaded (changed on disk)", vim.log.levels.INFO)
+        local disk_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        vim.list_extend(disk_lines, buf_lines)
+        local merged = require("logseq.dedup").dedup_lines(disk_lines)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
+        vim.notify("[logseq.nvim] Merged local edits with external changes", vim.log.levels.INFO)
       end)
       return
     end
