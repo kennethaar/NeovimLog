@@ -29,19 +29,22 @@ function M.setup_buf(bufnr)
   local ok_dedup, dedup = pcall(require, "logseq.dedup")
   if not ok_dedup then dedup = nil end
 
-  -- Take over ALL writes for this buffer via BufWriteCmd.
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+
+  -- BufWriteCmd completely replaces Neovim's write path for this file, so
+  -- the C-level mtime check (and its "file changed since reading" prompt)
+  -- never runs.
   --
-  -- Why not BufWritePre?  BufWritePre fires before the write, but Neovim's
-  -- C-level write path runs its OWN mtime check AFTER BufWritePre and shows:
-  --   "WARNING: The file has been changed since reading it!!! (y/n)"
-  -- regardless of what BufWritePre did.  BufWriteCmd replaces the write
-  -- entirely, so Neovim's internal check never runs and the prompt never
-  -- appears.
+  -- IMPORTANT: register by file-path pattern, not `buffer = bufnr`.
+  -- buf_write() in the C layer matches BufWriteCmd against the filename,
+  -- not the buffer number.  A buffer-local registration is silently skipped
+  -- by the pattern matcher for manual :w, which is why the prompt kept
+  -- appearing even after adding BufWriteCmd.
   vim.api.nvim_create_autocmd("BufWriteCmd", {
-    buffer = bufnr,
+    pattern = filepath,
     callback = function()
-      local filepath = vim.api.nvim_buf_get_name(bufnr)
-      if filepath == "" then return end
+      -- Guard: only handle writes that belong to this specific buffer.
+      if vim.api.nvim_get_current_buf() ~= bufnr then return end
 
       local stat      = vim.uv.fs_stat(filepath)
       local our_mtime = vim.b[bufnr].logseq_mtime
@@ -61,10 +64,10 @@ function M.setup_buf(bufnr)
             local disk_content = f:read("*a")
             f:close()
             local disk_lines = vim.split(disk_content, "\n", { plain = true })
-            -- vim.split on "a\nb\n" produces {"a","b",""} — drop the trailing empty
+            -- vim.split on "a\nb\n" gives {"a","b",""} — drop trailing empty
             if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
             local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-            -- Disk first so the other session's content is the base; ours appends.
+            -- Disk first; our new lines append at the end.
             vim.list_extend(disk_lines, buf_lines)
             final_lines = dedup.dedup_lines(disk_lines)
             vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, final_lines)
@@ -92,7 +95,6 @@ function M.setup_buf(bufnr)
   local function execute_save()
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     if not vim.bo[bufnr].modified then return end
-    local filepath = vim.api.nvim_buf_get_name(bufnr)
     if filepath == "" then return end
     -- :write triggers BufWriteCmd above, which handles conflict detection
     -- and the actual disk write.
@@ -131,8 +133,6 @@ function M.setup_buf(bufnr)
   })
 
   -- Keep the mtime snapshot current after every write.
-  -- (Fired manually from BufWriteCmd above, and also fires for any external
-  -- :write that bypasses BufWriteCmd, e.g. from plugins that use nvim_buf_call.)
   vim.api.nvim_create_autocmd("BufWritePost", {
     buffer = bufnr,
     callback = function() update_mtime(bufnr) end,
