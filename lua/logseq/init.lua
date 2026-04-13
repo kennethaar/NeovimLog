@@ -312,10 +312,6 @@ local function bootstrap(opts)
 
       activate(ev.buf)
 
-      -- Store initial mtime for safe-save comparison (Syncthing awareness)
-      local stat = vim.uv.fs_stat(bufpath)
-      if stat then vim.b[ev.buf].logseq_mtime = stat.mtime.sec end
-
       if ev.event == "BufNewFile" then
         vim.schedule(function()
           local ok, templates = pcall(require, "logseq.templates")

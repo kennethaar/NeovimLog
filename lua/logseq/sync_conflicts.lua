@@ -2,10 +2,15 @@
 --- Automatically scans for .sync-conflict-* files and resolves them.
 --- Trivial cases (identical, subset) are cleaned up silently.
 --- Non-trivial cases are auto-merged via append + dedup.
---- Extreme divergence (< 30% shared lines) is flagged for manual review.
+--- Extreme divergence (< 30% shared lines in both directions) is flagged for manual review.
 --- Originals are always backed up to vault/deduped/ before modification.
 
 local M = {}
+
+local dedup = require("logseq.dedup")
+
+--- Syncthing conflict filename pattern: .sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX
+local CONFLICT_SUFFIX = "%.sync%-conflict%-%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%-%w+"
 
 --- Read a file from disk. Returns content string or nil.
 local function read_file(path)
@@ -29,23 +34,37 @@ local function atomic_write(path, content)
   return true
 end
 
---- Fraction of lines in content_b that also appear in content_a.
---- Returns 1.0 for empty content_b (nothing to diverge from).
-local function shared_line_ratio(content_a, content_b)
+--- Build a set of non-empty lines from a content string.
+local function line_set(content)
   local set = {}
-  for line in content_a:gmatch("[^\n]+") do set[line] = true end
+  for line in content:gmatch("[^\n]+") do set[line] = true end
+  return set
+end
+
+--- Fraction of lines in content that appear in reference_set.
+local function overlap_ratio(content, reference_set)
   local total, shared = 0, 0
-  for line in content_b:gmatch("[^\n]+") do
+  for line in content:gmatch("[^\n]+") do
     total = total + 1
-    if set[line] then shared = shared + 1 end
+    if reference_set[line] then shared = shared + 1 end
   end
   if total == 0 then return 1 end
   return shared / total
 end
 
+--- Check whether two files are related enough to auto-merge.
+--- Uses the max overlap in either direction so that pure appends
+--- (common case: user added lines on another device) aren't flagged.
+local function is_mergeable(orig, conf)
+  local orig_set = line_set(orig)
+  local conf_set = line_set(conf)
+  local ratio_a = overlap_ratio(conf, orig_set)
+  local ratio_b = overlap_ratio(orig, conf_set)
+  return math.max(ratio_a, ratio_b) >= 0.3
+end
+
 --- Concatenate two file contents and run dedup to remove duplicate blocks.
 local function merge_and_dedup(orig_content, conf_content)
-  local dedup = require("logseq.dedup")
   local lines = vim.split(orig_content, "\n", { plain = true })
   if lines[#lines] == "" then table.remove(lines) end
   local conf_lines = vim.split(conf_content, "\n", { plain = true })
@@ -63,7 +82,7 @@ function M.auto_resolve_one(conflict_path, original_path, vault)
 
   -- Original was deleted; adopt the conflict version
   if not orig then
-    os.rename(conflict_path, original_path)
+    vim.uv.fs_rename(conflict_path, original_path)
     return "adopted"
   end
 
@@ -77,12 +96,11 @@ function M.auto_resolve_one(conflict_path, original_path, vault)
   end
 
   -- Extreme divergence — flag for manual review, don't auto-merge
-  if shared_line_ratio(orig, conf) < 0.3 then
+  if not is_mergeable(orig, conf) then
     return "diverged"
   end
 
   -- Auto-merge: append + dedup (safe for Logseq bullet-point content)
-  local dedup = require("logseq.dedup")
   dedup.backup_file(original_path, vault, orig)
   dedup.backup_file(conflict_path, vault, conf)
   local merged = merge_and_dedup(orig, conf)
@@ -109,11 +127,17 @@ function M.scan_conflicts(vault)
     if vim.fn.isdirectory(dir) == 1 then
       for _, fpath in ipairs(vim.fn.glob(dir .. "/*.sync-conflict-*.md", false, true)) do
         local name = vim.fn.fnamemodify(fpath, ":t")
-        local orig_name = name:gsub("%.sync%-conflict%-%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%-%w+", "")
+        -- Verify the filename matches the exact Syncthing pattern before processing.
+        -- Without this, a file merely containing "sync-conflict" in its name would
+        -- produce orig_name == name, making original == conflict path, and the
+        -- "identical" branch would delete the only copy of the file.
+        if not name:match(CONFLICT_SUFFIX) then goto continue end
+        local orig_name = name:gsub(CONFLICT_SUFFIX, "")
         results[#results + 1] = {
           conflict = fpath,
           original = vim.fn.fnamemodify(fpath, ":h") .. "/" .. orig_name,
         }
+        ::continue::
       end
     end
   end
