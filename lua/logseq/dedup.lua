@@ -92,7 +92,7 @@ function M.dedup_lines(lines)
 end
 
 --- Read a file from disk. Returns content string or nil on any error.
-function M.M.read_file(path)
+function M.read_file(path)
   local f = io.open(path, "rb")
   if not f then return nil end
   local ok, content = pcall(function() return f:read("*a") end)
@@ -161,7 +161,7 @@ local function dedup_open_buf(bufnr, vault)
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-  backup_file(filepath, vault, content)
+  M.backup_file(filepath, vault, content)
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
   local ok = pcall(function()
