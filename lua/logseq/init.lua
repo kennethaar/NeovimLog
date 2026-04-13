@@ -302,7 +302,8 @@ local function bootstrap(opts)
 
   -- Detect external file changes (Syncthing, other editors, parallel sessions)
   vim.opt.autoread = true
-  vim.opt.undofile = true  -- persist undo history so edit! reloads don't lose edits
+  vim.opt.undofile = true   -- persist undo history so edit! reloads don't lose edits
+  vim.opt.swapfile = false  -- mtime guard + undofile replace swap's crash recovery and locking
 
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
