@@ -103,7 +103,7 @@ end
 --- Copy content to vault/deduped/<stem>_<YYYY-MM-DD_HHMMSS>[_N].<ext>.
 --- Appends _1, _2, ... if a file with that timestamp already exists.
 --- Silently skips if the directory cannot be created or the file cannot be written.
-local function backup_file(filepath, vault, content)
+function M.backup_file(filepath, vault, content)
   local backup_dir = vault .. "/deduped"
   vim.fn.mkdir(backup_dir, "p")
 
@@ -145,7 +145,7 @@ function M.dedup_buf(bufnr)
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if vault and vault ~= "" and filepath ~= "" then
     local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-    backup_file(filepath, vault, content)
+    M.backup_file(filepath, vault, content)
   end
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
@@ -188,7 +188,7 @@ local function dedup_file_on_disk(path, vault)
   local new_lines, removed = M.dedup_lines(lines)
   if removed == 0 then return 0 end
 
-  backup_file(path, vault, content)
+  M.backup_file(path, vault, content)
 
   local tmp = path .. ".dedup_tmp"
   local wf = io.open(tmp, "wb")
