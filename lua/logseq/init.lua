@@ -10,7 +10,6 @@ local function is_vault_file(bufpath)
 end
 
 local function activate(bufnr)
-  -- Default to current buffer if bufnr is 0 or nil
   bufnr = (bufnr == 0 or bufnr == nil) and vim.api.nvim_get_current_buf() or bufnr
 
   if vim.b[bufnr].logseq_active then return end
@@ -29,7 +28,7 @@ local function activate(bufnr)
     "logseq.namespace_tree",
     "logseq.query_ui",
     "logseq.prev_metrics",
-    "logseq.panels",   -- must be last: overrides panel keymaps and owns auto-render
+    "logseq.panels",
   }
 
   for _, mod in ipairs(modules) do
@@ -48,42 +47,32 @@ local function activate(bufnr)
     vim.notify("[logseq.nvim] slash_commands setup failed: " .. tostring(err_sc), vim.log.levels.ERROR)
   end
 
-  -- Register keymaps with which-key if it is installed, so the user can
-  -- discover every binding via the popup without reading the source or help.
-  -- The pcall means this is a no-op on configs that don't have which-key.
   local ok_wk, wk = pcall(require, "which-key")
   if ok_wk then
     local km = config.current.keymaps
     wk.add({
-      -- Block navigation
       { km.next_sibling,     desc = "Next sibling block",              buffer = bufnr, mode = "n" },
       { km.prev_sibling,     desc = "Previous sibling block",          buffer = bufnr, mode = "n" },
       { km.first_child,      desc = "First child block",               buffer = bufnr, mode = "n" },
       { km.parent,           desc = "Parent block",                    buffer = bufnr, mode = "n" },
-      -- Block movement
       { km.move_down,        desc = "Move block down (with subtree)",  buffer = bufnr, mode = "n" },
       { km.move_up,          desc = "Move block up (with subtree)",    buffer = bufnr, mode = "n" },
       { km.promote,          desc = "Outdent block (with subtree)",    buffer = bufnr, mode = "n" },
       { km.demote,           desc = "Indent block (with subtree)",     buffer = bufnr, mode = "n" },
-      -- Editing
       { km.new_sibling,      desc = "New sibling block below",         buffer = bufnr, mode = "n" },
       { km.todo_cycle,       desc = "Cycle TODO state",                buffer = bufnr, mode = "n" },
-      -- Links and search
       { km.follow_link,      desc = "Follow link / open page",         buffer = bufnr, mode = "n" },
       { km.search_pages,     desc = "Search vault pages",              buffer = bufnr, mode = "n" },
-      -- Panels and UI
       { km.toggle_backlinks, desc = "Toggle backlinks panel",          buffer = bufnr, mode = "n" },
       { km.fold_toggle,      desc = "Toggle fold",                     buffer = bufnr, mode = "n" },
       { km.zoom_block,       desc = "Zoom into block",                 buffer = bufnr, mode = "n" },
       { km.help,             desc = "Open Logseq help",                buffer = bufnr, mode = "n" },
-      -- Fixed keymaps (not user-configurable but still worth showing)
       { "O",                 desc = "New sibling block above",         buffer = bufnr, mode = "n" },
       { "<Tab>",             desc = "Indent block",                    buffer = bufnr, mode = "n" },
       { "<S-Tab>",           desc = "Outdent block",                   buffer = bufnr, mode = "n" },
     })
   end
 
-  -- Auto-move date-named files to journals
   vim.api.nvim_create_autocmd("BufWritePost", {
     buffer = bufnr,
     callback = function()
@@ -96,25 +85,24 @@ local function activate(bufnr)
       local journal_dir = vim.fs.joinpath(config.current.vault_path, "journals")
       local journal_path = vim.fs.joinpath(journal_dir, date_str .. ".md")
       if util.normalize(filepath) == util.normalize(journal_path) then return end
-      -- Check if journal_path exists
+      
       if vim.fn.filereadable(journal_path) == 1 then
-        -- Merge: append the content
         local current_content = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
         local journal_content = vim.fn.readfile(journal_path)
-        -- Append current content to journal content
-        vim.list_extend(journal_content, {""}) -- add empty line
+        
+        vim.list_extend(journal_content, {""})
         vim.list_extend(journal_content, current_content)
-        -- Write back to journal_path
-        vim.fn.writefile(journal_content, journal_path)
-        -- Delete the old file
-        vim.fn.delete(filepath)
-        -- Update buffer to point to journal_path
-        vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
+        
+        local write_ok = pcall(function() vim.fn.writefile(journal_content, journal_path) end)
+        if write_ok then
+          vim.fn.delete(filepath)
+          vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
+        else
+          vim.notify("[logseq.nvim] CRITICAL: Failed to merge journal. Original retained.", vim.log.levels.ERROR)
+        end
       else
-        -- Move the file
         if vim.fn.isdirectory(journal_dir) == 0 then vim.fn.mkdir(journal_dir, "p") end
         vim.fn.rename(filepath, journal_path)
-        -- Update buffer name
         vim.api.nvim_buf_set_name(bufnr, journal_path)
       end
     end
@@ -129,10 +117,7 @@ local function run_interactive_setup(opts, callback)
       vim.notify("[logseq.nvim] Setup aborted. Vault path is required.", vim.log.levels.WARN)
       return
     end
-
-    -- Strip surrounding quotes that users sometimes paste from Windows paths
     vault_input = vault_input:match('^["\'](.+)["\']$') or vault_input
-
     opts.vault_path = vault_input
     config.save_to_disk(vault_input, nil)
     callback(opts)
@@ -142,13 +127,10 @@ end
 local function bootstrap(opts)
   if not config.setup(opts) then return end
 
-  -- One-time global setup
   pcall(function() require("logseq.backlinks").setup_global() end)
   pcall(function() require("logseq.query_ui").setup_global() end)
 
   local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
-
-  -- ── Commands (Namespaced for Best Practices) ──────────────────────
 
   vim.api.nvim_create_user_command("LogseqConfig", function()
     require("logseq.config_ui").open()
@@ -182,7 +164,6 @@ local function bootstrap(opts)
         end
       end)
     end
-
     ask_for_url(0)
   end, { desc = "Add a new calendar ICS URL" })
 
@@ -201,7 +182,6 @@ local function bootstrap(opts)
           return
         end
 
-        -- Selected an existing URL — confirm removal
         vim.ui.select({ "Remove this URL", "Cancel" }, { prompt = choice }, function(action)
           if action == "Remove this URL" and config.remove_calendar_url(choice) then
             vim.notify("[logseq.nvim] URL removed.", vim.log.levels.INFO)
@@ -210,7 +190,6 @@ local function bootstrap(opts)
         end)
       end)
     end
-
     show_menu()
   end, { desc = "Edit/Remove existing calendar URLs" })
 
@@ -255,7 +234,6 @@ local function bootstrap(opts)
     if vim.bo.modified then vim.cmd("write") end
 
     vim.cmd("edit " .. vim.fn.fnameescape(filepath))
-    -- edit is synchronous; buffer is ready immediately. vim.schedule ensures we don't block.
     vim.schedule(function() activate(0) end)
   end, { desc = "Open today's Logseq journal" })
 
@@ -298,9 +276,6 @@ local function bootstrap(opts)
     require("logseq.sync_conflicts").resolve_all(vault)
   end, { desc = "Scan and auto-resolve Syncthing conflict files" })
 
-  -- ── Autocmds ──────────────────────────────────────────────────────
-
-  -- Detect external file changes (Syncthing, other editors)
   vim.opt.autoread = true
 
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
@@ -318,15 +293,9 @@ local function bootstrap(opts)
           if ok then templates.apply_template(ev.buf) end
         end)
       end
-
-      -- WARNING: If cal.sync() is blocking, this will lag your editor every time you open a file.
-      vim.schedule(function()
-        pcall(function() require("logseq.calendar").sync() end)
-      end)
     end,
   })
 
-  -- Catch buffers re-entered that might have bypassed BufReadPost
   vim.api.nvim_create_autocmd("BufEnter", {
     group = group,
     pattern = "*.md",
@@ -341,25 +310,24 @@ local function bootstrap(opts)
     group = group,
     pattern = "*.md",
     callback = function(ev)
-      pcall(function() require("logseq.parser").invalidate_cache(ev.buf) end)
+      if vim.api.nvim_buf_is_valid(ev.buf) then
+        pcall(function() require("logseq.parser").invalidate_cache(ev.buf) end)
+      end
     end,
   })
 
-  -- Check for external file changes when Neovim regains focus
   vim.api.nvim_create_autocmd("FocusGained", {
     group = group,
     callback = function()
       pcall(function() vim.cmd("checktime") end)
-      -- Auto-resolve Syncthing conflicts on focus return (e.g. switching devices)
+      
       vim.defer_fn(function()
-        pcall(function()
-          require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
-        end)
+        pcall(function() require("logseq.sync_conflicts").resolve_all(config.current.vault_path) end)
+        pcall(function() require("logseq.calendar").sync() end)
       end, 1000)
     end,
   })
 
-  -- Update stored mtime after checktime reloads a file externally
   vim.api.nvim_create_autocmd("FileChangedShellPost", {
     group = group,
     pattern = "*.md",
@@ -375,16 +343,12 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Auto-resolve Syncthing conflicts on startup (deferred so UI isn't blocked)
   vim.defer_fn(function()
     pcall(function()
       require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
     end)
   end, 3000)
 
-  -- ── First-Run Logic ───────────────────────────────────────────────
-  
-  -- Replaced intrusive popup with silent default + helpful notification
   if config.current.reminder_minutes == nil then
     config.set_reminder_minutes(3)
     vim.schedule(function()
@@ -409,4 +373,3 @@ function M.setup(opts)
 end
 
 return M
-

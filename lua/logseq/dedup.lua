@@ -5,16 +5,10 @@
 
 local M = {}
 
---- Returns the number of leading spaces in a line.
 local function line_indent(line)
   return #(line:match("^(%s*)"))
 end
 
---- Segment a flat list of lines at a given indent level into blocks.
---- Each block = { line, body[], always_keep? }
---- Body collects all deeper-indented lines following the header, stopping
---- at the next empty line or a line at the same or lesser indent.
---- Empty lines and "---" dividers are always_keep blocks with no body.
 local function segment(lines, indent)
   local blocks = {}
   local i, n = 1, #lines
@@ -38,7 +32,6 @@ local function segment(lines, indent)
   return blocks
 end
 
---- Flatten a list of blocks back into a flat list of lines.
 local function flatten_blocks(blocks)
   local lines = {}
   for _, b in ipairs(blocks) do
@@ -48,9 +41,6 @@ local function flatten_blocks(blocks)
   return lines
 end
 
---- Recursively dedup a list of lines at a given indent level.
---- Duplicate block headers have their bodies appended to the first occurrence.
---- The merged body is then recursively deduped at the next indent level.
 local function dedup_block_list(lines, indent)
   local blocks = segment(lines, indent)
   local order, seen = {}, {}
@@ -80,19 +70,13 @@ local function dedup_block_list(lines, indent)
   return order
 end
 
---- Remove exact duplicate lines from a list of lines, block-tree-aware.
---- Empty lines ("") and "---" section dividers are always preserved.
---- When two blocks share the same header line, the duplicate is removed and
---- its entire child subtree is appended to the children of the kept copy.
---- Duplicate children within the merged subtree are also removed recursively.
---- Returns: cleaned lines (table), removed count (number)
 function M.dedup_lines(lines)
   local result = flatten_blocks(dedup_block_list(lines, 0))
   return result, #lines - #result
 end
 
 --- Read a file from disk. Returns content string or nil on any error.
-local function read_file(path)
+function M.read_file(path)
   local f = io.open(path, "rb")
   if not f then return nil end
   local ok, content = pcall(function() return f:read("*a") end)
@@ -100,9 +84,6 @@ local function read_file(path)
   return ok and content or nil
 end
 
---- Copy content to vault/deduped/<stem>_<YYYY-MM-DD_HHMMSS>[_N].<ext>.
---- Appends _1, _2, ... if a file with that timestamp already exists.
---- Silently skips if the directory cannot be created or the file cannot be written.
 function M.backup_file(filepath, vault, content)
   local backup_dir = vault .. "/deduped"
   vim.fn.mkdir(backup_dir, "p")
@@ -125,12 +106,6 @@ function M.backup_file(filepath, vault, content)
   if not write_ok then os.remove(dest) end
 end
 
---- Dedup the given buffer in-place. Shows a notification with the result.
---- bufnr defaults to the current buffer.
---- Backs up the disk version of the file before applying changes, preserving
---- original line endings. Falls back to buffer reconstruction for unsaved files.
---- Note: the entire operation is one undo entry — pressing u restores all
---- removed lines at once.
 function M.dedup_buf(bufnr)
   bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -144,7 +119,7 @@ function M.dedup_buf(bufnr)
   local vault = require("logseq.config").current.vault_path
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if vault and vault ~= "" and filepath ~= "" then
-    local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
+    local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
     M.backup_file(filepath, vault, content)
   end
 
@@ -152,16 +127,14 @@ function M.dedup_buf(bufnr)
   vim.notify(("[logseq.nvim] Removed %d duplicate line(s)."):format(removed), vim.log.levels.INFO)
 end
 
---- Dedup an open buffer silently, back up the disk version, and save.
---- Returns removed count, or nil on write error.
 local function dedup_open_buf(bufnr, vault)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local new_lines, removed = M.dedup_lines(lines)
   if removed == 0 then return 0 end
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
-  local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-  backup_file(filepath, vault, content)
+  local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
+  M.backup_file(filepath, vault, content)
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
   local ok = pcall(function()
@@ -174,15 +147,11 @@ local function dedup_open_buf(bufnr, vault)
   return removed
 end
 
---- Dedup a file on disk (not open in a buffer), backing up the original first.
---- Uses an atomic write (temp file + rename) to protect against partial writes.
---- Returns removed count, or nil on read/write error.
 local function dedup_file_on_disk(path, vault)
-  local content = read_file(path)
+  local content = M.read_file(path)
   if not content then return nil end
 
   local lines = vim.split(content, "\n", { plain = true })
-  -- vim.split on "a\nb\n" produces {"a","b",""} — drop the trailing empty
   if lines[#lines] == "" then table.remove(lines) end
 
   local new_lines, removed = M.dedup_lines(lines)
@@ -202,12 +171,6 @@ local function dedup_file_on_disk(path, vault)
   return removed
 end
 
---- Dedup all .md files across the vault's pages/ and journals/ directories.
---- Files currently open in a buffer are deduped in-memory (and saved).
---- Files not open are deduped directly on disk.
---- Originals are backed up to vault/deduped/ before modification.
---- Processes files in batches to keep the UI responsive.
---- Shows a final summary notification when done.
 function M.dedup_vault(vault)
   local files = {}
   for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do

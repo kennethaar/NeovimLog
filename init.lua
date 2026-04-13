@@ -5,7 +5,6 @@ vim.g.mapleader = ","
 vim.opt.mouse = "a"
 
 -- Note: Native Neovim can usually handle clipboard via `vim.opt.clipboard = "unnamedplus"`.
--- Wrapping your custom module in a pcall ensures Neovim doesn't break if it's missing.
 local ok_clip, clipboard = pcall(require, "clipboard")
 if ok_clip then
   clipboard.setup()
@@ -33,7 +32,6 @@ end
 if not vault_path then
   local vault_file = vim.fn.stdpath("data") .. "/logseq_vault"
   if vim.fn.filereadable(vault_file) == 1 then
-    -- readfile() is safer and more idiomatic in Neovim than standard io.open
     local lines = vim.fn.readfile(vault_file)
     if lines and #lines > 0 then
       vault_path = lines[1]
@@ -42,12 +40,8 @@ if not vault_path then
 end
 
 -- ============================================================================
--- 3. which-key (self-installing, independent of logseq plugin code)
+-- 3. which-key 
 -- ============================================================================
--- which-key shows a popup of available keybindings when you pause mid-chord.
--- We install it via Neovim's built-in package system (pack/*/start/) rather
--- than lazy.nvim, because lazy's setup() overrides laststatus and statusline
--- globally — exactly the UI state that logseq.nvim manages per-buffer.
 local wk_path = vim.fn.stdpath("data") .. "/site/pack/plugins/start/which-key.nvim"
 if not vim.uv.fs_stat(wk_path) then
   vim.fn.system({
@@ -55,14 +49,36 @@ if not vim.uv.fs_stat(wk_path) then
     "https://github.com/folke/which-key.nvim.git",
     wk_path,
   })
-  -- On first clone, pack/*/start/ wasn't scanned yet this session,
-  -- so add it to rtp manually. Subsequent startups auto-load it.
   vim.opt.rtp:append(wk_path)
 end
 pcall(function() require("which-key").setup({}) end)
 
 -- ============================================================================
--- 4. Plugin Initialization
+-- 3.5 markdown-preview.nvim (Browser-based Rendering)
+-- ============================================================================
+local mkdp_path = vim.fn.stdpath("data") .. "/site/pack/plugins/start/markdown-preview.nvim"
+if not vim.uv.fs_stat(mkdp_path) then
+  vim.fn.system({
+    "git", "clone", "--filter=blob:none", "--depth=1",
+    "https://github.com/iamcco/markdown-preview.nvim.git",
+    mkdp_path,
+  })
+  vim.opt.rtp:append(mkdp_path)
+  
+  -- Notify you on first install to run the build command
+  vim.schedule(function()
+    vim.notify("Markdown Preview downloaded! Please run :call mkdp#util#install()", vim.log.levels.INFO)
+  end)
+end
+
+-- Do not auto-close the preview window when switching buffers
+vim.g.mkdp_auto_close = 0 
+
+-- Map <leader>mp to toggle the preview window
+vim.keymap.set("n", "<leader>mp", "<cmd>MarkdownPreviewToggle<CR>", { desc = "Toggle Markdown Preview" })
+
+-- ============================================================================
+-- 4. Plugin Initialization (Logseq)
 -- ============================================================================
 local ok_logseq, logseq = pcall(require, "logseq")
 if ok_logseq then
@@ -77,12 +93,8 @@ end
 -- ============================================================================
 -- 5. Autocommands
 -- ============================================================================
-
--- Create an augroup to clear existing autocmds on config reload (:source %)
 local logseq_grp = vim.api.nvim_create_augroup("LogseqStartup", { clear = true })
 
--- Open today's journal and sync the calendar automatically when Neovim starts
--- with no file arguments — the normal "just open your notes" launch path.
 vim.api.nvim_create_autocmd("VimEnter", {
   group = logseq_grp,
   callback = function()
@@ -91,9 +103,6 @@ vim.api.nvim_create_autocmd("VimEnter", {
 
     vim.cmd("LogseqToday")
 
-    -- vim.schedule defers until the event loop is idle rather than using an
-    -- arbitrary sleep, so the UI is never blocked and there are no race
-    -- conditions against BufReadPost autocmds fired by LogseqToday.
     vim.schedule(function()
       local ok_cal, cal = pcall(require, "logseq.calendar")
       if ok_cal then
@@ -104,4 +113,3 @@ vim.api.nvim_create_autocmd("VimEnter", {
     end)
   end,
 })
-
