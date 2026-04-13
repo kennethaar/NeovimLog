@@ -289,7 +289,19 @@ local function bootstrap(opts)
     require("logseq.dedup").dedup_vault(vault)
   end, { desc = "Remove duplicate lines across the entire vault" })
 
+  vim.api.nvim_create_user_command("LogseqConflicts", function()
+    local vault = config.current.vault_path
+    if not vault or vault == "" then
+      vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
+      return
+    end
+    require("logseq.sync_conflicts").resolve_all(vault)
+  end, { desc = "Scan and auto-resolve Syncthing conflict files" })
+
   -- ── Autocmds ──────────────────────────────────────────────────────
+
+  -- Detect external file changes (Syncthing, other editors)
+  vim.opt.autoread = true
 
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
@@ -299,6 +311,10 @@ local function bootstrap(opts)
       if not is_vault_file(bufpath) then return end
 
       activate(ev.buf)
+
+      -- Store initial mtime for safe-save comparison (Syncthing awareness)
+      local stat = vim.uv.fs_stat(bufpath)
+      if stat then vim.b[ev.buf].logseq_mtime = stat.mtime.sec end
 
       if ev.event == "BufNewFile" then
         vim.schedule(function()
@@ -332,6 +348,43 @@ local function bootstrap(opts)
       pcall(function() require("logseq.parser").invalidate_cache(ev.buf) end)
     end,
   })
+
+  -- Check for external file changes when Neovim regains focus
+  vim.api.nvim_create_autocmd("FocusGained", {
+    group = group,
+    callback = function()
+      pcall(function() vim.cmd("checktime") end)
+      -- Auto-resolve Syncthing conflicts on focus return (e.g. switching devices)
+      vim.defer_fn(function()
+        pcall(function()
+          require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
+        end)
+      end, 1000)
+    end,
+  })
+
+  -- Update stored mtime after checktime reloads a file externally
+  vim.api.nvim_create_autocmd("FileChangedShellPost", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      if not is_vault_file(bufpath) then return end
+      local stat = vim.uv.fs_stat(bufpath)
+      if stat then vim.b[ev.buf].logseq_mtime = stat.mtime.sec end
+      vim.notify(
+        "[logseq.nvim] Reloaded: " .. vim.fn.fnamemodify(bufpath, ":t") .. " (changed externally)",
+        vim.log.levels.INFO
+      )
+    end,
+  })
+
+  -- Auto-resolve Syncthing conflicts on startup (deferred so UI isn't blocked)
+  vim.defer_fn(function()
+    pcall(function()
+      require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
+    end)
+  end, 3000)
 
   -- ── First-Run Logic ───────────────────────────────────────────────
   
