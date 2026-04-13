@@ -300,8 +300,9 @@ local function bootstrap(opts)
 
   -- ── Autocmds ──────────────────────────────────────────────────────
 
-  -- Detect external file changes (Syncthing, other editors)
+  -- Detect external file changes (Syncthing, other editors, parallel sessions)
   vim.opt.autoread = true
+  vim.opt.undofile = true  -- persist undo history so edit! reloads don't lose edits
 
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
@@ -345,8 +346,9 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Check for external file changes when Neovim regains focus
-  vim.api.nvim_create_autocmd("FocusGained", {
+  -- Check for external file changes (FocusGained for device switches,
+  -- CursorHold for parallel sessions in tmux/termux panes where FocusGained doesn't fire)
+  vim.api.nvim_create_autocmd({ "FocusGained", "CursorHold" }, {
     group = group,
     callback = function()
       pcall(function() vim.cmd("checktime") end)
