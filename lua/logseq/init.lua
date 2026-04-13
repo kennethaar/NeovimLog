@@ -362,7 +362,8 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Update stored mtime after checktime reloads a file externally
+  -- Update stored mtime after checktime reloads a file externally.
+  -- Also stores nsec so the autosave mtime comparison has sub-second precision.
   vim.api.nvim_create_autocmd("FileChangedShellPost", {
     group = group,
     pattern = "*.md",
@@ -370,7 +371,10 @@ local function bootstrap(opts)
       local bufpath = vim.api.nvim_buf_get_name(ev.buf)
       if not is_vault_file(bufpath) then return end
       local stat = vim.uv.fs_stat(bufpath)
-      if stat then vim.b[ev.buf].logseq_mtime = stat.mtime.sec end
+      if stat then
+        vim.b[ev.buf].logseq_mtime      = stat.mtime.sec
+        vim.b[ev.buf].logseq_mtime_nsec = stat.mtime.nsec or 0
+      end
       vim.notify(
         "[logseq.nvim] Reloaded: " .. vim.fn.fnamemodify(bufpath, ":t") .. " (changed externally)",
         vim.log.levels.INFO
