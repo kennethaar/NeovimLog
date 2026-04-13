@@ -1,8 +1,7 @@
 --- logseq.nvim Syncthing conflict resolution
---- Automatically scans for .sync-conflict-* files and resolves them.
---- Trivial cases (identical, subset) are cleaned up silently.
---- Non-trivial cases are auto-merged via append + dedup.
---- Extreme divergence (< 30% shared lines in both directions) is flagged for manual review.
+--- Scans for .sync-conflict-* files and resolves them automatically.
+--- Identical or mergeable conflicts are handled silently (append + dedup).
+--- Extreme divergence (< 30% shared lines) is flagged for manual review.
 --- Originals are always backed up to vault/deduped/ before modification.
 
 local M = {}
@@ -11,15 +10,6 @@ local dedup = require("logseq.dedup")
 
 --- Syncthing conflict filename pattern: .sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX
 local CONFLICT_SUFFIX = "%.sync%-conflict%-%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%-%w+"
-
---- Read a file from disk. Returns content string or nil.
-local function read_file(path)
-  local f = io.open(path, "rb")
-  if not f then return nil end
-  local ok, content = pcall(function() return f:read("*a") end)
-  f:close()
-  return ok and content or nil
-end
 
 --- Atomic write: temp file + rename to prevent partial writes.
 local function atomic_write(path, content)
@@ -34,33 +24,21 @@ local function atomic_write(path, content)
   return true
 end
 
---- Build a set of non-empty lines from a content string.
-local function line_set(content)
-  local set = {}
-  for line in content:gmatch("[^\n]+") do set[line] = true end
-  return set
-end
-
---- Fraction of lines in content that appear in reference_set.
-local function overlap_ratio(content, reference_set)
-  local total, shared = 0, 0
-  for line in content:gmatch("[^\n]+") do
-    total = total + 1
-    if reference_set[line] then shared = shared + 1 end
+--- Check whether two files share enough lines to auto-merge.
+--- Tests both directions so pure appends (common case) aren't flagged.
+local function is_mergeable(a, b)
+  local set_a, set_b = {}, {}
+  for line in a:gmatch("[^\n]+") do set_a[line] = true end
+  for line in b:gmatch("[^\n]+") do set_b[line] = true end
+  local function ratio(content, ref)
+    local total, shared = 0, 0
+    for line in content:gmatch("[^\n]+") do
+      total = total + 1
+      if ref[line] then shared = shared + 1 end
+    end
+    return total == 0 and 1 or shared / total
   end
-  if total == 0 then return 1 end
-  return shared / total
-end
-
---- Check whether two files are related enough to auto-merge.
---- Uses the max overlap in either direction so that pure appends
---- (common case: user added lines on another device) aren't flagged.
-local function is_mergeable(orig, conf)
-  local orig_set = line_set(orig)
-  local conf_set = line_set(conf)
-  local ratio_a = overlap_ratio(conf, orig_set)
-  local ratio_b = overlap_ratio(orig, conf_set)
-  return math.max(ratio_a, ratio_b) >= 0.3
+  return math.max(ratio(b, set_a), ratio(a, set_b)) >= 0.3
 end
 
 --- Concatenate two file contents and run dedup to remove duplicate blocks.
@@ -77,49 +55,28 @@ end
 --- Resolve a single conflict file automatically.
 --- Returns: "identical", "adopted", "gone", "merged", or "diverged"
 function M.auto_resolve_one(conflict_path, original_path, vault)
-  local orig = read_file(original_path)
-  local conf = read_file(conflict_path)
+  local orig = dedup.read_file(original_path)
+  local conf = dedup.read_file(conflict_path)
 
-  -- Original was deleted; adopt the conflict version
   if not orig then
     vim.uv.fs_rename(conflict_path, original_path)
     return "adopted"
   end
-
-  -- Conflict file disappeared between scan and resolve
   if not conf then return "gone" end
-
-  -- Identical content — just clean up the conflict file
   if orig == conf then
     os.remove(conflict_path)
     return "identical"
   end
+  if not is_mergeable(orig, conf) then return "diverged" end
 
-  -- Extreme divergence — flag for manual review, don't auto-merge
-  if not is_mergeable(orig, conf) then
-    return "diverged"
-  end
-
-  -- Auto-merge: append + dedup (safe for Logseq bullet-point content)
   dedup.backup_file(original_path, vault, orig)
   dedup.backup_file(conflict_path, vault, conf)
-  local merged = merge_and_dedup(orig, conf)
-  atomic_write(original_path, merged)
+  atomic_write(original_path, merge_and_dedup(orig, conf))
   os.remove(conflict_path)
-
-  -- Reload buffer if open
-  local bufnr = vim.fn.bufnr(original_path)
-  if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
-    vim.api.nvim_buf_call(bufnr, function() vim.cmd("edit!") end)
-    local stat = vim.uv.fs_stat(original_path)
-    if stat then vim.b[bufnr].logseq_mtime = stat.mtime.sec end
-  end
-
   return "merged"
 end
 
 --- Scan pages/ and journals/ for Syncthing conflict files.
---- Returns list of { conflict = path, original = path }.
 function M.scan_conflicts(vault)
   if not vault or vault == "" then return {} end
   local results = {}
@@ -127,53 +84,39 @@ function M.scan_conflicts(vault)
     if vim.fn.isdirectory(dir) == 1 then
       for _, fpath in ipairs(vim.fn.glob(dir .. "/*.sync-conflict-*.md", false, true)) do
         local name = vim.fn.fnamemodify(fpath, ":t")
-        -- Verify the filename matches the exact Syncthing pattern before processing.
-        -- Without this, a file merely containing "sync-conflict" in its name would
-        -- produce orig_name == name, making original == conflict path, and the
-        -- "identical" branch would delete the only copy of the file.
-        if not name:match(CONFLICT_SUFFIX) then goto continue end
-        local orig_name = name:gsub(CONFLICT_SUFFIX, "")
-        results[#results + 1] = {
-          conflict = fpath,
-          original = vim.fn.fnamemodify(fpath, ":h") .. "/" .. orig_name,
-        }
-        ::continue::
+        if name:match(CONFLICT_SUFFIX) then
+          results[#results + 1] = {
+            conflict = fpath,
+            original = vim.fn.fnamemodify(fpath, ":h") .. "/" .. name:gsub(CONFLICT_SUFFIX, ""),
+          }
+        end
       end
     end
   end
   return results
 end
 
---- Scan and auto-resolve all Syncthing conflicts. Shows a summary notification.
+--- Scan and auto-resolve all Syncthing conflicts.
 function M.resolve_all(vault)
   local conflicts = M.scan_conflicts(vault)
   if #conflicts == 0 then return end
 
-  local merged, identical, adopted = 0, 0, 0
-  local diverged = {}
+  local resolved, manual = 0, {}
   for _, c in ipairs(conflicts) do
     local outcome = M.auto_resolve_one(c.conflict, c.original, vault)
-    if outcome == "merged" then merged = merged + 1
-    elseif outcome == "identical" then identical = identical + 1
-    elseif outcome == "adopted" then adopted = adopted + 1
-    elseif outcome == "diverged" then diverged[#diverged + 1] = c end
+    if outcome == "diverged" then manual[#manual + 1] = vim.fn.fnamemodify(c.original, ":t")
+    elseif outcome ~= "gone" then resolved = resolved + 1 end
   end
 
-  local parts = {}
-  if merged > 0 then parts[#parts + 1] = merged .. " merged" end
-  if identical > 0 then parts[#parts + 1] = identical .. " identical (cleaned)" end
-  if adopted > 0 then parts[#parts + 1] = adopted .. " adopted" end
-  if #diverged > 0 then
-    local names = {}
-    for _, d in ipairs(diverged) do
-      names[#names + 1] = vim.fn.fnamemodify(d.original, ":t")
-    end
-    parts[#parts + 1] = #diverged .. " need manual review: " .. table.concat(names, ", ")
-  end
+  -- Let autoread pick up any changed files
+  pcall(function() vim.cmd("checktime") end)
 
-  if #parts == 0 then return end
-  local level = #diverged > 0 and vim.log.levels.WARN or vim.log.levels.INFO
-  vim.notify("[logseq.nvim] Syncthing conflicts: " .. table.concat(parts, ", "), level)
+  if resolved > 0 then
+    vim.notify(("[logseq.nvim] Resolved %d Syncthing conflict(s)."):format(resolved), vim.log.levels.INFO)
+  end
+  if #manual > 0 then
+    vim.notify("[logseq.nvim] Manual review needed: " .. table.concat(manual, ", "), vim.log.levels.WARN)
+  end
 end
 
 return M

@@ -33,11 +33,10 @@ function M.setup_buf(bufnr)
       return
     end
 
-    -- Safe to write
+    -- Safe to write (BufWritePost autocmd below updates mtime)
     vim.api.nvim_buf_call(bufnr, function()
       pcall(function() vim.cmd("write") end)
     end)
-    update_mtime(bufnr)
   end
 
   -- The debounced timer
