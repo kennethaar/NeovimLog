@@ -6,7 +6,7 @@ local function update_mtime(bufnr)
   local fp = vim.api.nvim_buf_get_name(bufnr)
   local st = vim.uv.fs_stat(fp)
   if st then
-    vim.b[bufnr].logseq_mtime     = st.mtime.sec
+    vim.b[bufnr].logseq_mtime      = st.mtime.sec
     vim.b[bufnr].logseq_mtime_nsec = st.mtime.nsec or 0
   end
 end
@@ -41,56 +41,47 @@ local function atomic_write(filepath, lines)
   return true
 end
 
---- Merge the current on-disk content of `filepath` into the in-memory buffer
---- `bufnr`.  Called proactively whenever an external change is detected on a
---- buffer that has unsaved edits, so the user sees peer changes immediately
---- rather than only after their next save.
----
---- After merging, logseq_mtime is advanced to the disk mtime so the same
---- external change is not re-merged on the next checktime.  The buffer is left
---- `modified = true` — the user (or autosave) still needs to write to persist.
+--- Merge two line lists: disk lines first (peer's content), then buf lines
+--- (local edits).  Uses block-tree-aware dedup when available; falls back to
+--- a plain set-union so no line from either side is ever silently dropped.
+local function do_merge(disk_lines, buf_lines)
+  local ok_d, d = pcall(require, "logseq.dedup")
+  if ok_d and d then
+    local combined = {}
+    vim.list_extend(combined, disk_lines)
+    vim.list_extend(combined, buf_lines)
+    return d.dedup_lines(combined)
+  end
+  -- Fallback: set-union preserves every line from both sides.
+  local seen, result = {}, {}
+  for _, l in ipairs(disk_lines) do
+    if not seen[l] then seen[l] = true; result[#result + 1] = l end
+  end
+  for _, l in ipairs(buf_lines) do
+    if not seen[l] then seen[l] = true; result[#result + 1] = l end
+  end
+  return result
+end
+
+--- Read disk → merge → write back to the in-memory buffer without reloading.
+--- Safe to call when the buffer is active (including during insert mode).
+--- Updates logseq_mtime so the same external change isn't re-merged next time.
 local function merge_into_buffer(bufnr, filepath)
   local stat = vim.uv.fs_stat(filepath)
   if not stat then return end
-
   local f = io.open(filepath, "r")
   if not f then return end
-  local disk_content = f:read("*a")
-  f:close()
-
-  local disk_lines = vim.split(disk_content, "\n", { plain = true })
+  local content = f:read("*a"); f:close()
+  local disk_lines = vim.split(content, "\n", { plain = true })
   if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
-
   local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-
-  local merged
-  local ok_dedup, dedup = pcall(require, "logseq.dedup")
-  if ok_dedup and dedup then
-    -- Disk first (peer's base), then local additions; dedup collapses duplicates
-    -- while preserving Logseq's block-tree structure.
-    vim.list_extend(disk_lines, buf_lines)
-    merged = dedup.dedup_lines(disk_lines)
-  else
-    -- Fallback: plain set-union — never silently drops lines from either side.
-    local seen = {}
-    merged = {}
-    for _, l in ipairs(disk_lines) do
-      if not seen[l] then seen[l] = true; merged[#merged + 1] = l end
-    end
-    for _, l in ipairs(buf_lines) do
-      if not seen[l] then seen[l] = true; merged[#merged + 1] = l end
-    end
-  end
-
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
-
-  -- Advance snapshot so this change is not re-processed on the next checktime.
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, do_merge(disk_lines, buf_lines))
   vim.b[bufnr].logseq_mtime      = stat.mtime.sec
   vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0
-
   vim.notify(
-    "[logseq.nvim] Merged peer changes into buffer — " .. vim.fn.fnamemodify(filepath, ":t"),
-    vim.log.levels.INFO
+    "[logseq.nvim] Peer changes merged into '"
+      .. vim.fn.fnamemodify(filepath, ":t") .. "' — save when ready",
+    vim.log.levels.WARN
   )
 end
 
@@ -103,25 +94,25 @@ function M.setup_buf(bufnr)
 
   -- ── FileChangedShell ───────────────────────────────────────────────
   --
-  -- BufWriteCmd bypasses Neovim's normal buf_write() path, so Neovim's
-  -- internal b_mtime record is NEVER updated after our writes.  Every
-  -- subsequent checktime() (FocusGained / WinEnter / CursorHold) therefore
-  -- fires FileChangedShell with b_mtime < disk mtime — even for saves we
-  -- made ourselves.  Without this handler that produces a false-positive
-  -- "Reloaded (changed externally)" notification on every focus switch.
+  -- CRITICAL: the callback must ALWAYS set vim.v.fcs_choice before returning.
+  -- If it returns without setting it, Neovim falls back to showing the blocking
+  -- "WARNING: The file has been changed since reading it!!! Do you really want
+  -- to write to it (y/n)?" dialog.  That is the prompt the user reported.
   --
-  -- Strategy:
-  --   own write                         → ignore (content correct, keep undo)
-  --   external change, clean buffer     → reload (pick up new content)
-  --   external change, modified buffer  → ignore reload to protect edits,
-  --                                        but immediately merge peer content
-  --                                        into the buffer so the user sees it
+  -- Root cause of the W12 dialog:
+  --   Neovim tracks a per-buffer b_mtime.  BufWriteCmd bypasses the normal
+  --   write path so b_mtime is never updated by our saves.  When we use
+  --   fcs_choice="ignore" on a modified buffer, b_mtime stays stale.  The
+  --   next :write (or :write!) call compares b_mtime against disk and fires W12.
   --
-  -- IMPORTANT: do NOT gate this callback on nvim_get_current_buf().
-  -- vim.v.fcs_choice is per-event and must be set for whatever file
-  -- triggered the event.  Returning without setting it causes Neovim to
-  -- show a blocking "file changed since reading" dialog / E211 — which is
-  -- the "error after a while" the user reported.
+  -- Fix for normal mode: use fcs_choice="reload".  Neovim reloads the file
+  --   from disk, which updates b_mtime, eliminating future W12 prompts.
+  --   We capture the user's edits BEFORE the reload and merge them back in
+  --   via vim.schedule once the reload completes.
+  --
+  -- Fix for insert mode: can't reload mid-typing (would disrupt the user).
+  --   Instead keep fcs_choice="ignore" and merge in-place.  execute_save uses
+  --   :write! (bang) to bypass the W12 check when it fires later.
   vim.api.nvim_create_autocmd("FileChangedShell", {
     pattern = filepath,
     callback = function()
@@ -135,17 +126,40 @@ function M.setup_buf(bufnr)
       end
 
       if vim.bo[bufnr].modified then
-        -- Unsaved edits exist.  Suppress the destructive reload, but schedule
-        -- an immediate in-memory merge so the user sees peer changes without
-        -- having to save first.
-        vim.v.fcs_choice = "ignore"
-        vim.schedule(function()
-          if not vim.api.nvim_buf_is_valid(bufnr) then return end
-          merge_into_buffer(bufnr, filepath)
-        end)
+        -- Buffer has unsaved edits.  Strategy depends on whether the user
+        -- is actively typing (insert mode) in THIS buffer right now.
+        local in_insert = vim.api.nvim_get_current_buf() == bufnr
+                          and vim.api.nvim_get_mode().mode:match("^i")
+
+        if in_insert then
+          -- Merge in-place without reloading — safe for active typing.
+          -- b_mtime stays stale, but execute_save uses :write! to skip W12.
+          vim.v.fcs_choice = "ignore"
+          vim.schedule(function()
+            if vim.api.nvim_buf_is_valid(bufnr) then
+              merge_into_buffer(bufnr, filepath)
+            end
+          end)
+        else
+          -- Normal/command mode: capture edits, let Neovim reload (updates
+          -- b_mtime → no more W12 on next :w), then restore merged content.
+          local saved = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+          vim.v.fcs_choice = "reload"
+          vim.schedule(function()
+            if not vim.api.nvim_buf_is_valid(bufnr) then return end
+            -- Buffer now holds fresh disk content after the reload.
+            local disk = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, do_merge(disk, saved))
+            vim.bo[bufnr].modified = true
+            vim.notify(
+              "[logseq.nvim] Peer changes merged into '"
+                .. vim.fn.fnamemodify(filepath, ":t") .. "' — save when ready",
+              vim.log.levels.WARN
+            )
+          end)
+        end
       else
-        -- Clean buffer + genuine external change → safe to reload.
-        -- FileChangedShellPost fires afterwards and updates logseq_mtime.
+        -- Clean buffer + external change → reload (updates b_mtime).
         vim.v.fcs_choice = "reload"
       end
     end,
@@ -154,28 +168,22 @@ function M.setup_buf(bufnr)
   -- ── BufWriteCmd ────────────────────────────────────────────────────
   --
   -- Completely replaces Neovim's write path for this file.
-  -- Registered by file-path pattern (not buffer number) because buf_write()
-  -- in the C layer matches BufWriteCmd against the filename.
-  --
   -- The proactive merge in FileChangedShell handles the common case.
-  -- This acts as a safety net for rapid writes that slip past checktime
-  -- (e.g. both sessions save within the same CursorHold window).
+  -- This is the safety net for rapid peer writes that slip past checktime.
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     pattern = filepath,
     callback = function()
       if vim.api.nvim_get_current_buf() ~= bufnr then return end
 
       local stat = vim.uv.fs_stat(filepath)
-
-      -- Defensive merge: fold in any peer change that FileChangedShell missed.
       if stat and disk_is_newer(stat, bufnr) then
+        -- Peer change that FileChangedShell didn't catch — merge before writing.
         merge_into_buffer(bufnr, filepath)
       end
 
       local final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
       if atomic_write(filepath, final_lines) then
-        -- BufWriteCmd requires us to clear 'modified' ourselves.
         vim.bo[bufnr].modified = false
         -- BufWriteCmd suppresses BufWritePost; fire it so subscribers
         -- (mtime update, date-file auto-move in init.lua, etc.) still run.
@@ -192,9 +200,10 @@ function M.setup_buf(bufnr)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     if not vim.bo[bufnr].modified then return end
     if filepath == "" then return end
-    -- :write triggers BufWriteCmd above.
     vim.api.nvim_buf_call(bufnr, function()
-      pcall(function() vim.cmd("write") end)
+      -- :write! (bang) bypasses Neovim's stale b_mtime / W12 check.
+      -- Safe because BufWriteCmd above handles merging before writing.
+      pcall(function() vim.cmd("write!") end)
     end)
   end
 
@@ -226,10 +235,31 @@ function M.setup_buf(bufnr)
     callback = function() update_mtime(bufnr) end,
   })
 
+  -- ── Periodic cross-session sync timer ──────────────────────────────
+  --
+  -- FocusGained and WinEnter only work within a single Neovim process.
+  -- Two separate `nvim` instances (e.g. two tmux panes) never fire each
+  -- other's focus/window events, so peer writes would only be detected
+  -- on CursorHold (4 s idle) — invisible during active editing.
+  --
+  -- This libuv timer calls :checktime every 3 s regardless of user activity,
+  -- ensuring the other session's writes are seen promptly and merged.
+  local sync_timer = vim.uv.new_timer()
+  sync_timer:start(3000, 3000, vim.schedule_wrap(function()
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      sync_timer:stop(); sync_timer:close()
+      return
+    end
+    pcall(vim.cmd, "checktime")
+  end))
+
   vim.api.nvim_create_autocmd("BufUnload", {
     buffer = bufnr,
     callback = function()
       if timer_id then vim.fn.timer_stop(timer_id); timer_id = nil end
+      if not sync_timer:is_closing() then
+        sync_timer:stop(); sync_timer:close()
+      end
     end,
   })
 end

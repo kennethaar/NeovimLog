@@ -367,7 +367,7 @@ local function bootstrap(opts)
   })
 
   -- Update stored mtime after checktime reloads a file externally.
-  -- Also stores nsec so the autosave mtime comparison has sub-second precision.
+  -- The merge notification is shown by autosave.lua; no separate message here.
   vim.api.nvim_create_autocmd("FileChangedShellPost", {
     group = group,
     pattern = "*.md",
@@ -379,10 +379,6 @@ local function bootstrap(opts)
         vim.b[ev.buf].logseq_mtime      = stat.mtime.sec
         vim.b[ev.buf].logseq_mtime_nsec = stat.mtime.nsec or 0
       end
-      vim.notify(
-        "[logseq.nvim] Reloaded: " .. vim.fn.fnamemodify(bufpath, ":t") .. " (changed externally)",
-        vim.log.levels.INFO
-      )
     end,
   })
 
