@@ -9,14 +9,11 @@ local function update_mtime(bufnr)
   end
 end
 
---- True when the on-disk mtime exactly matches our last recorded write
---- (i.e. this is a change we made ourselves, not an external session).
 local function is_own_write(stat, bufnr)
   return stat.mtime.sec == vim.b[bufnr].logseq_mtime
      and (stat.mtime.nsec or 0) == (vim.b[bufnr].logseq_mtime_nsec or 0)
 end
 
---- Atomic write: temp file + rename so a crash can't leave a half-written file.
 local function atomic_write(filepath, lines)
   local tmp = filepath .. ".nvim_save_" .. vim.fn.getpid() .. "_tmp"
   local f = io.open(tmp, "wb")
@@ -28,7 +25,6 @@ local function atomic_write(filepath, lines)
   return true
 end
 
---- Merge two line lists: disk lines first (peer's content), then buf lines (local edits).
 local function do_merge(disk_lines, buf_lines)
   local ok_d, d = pcall(require, "logseq.dedup")
   if ok_d and d then
@@ -47,7 +43,6 @@ local function do_merge(disk_lines, buf_lines)
   return result
 end
 
---- Read disk → merge → write back to the in-memory buffer without reloading.
 local function merge_into_buffer(bufnr, filepath)
   local stat = vim.uv.fs_stat(filepath)
   if not stat then return end
@@ -61,8 +56,8 @@ local function merge_into_buffer(bufnr, filepath)
   vim.b[bufnr].logseq_mtime      = stat.mtime.sec
   vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0
   vim.notify(
-    "[logseq.nvim] Peer changes merged into '"
-      .. vim.fn.fnamemodify(filepath, ":t") .. "' — save when ready",
+    "[logseq.nvim] Merged external changes into '"
+      .. vim.fn.fnamemodify(filepath, ":t") .. "'",
     vim.log.levels.WARN
   )
 end
@@ -79,16 +74,8 @@ function M.setup_buf(bufnr)
     pattern = filepath,
     callback = function()
       local stat = vim.uv.fs_stat(filepath)
-      
-      if not stat then 
-        vim.v.fcs_choice = "ignore"
-        return 
-      end
-
-      if is_own_write(stat, bufnr) then
-        vim.v.fcs_choice = "ignore"
-        return
-      end
+      if not stat then vim.v.fcs_choice = "ignore"; return end
+      if is_own_write(stat, bufnr) then vim.v.fcs_choice = "ignore"; return end
 
       if not vim.bo[bufnr].modified then
         vim.v.fcs_choice = "reload"
@@ -100,11 +87,10 @@ function M.setup_buf(bufnr)
 
       if in_insert then
         vim.v.fcs_choice = "ignore"
-        vim.schedule(function()
-          if vim.api.nvim_buf_is_valid(bufnr) then
-            merge_into_buffer(bufnr, filepath)
-          end
-        end)
+        -- Use synchronous merge instead of vim.schedule so we don't race against saves
+        if vim.api.nvim_buf_is_valid(bufnr) then
+          merge_into_buffer(bufnr, filepath)
+        end
         return
       end
 
@@ -113,14 +99,12 @@ function M.setup_buf(bufnr)
       
       vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(bufnr) then return end
-        
         local disk = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
         vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, (do_merge(disk, saved)))
         vim.bo[bufnr].modified = true
-        
         vim.notify(
-          "[logseq.nvim] Peer changes merged into '"
-            .. vim.fn.fnamemodify(filepath, ":t") .. "' — save when ready",
+          "[logseq.nvim] Merged external changes into '"
+            .. vim.fn.fnamemodify(filepath, ":t") .. "'",
           vim.log.levels.WARN
         )
       end)
@@ -134,10 +118,6 @@ function M.setup_buf(bufnr)
       if vim.api.nvim_get_current_buf() ~= bufnr then return end
 
       local stat = vim.uv.fs_stat(filepath)
-      
-      -- CRITICAL FIX: Removed disk_is_newer(). If the disk mtime is anything
-      -- other than what we last wrote, it's an external change. 
-      -- This bypasses Syncthing clock-skew issues.
       if stat and not is_own_write(stat, bufnr) then
         merge_into_buffer(bufnr, filepath)
       end
@@ -158,8 +138,14 @@ function M.setup_buf(bufnr)
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     if not vim.bo[bufnr].modified then return end
     if filepath == "" then return end
+    
+    -- CRITICAL FIX 1: Look at the disk right before saving.
+    -- If Syncthing changed the file a millisecond ago, FileChangedShell will catch it here.
+    pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
+
     vim.api.nvim_buf_call(bufnr, function()
-      pcall(function() vim.cmd("write!") end)
+      -- CRITICAL FIX 2: Drop the "!" bang. Let Neovim respect its internal locks.
+      pcall(function() vim.cmd("write") end)
     end)
   end
 
@@ -204,16 +190,25 @@ function M.setup_buf(bufnr)
       local now = vim.uv.now()
       if not vim.b[bufnr].last_checktime or (now - vim.b[bufnr].last_checktime > 2000) then
         vim.b[bufnr].last_checktime = now
-        pcall(vim.cmd, "checktime")
+        pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
         
-        -- CRITICAL FIX: Termux drops FocusGained, leaving Syncthing conflicts invisible.
-        -- We trigger a throttled conflict scan (max once per 15s) when you touch the screen.
+        -- PERFORMANCE FIX: Do not scan the entire vault while typing.
+        -- Only check if a conflict exists for the exact file we are looking at.
         if not _G.logseq_last_conflict_scan or (now - _G.logseq_last_conflict_scan > 15000) then
           _G.logseq_last_conflict_scan = now
           vim.defer_fn(function()
             pcall(function()
-              local vault = require("logseq.config").current.vault_path
-              if vault then require("logseq.sync_conflicts").resolve_all(vault) end
+              local dir = vim.fn.fnamemodify(filepath, ":h")
+              local tail = vim.fn.fnamemodify(filepath, ":t:r")
+              local ext = vim.fn.fnamemodify(filepath, ":e")
+              local pattern = string.format("%s/%s.sync-conflict-*.%s", dir, tail, ext)
+              
+              local conflicts = vim.fn.glob(pattern, false, true)
+              if #conflicts > 0 then
+                local vault = require("logseq.config").current.vault_path
+                require("logseq.sync_conflicts").auto_resolve_one(conflicts[1], filepath, vault)
+                pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
+              end
             end)
           end, 500)
         end
