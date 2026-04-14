@@ -50,7 +50,7 @@ local function do_merge(disk_lines, buf_lines)
     local combined = {}
     vim.list_extend(combined, disk_lines)
     vim.list_extend(combined, buf_lines)
-    return d.dedup_lines(combined)
+    return (d.dedup_lines(combined))
   end
   -- Fallback: set-union preserves every line from both sides.
   local seen, result = {}, {}
@@ -149,7 +149,7 @@ function M.setup_buf(bufnr)
             if not vim.api.nvim_buf_is_valid(bufnr) then return end
             -- Buffer now holds fresh disk content after the reload.
             local disk = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, do_merge(disk, saved))
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, (do_merge(disk, saved)))
             vim.bo[bufnr].modified = true
             vim.notify(
               "[logseq.nvim] Peer changes merged into '"
