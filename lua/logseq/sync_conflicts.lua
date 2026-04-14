@@ -59,20 +59,29 @@ function M.auto_resolve_one(conflict_path, original_path, vault)
   local conf = dedup.read_file(conflict_path)
 
   if not orig then
-    vim.uv.fs_rename(conflict_path, original_path)
+    if conf then vim.uv.fs_rename(conflict_path, original_path) end
     return "adopted"
   end
+  
   if not conf then return "gone" end
+  
   if orig == conf then
     os.remove(conflict_path)
     return "identical"
   end
-  if not is_mergeable(orig, conf) then return "diverged" end
+  
+  if not is_mergeable(orig, conf) then 
+    return "diverged" 
+  end
 
   dedup.backup_file(original_path, vault, orig)
   dedup.backup_file(conflict_path, vault, conf)
-  atomic_write(original_path, merge_and_dedup(orig, conf))
-  os.remove(conflict_path)
+  
+  -- If write succeeds, cleanly delete the conflict file
+  if atomic_write(original_path, merge_and_dedup(orig, conf)) then
+    os.remove(conflict_path)
+  end
+  
   return "merged"
 end
 

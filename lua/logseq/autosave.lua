@@ -18,10 +18,29 @@ local function atomic_write(filepath, lines)
   local tmp = filepath .. ".nvim_save_" .. vim.fn.getpid() .. "_tmp"
   local f = io.open(tmp, "wb")
   if not f then return false end
-  local ok = pcall(function() f:write(table.concat(lines, "\n") .. "\n") end)
+  
+  local content = table.concat(lines, "\n")
+  if content ~= "" then content = content .. "\n" end
+  
+  local ok = pcall(function() f:write(content) end)
   f:close()
-  if not ok then os.remove(tmp); return false end
-  if not vim.uv.fs_rename(tmp, filepath) then os.remove(tmp); return false end
+  
+  if not ok then 
+    os.remove(tmp)
+    return false 
+  end
+  
+  -- Fallback to direct write if rename fails (e.g. cross-device boundaries)
+  if not vim.uv.fs_rename(tmp, filepath) then 
+    os.remove(tmp)
+    local fb = io.open(filepath, "wb")
+    if fb then
+      fb:write(content)
+      fb:close()
+      return true
+    end
+    return false 
+  end
   return true
 end
 
@@ -31,8 +50,10 @@ local function do_merge(disk_lines, buf_lines)
     local combined = {}
     vim.list_extend(combined, disk_lines)
     vim.list_extend(combined, buf_lines)
-    return (d.dedup_lines(combined))
+    return d.dedup_lines(combined)
   end
+  
+  -- Fallback if dedup fails to load
   local seen, result = {}, {}
   for _, l in ipairs(disk_lines) do
     if not seen[l] then seen[l] = true; result[#result + 1] = l end
@@ -49,70 +70,56 @@ local function merge_into_buffer(bufnr, filepath)
   local f = io.open(filepath, "r")
   if not f then return end
   local content = f:read("*a"); f:close()
+  
   local disk_lines = vim.split(content, "\n", { plain = true })
   if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
   local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, do_merge(disk_lines, buf_lines))
   vim.b[bufnr].logseq_mtime      = stat.mtime.sec
   vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0
-  vim.notify(
-    "[logseq.nvim] Merged external changes into '"
-      .. vim.fn.fnamemodify(filepath, ":t") .. "'",
-    vim.log.levels.WARN
-  )
+  
+  vim.notify("[logseq.nvim] Merged external changes into '" .. vim.fn.fnamemodify(filepath, ":t") .. "'", vim.log.levels.WARN)
 end
 
 function M.setup_buf(bufnr)
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then return end
+
+  -- BEST PRACTICE: Isolate events to a clearable augroup for THIS specific buffer
+  local group = vim.api.nvim_create_augroup("logseq_autosave_" .. bufnr, { clear = true })
   local timer_id = nil
 
   update_mtime(bufnr)
 
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-
   -- ── FileChangedShell ───────────────────────────────────────────────
   vim.api.nvim_create_autocmd("FileChangedShell", {
-    pattern = filepath,
+    group = group,
+    buffer = bufnr,
     callback = function()
       local stat = vim.uv.fs_stat(filepath)
-      if not stat then vim.v.fcs_choice = "ignore"; return end
-      if is_own_write(stat, bufnr) then vim.v.fcs_choice = "ignore"; return end
+      if not stat or is_own_write(stat, bufnr) then 
+        vim.v.fcs_choice = "ignore"
+        return 
+      end
 
       if not vim.bo[bufnr].modified then
         vim.v.fcs_choice = "reload"
         return
       end
 
-      local in_insert = vim.api.nvim_get_current_buf() == bufnr
-                        and vim.api.nvim_get_mode().mode:match("^i")
-
-      if in_insert then
-        vim.v.fcs_choice = "ignore"
-        if vim.api.nvim_buf_is_valid(bufnr) then
-          merge_into_buffer(bufnr, filepath)
-        end
-        return
-      end
-
-      local saved = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-      vim.v.fcs_choice = "reload"
-      
+      -- If modified, ignore native reload and safely merge async
+      vim.v.fcs_choice = "ignore"
       vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(bufnr) then return end
-        local disk = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, (do_merge(disk, saved)))
-        vim.bo[bufnr].modified = true
-        vim.notify(
-          "[logseq.nvim] Merged external changes into '"
-            .. vim.fn.fnamemodify(filepath, ":t") .. "'",
-          vim.log.levels.WARN
-        )
+        if vim.api.nvim_buf_is_valid(bufnr) then merge_into_buffer(bufnr, filepath) end
       end)
     end,
   })
 
   -- ── BufWriteCmd ────────────────────────────────────────────────────
   vim.api.nvim_create_autocmd("BufWriteCmd", {
-    pattern = filepath,
+    group = group,
+    buffer = bufnr,
     callback = function()
       if vim.api.nvim_get_current_buf() ~= bufnr then return end
 
@@ -134,19 +141,15 @@ function M.setup_buf(bufnr)
 
   -- ── Autosave timer ─────────────────────────────────────────────────
   local function execute_save()
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    if not vim.bo[bufnr].modified then return end
-    if filepath == "" then return end
+    if not vim.api.nvim_buf_is_valid(bufnr) or not vim.bo[bufnr].modified or filepath == "" then return end
     
-    pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
-
     vim.api.nvim_buf_call(bufnr, function()
-      pcall(function() vim.cmd("write") end)
+      pcall(function() vim.cmd("silent! write") end)
     end)
   end
 
   local function start_autosave_timer()
-    if timer_id then vim.fn.timer_stop(timer_id); timer_id = nil end
+    if timer_id then vim.fn.timer_stop(timer_id) end
     timer_id = vim.fn.timer_start(10000, function()
       timer_id = nil
       execute_save()
@@ -154,19 +157,11 @@ function M.setup_buf(bufnr)
   end
 
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    buffer = bufnr,
-    callback = start_autosave_timer,
+    group = group, buffer = bufnr, callback = start_autosave_timer,
   })
 
-  vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
-    buffer = bufnr,
-    callback = function()
-      if timer_id then vim.fn.timer_stop(timer_id); timer_id = nil end
-      execute_save()
-    end,
-  })
-
-  vim.api.nvim_create_autocmd({ "InsertLeave", "BufLeave", "FocusLost" }, {
+  vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI", "InsertLeave", "BufLeave", "FocusLost" }, {
+    group = group,
     buffer = bufnr,
     callback = function()
       if timer_id then vim.fn.timer_stop(timer_id); timer_id = nil end
@@ -175,12 +170,12 @@ function M.setup_buf(bufnr)
   })
 
   vim.api.nvim_create_autocmd("BufWritePost", {
-    buffer = bufnr,
-    callback = function() update_mtime(bufnr) end,
+    group = group, buffer = bufnr, callback = function() update_mtime(bufnr) end,
   })
 
   -- ── Event-Driven Cross-Session Sync ────────────────────────────────
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "InsertEnter" }, {
+    group = group,
     buffer = bufnr,
     callback = function()
       local now = vim.uv.now()
@@ -198,7 +193,7 @@ function M.setup_buf(bufnr)
               local pattern = string.format("%s/%s.sync-conflict-*.%s", dir, tail, ext)
               
               local conflicts = vim.fn.glob(pattern, false, true)
-              if #conflicts > 0 then
+              if type(conflicts) == "table" and #conflicts > 0 then
                 local vault = require("logseq.config").current.vault_path
                 require("logseq.sync_conflicts").auto_resolve_one(conflicts[1], filepath, vault)
                 pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
@@ -211,6 +206,7 @@ function M.setup_buf(bufnr)
   })
 
   vim.api.nvim_create_autocmd("BufUnload", {
+    group = group,
     buffer = bufnr,
     callback = function()
       if timer_id then vim.fn.timer_stop(timer_id); timer_id = nil end
