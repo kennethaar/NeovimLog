@@ -347,9 +347,13 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Check for external file changes (FocusGained for device switches,
-  -- CursorHold for parallel sessions in tmux/termux panes where FocusGained doesn't fire)
-  vim.api.nvim_create_autocmd({ "FocusGained", "CursorHold" }, {
+  -- Check for external file changes.
+  -- FocusGained: terminal/app regains focus (device switches, alt-tab).
+  -- WinEnter: moving between Neovim splits / tmux panes where the terminal
+  --           stays focused and FocusGained never fires.
+  -- CursorHold: fallback for sessions in the same pane; fires after updatetime
+  --             ms of cursor inactivity.
+  vim.api.nvim_create_autocmd({ "FocusGained", "WinEnter", "CursorHold" }, {
     group = group,
     callback = function()
       pcall(function() vim.cmd("checktime") end)

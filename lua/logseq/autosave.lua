@@ -41,13 +41,63 @@ local function atomic_write(filepath, lines)
   return true
 end
 
+--- Merge the current on-disk content of `filepath` into the in-memory buffer
+--- `bufnr`.  Called proactively whenever an external change is detected on a
+--- buffer that has unsaved edits, so the user sees peer changes immediately
+--- rather than only after their next save.
+---
+--- After merging, logseq_mtime is advanced to the disk mtime so the same
+--- external change is not re-merged on the next checktime.  The buffer is left
+--- `modified = true` — the user (or autosave) still needs to write to persist.
+local function merge_into_buffer(bufnr, filepath)
+  local stat = vim.uv.fs_stat(filepath)
+  if not stat then return end
+
+  local f = io.open(filepath, "r")
+  if not f then return end
+  local disk_content = f:read("*a")
+  f:close()
+
+  local disk_lines = vim.split(disk_content, "\n", { plain = true })
+  if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
+
+  local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  local merged
+  local ok_dedup, dedup = pcall(require, "logseq.dedup")
+  if ok_dedup and dedup then
+    -- Disk first (peer's base), then local additions; dedup collapses duplicates
+    -- while preserving Logseq's block-tree structure.
+    vim.list_extend(disk_lines, buf_lines)
+    merged = dedup.dedup_lines(disk_lines)
+  else
+    -- Fallback: plain set-union — never silently drops lines from either side.
+    local seen = {}
+    merged = {}
+    for _, l in ipairs(disk_lines) do
+      if not seen[l] then seen[l] = true; merged[#merged + 1] = l end
+    end
+    for _, l in ipairs(buf_lines) do
+      if not seen[l] then seen[l] = true; merged[#merged + 1] = l end
+    end
+  end
+
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
+
+  -- Advance snapshot so this change is not re-processed on the next checktime.
+  vim.b[bufnr].logseq_mtime      = stat.mtime.sec
+  vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0
+
+  vim.notify(
+    "[logseq.nvim] Merged peer changes into buffer — " .. vim.fn.fnamemodify(filepath, ":t"),
+    vim.log.levels.INFO
+  )
+end
+
 function M.setup_buf(bufnr)
   local timer_id = nil
 
   update_mtime(bufnr)
-
-  local ok_dedup, dedup = pcall(require, "logseq.dedup")
-  if not ok_dedup then dedup = nil end
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
 
@@ -55,39 +105,47 @@ function M.setup_buf(bufnr)
   --
   -- BufWriteCmd bypasses Neovim's normal buf_write() path, so Neovim's
   -- internal b_mtime record is NEVER updated after our writes.  Every
-  -- subsequent checktime() (FocusGained / CursorHold) therefore fires
-  -- FileChangedShell with b_mtime < disk mtime — even for saves we just
+  -- subsequent checktime() (FocusGained / WinEnter / CursorHold) therefore
+  -- fires FileChangedShell with b_mtime < disk mtime — even for saves we
   -- made ourselves.  Without this handler that produces a false-positive
   -- "Reloaded (changed externally)" notification on every focus switch.
   --
   -- Strategy:
-  --   own write        → ignore (content correct, preserve undo history)
-  --   external change, modified buffer  → ignore (BufWriteCmd merges on next save)
-  --   external change, clean buffer     → reload  (pick up the new content)
+  --   own write                         → ignore (content correct, keep undo)
+  --   external change, clean buffer     → reload (pick up new content)
+  --   external change, modified buffer  → ignore reload to protect edits,
+  --                                        but immediately merge peer content
+  --                                        into the buffer so the user sees it
   --
-  -- The "ignore for own write" path leaves b_mtime stale, so FileChangedShell
-  -- fires on every checktime — but the callback is a single fs_stat + compare,
-  -- cheap enough not to matter.  The loop stops naturally when an external
-  -- change causes a "reload" and b_mtime is updated.
+  -- IMPORTANT: do NOT gate this callback on nvim_get_current_buf().
+  -- vim.v.fcs_choice is per-event and must be set for whatever file
+  -- triggered the event.  Returning without setting it causes Neovim to
+  -- show a blocking "file changed since reading" dialog / E211 — which is
+  -- the "error after a while" the user reported.
   vim.api.nvim_create_autocmd("FileChangedShell", {
     pattern = filepath,
     callback = function()
-      if vim.api.nvim_get_current_buf() ~= bufnr then return end
       local stat = vim.uv.fs_stat(filepath)
       if not stat then vim.v.fcs_choice = "ignore"; return end
 
       if is_own_write(stat, bufnr) then
-        -- Our own BufWriteCmd write — suppress the reload to keep undo history.
+        -- Our own BufWriteCmd write — suppress reload to keep undo history.
         vim.v.fcs_choice = "ignore"
         return
       end
 
       if vim.bo[bufnr].modified then
-        -- Unsaved edits exist — don't clobber them; BufWriteCmd will merge.
+        -- Unsaved edits exist.  Suppress the destructive reload, but schedule
+        -- an immediate in-memory merge so the user sees peer changes without
+        -- having to save first.
         vim.v.fcs_choice = "ignore"
+        vim.schedule(function()
+          if not vim.api.nvim_buf_is_valid(bufnr) then return end
+          merge_into_buffer(bufnr, filepath)
+        end)
       else
-        -- Clean buffer + genuine external change — reload to get the new content.
-        -- FileChangedShellPost will fire afterwards and update logseq_mtime.
+        -- Clean buffer + genuine external change → safe to reload.
+        -- FileChangedShellPost fires afterwards and updates logseq_mtime.
         vim.v.fcs_choice = "reload"
       end
     end,
@@ -98,43 +156,23 @@ function M.setup_buf(bufnr)
   -- Completely replaces Neovim's write path for this file.
   -- Registered by file-path pattern (not buffer number) because buf_write()
   -- in the C layer matches BufWriteCmd against the filename.
+  --
+  -- The proactive merge in FileChangedShell handles the common case.
+  -- This acts as a safety net for rapid writes that slip past checktime
+  -- (e.g. both sessions save within the same CursorHold window).
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     pattern = filepath,
     callback = function()
       if vim.api.nvim_get_current_buf() ~= bufnr then return end
 
       local stat = vim.uv.fs_stat(filepath)
-      local final_lines
 
+      -- Defensive merge: fold in any peer change that FileChangedShell missed.
       if stat and disk_is_newer(stat, bufnr) then
-        -- Another session wrote the file while we were editing.
-        if not dedup then
-          vim.notify(
-            "[logseq.nvim] External change detected — dedup unavailable, writing local version.",
-            vim.log.levels.WARN
-          )
-          final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        else
-          local f = io.open(filepath, "r")
-          if f then
-            local disk_content = f:read("*a")
-            f:close()
-            local disk_lines = vim.split(disk_content, "\n", { plain = true })
-            -- vim.split("a\nb\n") gives {"a","b",""} — drop trailing empty
-            if disk_lines[#disk_lines] == "" then table.remove(disk_lines) end
-            local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-            -- Disk first (other session's base); our additions append after.
-            vim.list_extend(disk_lines, buf_lines)
-            final_lines = dedup.dedup_lines(disk_lines)
-            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, final_lines)
-            vim.notify("[logseq.nvim] Merged local edits with external changes", vim.log.levels.INFO)
-          else
-            final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-          end
-        end
-      else
-        final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        merge_into_buffer(bufnr, filepath)
       end
+
+      local final_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
       if atomic_write(filepath, final_lines) then
         -- BufWriteCmd requires us to clear 'modified' ourselves.
