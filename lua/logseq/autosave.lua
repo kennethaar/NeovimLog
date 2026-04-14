@@ -87,7 +87,6 @@ function M.setup_buf(bufnr)
 
       if in_insert then
         vim.v.fcs_choice = "ignore"
-        -- Use synchronous merge instead of vim.schedule so we don't race against saves
         if vim.api.nvim_buf_is_valid(bufnr) then
           merge_into_buffer(bufnr, filepath)
         end
@@ -139,12 +138,9 @@ function M.setup_buf(bufnr)
     if not vim.bo[bufnr].modified then return end
     if filepath == "" then return end
     
-    -- CRITICAL FIX 1: Look at the disk right before saving.
-    -- If Syncthing changed the file a millisecond ago, FileChangedShell will catch it here.
     pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
 
     vim.api.nvim_buf_call(bufnr, function()
-      -- CRITICAL FIX 2: Drop the "!" bang. Let Neovim respect its internal locks.
       pcall(function() vim.cmd("write") end)
     end)
   end
@@ -192,8 +188,6 @@ function M.setup_buf(bufnr)
         vim.b[bufnr].last_checktime = now
         pcall(vim.cmd, "checktime " .. vim.fn.fnameescape(filepath))
         
-        -- PERFORMANCE FIX: Do not scan the entire vault while typing.
-        -- Only check if a conflict exists for the exact file we are looking at.
         if not _G.logseq_last_conflict_scan or (now - _G.logseq_last_conflict_scan > 15000) then
           _G.logseq_last_conflict_scan = now
           vim.defer_fn(function()
