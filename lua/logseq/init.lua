@@ -22,6 +22,15 @@ local function segment(lines, indent)
   return blocks
 end
 
+local function flatten_blocks(blocks)
+  local out = {}
+  for _, b in ipairs(blocks) do
+    out[#out + 1] = b.line
+    vim.list_extend(out, b.body)
+  end
+  return out
+end
+
 local function dedup_block_list(lines, indent)
   local blocks = segment(lines, indent)
   local order, seen = {}, {}
@@ -36,15 +45,42 @@ local function dedup_block_list(lines, indent)
       for _, l in ipairs(entry.body) do
         if l ~= "" then child_indent = line_indent(l); break end
       end
-      entry.body = vim.iter(dedup_block_list(entry.body, child_indent)):map(function(b) return { b.line, b.body } end):flatten():totable()
+      entry.body = flatten_blocks(dedup_block_list(entry.body, child_indent))
     end
   end
   return order
 end
 
 function M.dedup_lines(lines)
-  local result = vim.iter(dedup_block_list(lines, 0)):map(function(b) return { b.line, b.body } end):flatten():totable()
+  local result = flatten_blocks(dedup_block_list(lines, 0))
   return result, #lines - #result
+end
+
+function M.read_file(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local ok, content = pcall(function() return f:read("*a") end)
+  f:close()
+  return ok and content or nil
+end
+
+function M.backup_file(filepath, vault, content)
+  local backup_dir = vim.fs.joinpath(vault, "deduped")
+  vim.fn.mkdir(backup_dir, "p")
+  local stem = vim.fn.fnamemodify(filepath, ":t:r")
+  local ext  = vim.fn.fnamemodify(filepath, ":e")
+  local ts   = os.date("%Y-%m-%d_%H%M%S")
+  local dest = vim.fs.joinpath(backup_dir, stem .. "_" .. ts .. "." .. ext)
+  local n = 1
+  while vim.fn.filereadable(dest) == 1 do
+    dest = vim.fs.joinpath(backup_dir, stem .. "_" .. ts .. "_" .. n .. "." .. ext)
+    n = n + 1
+  end
+  local f = io.open(dest, "wb")
+  if not f then return end
+  local ok = pcall(function() f:write(content) end)
+  f:close()
+  if not ok then os.remove(dest) end
 end
 
 M.dedup_buf = function(bufnr)

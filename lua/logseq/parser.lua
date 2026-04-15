@@ -24,7 +24,7 @@ function M.parse(lines)
   while i <= #lines do
     local indent, content = lines[i]:match("^(%s*)%- (.*)$")
     if indent then
-      local block = { line_start = i, line_end = i, indent = #indent, content = content, properties = {}, children = {}, parent = nil, links = vim.iter(content:gmatch("%[%[(.-)%]%.]")):map(function(l) return l:match("^(.-)%|") or l end):totable(), tags = {} }
+      local block = { line_start = i, line_end = i, indent = #indent, content = content, properties = {}, children = {}, parent = nil, links = vim.iter(content:gmatch("%[%[(.-)%]%]")):map(function(l) return l:match("^(.-)%|") or l end):totable(), tags = {} }
       local j = i + 1
       while j <= #lines and not lines[j]:match("^%s*-") and lines[j] ~= "" do
         local pk, pv = lines[j]:match("^(%s*)([%w_%-]+)::%s*(.*)$")
@@ -46,7 +46,12 @@ function M.parse(lines)
 end
 
 function M.flatten(blocks)
-  return vim.iter(blocks):map(function(b) return vim.iter({b, M.flatten(b.children)}):flatten() end):flatten():totable()
+  local result = {}
+  for _, b in ipairs(blocks) do
+    result[#result + 1] = b
+    for _, c in ipairs(M.flatten(b.children)) do result[#result + 1] = c end
+  end
+  return result
 end
 
 function M.block_at_line(blocks, lnum)

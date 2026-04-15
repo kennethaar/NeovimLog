@@ -6,7 +6,7 @@
 
 local M = {}
 
-local dedup = require("logseq.dedup")
+local dedup = require("logseq")
 
 --- Syncthing conflict filename pattern: .sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX
 local CONFLICT_SUFFIX = "%.sync%-conflict%-%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%-%w+"
