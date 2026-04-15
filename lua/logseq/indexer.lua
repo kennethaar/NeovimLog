@@ -65,6 +65,94 @@ function M.find_backlinks(page_name, exclude_file, on_complete)
   end)()
 end
 
-function M.find_scheduled_blocks(today_iso, on_complete) on_complete({ overdue = {}, upcoming = {} }) end
+-- Extract the first ISO scheduled/deadline date referenced by a block.
+-- The parser already appends `<YYYY-MM-DD …>` org-dates into block.links for
+-- both the bullet content and every property/continuation line, so the whole
+-- date search collapses to: return the first link that looks like an ISO date.
+local function block_scheduled_date(block)
+  for _, link in ipairs(block.links or {}) do
+    if link:match("^%d%d%d%d%-%d%d%-%d%d$") then return link end
+  end
+end
+
+local function block_todo_state(content)
+  for _, s in ipairs(util.todo_states) do
+    if content:sub(1, #s + 1) == s .. " " or content == s then return s end
+  end
+end
+
+local function build_context_blocks(block)
+  -- Walk ancestors to collect the outer → inner chain, then append the block
+  -- itself as the non-ancestor leaf.
+  local chain = {}
+  local cur = block.parent
+  while cur do
+    table.insert(chain, 1, cur)
+    cur = cur.parent
+  end
+  local ctx = {}
+  for _, anc in ipairs(chain) do
+    ctx[#ctx + 1] = {
+      is_ancestor = true,
+      indent      = anc.indent,
+      text        = anc.content,
+      source_line = anc.line_start,
+    }
+  end
+  ctx[#ctx + 1] = {
+    is_ancestor = false,
+    indent      = block.indent,
+    text        = block.content,
+    source_line = block.line_start,
+  }
+  return ctx
+end
+
+function M.find_scheduled_blocks(today_iso, on_complete)
+  local vault = config.current.vault_path
+  if not vault or vault == "" then return on_complete({ overdue = {}, upcoming = {} }) end
+
+  a.void(function()
+    a.util.scheduler()
+    local files = util.get_vault_files(vault)
+    local overdue, upcoming, batch_size = {}, {}, 20
+
+    for i = 1, #files, batch_size do
+      local batch = vim.list_slice(files, i, math.min(i + batch_size - 1, #files))
+      local thunks = vim.iter(batch):map(function(fpath)
+        return function()
+          local _, parsed = M.get_parsed_file(fpath)
+          if not parsed then return end
+          local source_page = M.page_name_from_file(fpath) or vim.fn.fnamemodify(fpath, ":t:r")
+          for _, block in ipairs(parser.flatten(parsed.blocks)) do
+            if block.is_scheduled then
+              local date = block_scheduled_date(block)
+              if date then
+                local entry = {
+                  source_page    = source_page,
+                  source_file    = fpath,
+                  todo_state     = block_todo_state(block.content),
+                  tags           = block.tags or {},
+                  date           = date,
+                  context_blocks = build_context_blocks(block),
+                }
+                if date < today_iso then table.insert(overdue, entry)
+                else table.insert(upcoming, entry) end
+              end
+            end
+          end
+        end
+      end):totable()
+      a.util.join(thunks)
+      a.util.sleep(5)
+    end
+
+    a.util.scheduler()
+    local by_date = function(x, y) return x.date < y.date end
+    table.sort(overdue, by_date)
+    table.sort(upcoming, by_date)
+    on_complete({ overdue = overdue, upcoming = upcoming })
+  end)()
+end
 
 return M
