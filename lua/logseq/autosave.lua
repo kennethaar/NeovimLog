@@ -45,38 +45,29 @@ local function is_own_write(stat, bufnr)
      and (stat.mtime.nsec or 0) == (vim.b[bufnr].logseq_mtime_nsec or 0)
 end
 
--- ── Merge disk + buffer via dedup (async I/O, sync buffer apply) ───────
+-- ── Merge disk + buffer via dedup ──────────────────────────────────────
 
+-- Called inside vim.schedule so all buffer APIs are safe to use.
 local function merge_into_buffer_async(bufnr, filepath)
-  local a = require("plenary.async")
-  local uv = vim.uv
-  a.void(function()
-    local _, fd = a.wrap(uv.fs_open, 4)(filepath, "r", 438)
-    if not fd then return end
-    local _, stat = a.wrap(uv.fs_fstat, 2)(fd)
-    local _, content = a.wrap(uv.fs_read, 4)(fd, stat.size, 0)
-    uv.fs_close(fd)
-    if not content or not stat then return end
+  if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  local content, stat = read_file_sync(filepath)
+  if not content or not stat then return end
 
-    a.util.scheduler()
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+  local disk = vim.split(content, "\n", { plain = true })
+  if disk[#disk] == "" then table.remove(disk) end
+  local buf = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-    local disk = vim.split(content, "\n", { plain = true })
-    if disk[#disk] == "" then table.remove(disk) end
-    local buf = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local combined = {}
+  vim.list_extend(combined, disk)
+  vim.list_extend(combined, buf)
+  local merged = require("logseq.dedup").dedup_lines(combined)
 
-    local combined = {}
-    vim.list_extend(combined, disk)
-    vim.list_extend(combined, buf)
-    local merged = (require("logseq").dedup_lines(combined))
-
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
-    vim.b[bufnr].logseq_mtime      = stat.mtime.sec
-    vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0
-    vim.notify(
-      "[logseq.nvim] Merged external changes into '" .. vim.fn.fnamemodify(filepath, ":t") .. "'",
-      vim.log.levels.WARN)
-  end)()
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
+  vim.b[bufnr].logseq_mtime      = stat.mtime.sec
+  vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0
+  vim.notify(
+    "[logseq.nvim] Merged external changes into '" .. vim.fn.fnamemodify(filepath, ":t") .. "'",
+    vim.log.levels.WARN)
 end
 
 -- Synchronous variant used inside BufWriteCmd where we must settle before writing.
@@ -89,7 +80,7 @@ local function merge_into_buffer_sync(bufnr, filepath)
   local combined = {}
   vim.list_extend(combined, disk)
   vim.list_extend(combined, buf)
-  local merged = (require("logseq").dedup_lines(combined))
+  local merged = require("logseq.dedup").dedup_lines(combined)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, merged)
   vim.b[bufnr].logseq_mtime      = stat.mtime.sec
   vim.b[bufnr].logseq_mtime_nsec = stat.mtime.nsec or 0

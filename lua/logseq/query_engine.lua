@@ -2,7 +2,6 @@ local config  = require("logseq.config")
 local indexer = require("logseq.indexer")
 local parser  = require("logseq.parser")
 local util    = require("logseq.util")
-local a       = require("plenary.async")
 
 local M = {}
 
@@ -86,23 +85,28 @@ function M.run(ast, opts, on_complete)
   local vault = config.current.vault_path
   if not vault or vault == "" then return vim.schedule(function() on_complete({}) end) end
 
-  a.void(function()
-    a.util.scheduler()
-    local all_files = util.get_vault_files(vault)
-    if #all_files == 0 then return on_complete({}) end
-    local results, batch_size = {}, 20
+  local all_files = util.get_vault_files(vault)
+  if #all_files == 0 then return vim.schedule(function() on_complete({}) end) end
 
-    for i = 1, #all_files, batch_size do
-      local batch = vim.list_slice(all_files, i, math.min(i + batch_size - 1, #all_files))
-      local thunks = vim.iter(batch):map(function(fpath) return function() process_file(fpath, ast, opts, results) end end):totable()
-      a.util.join(thunks)
-      a.util.sleep(5)
+  local results = {}
+  local i, BATCH = 0, 20
+
+  local function step()
+    for _ = 1, BATCH do
+      i = i + 1
+      if i > #all_files then
+        table.sort(results, function(x, y)
+          if x.source_page ~= y.source_page then return x.source_page < y.source_page end
+          return x.line_start < y.line_start
+        end)
+        on_complete(results)
+        return
+      end
+      process_file(all_files[i], ast, opts, results)
     end
-
-    a.util.scheduler()
-    table.sort(results, function(a, b) if a.source_page ~= b.source_page then return a.source_page < b.source_page end; return a.line_start < b.line_start end)
-    on_complete(results)
-  end)()
+    vim.schedule(step)
+  end
+  vim.schedule(step)
 end
 
 return M

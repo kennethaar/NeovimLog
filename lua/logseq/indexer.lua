@@ -1,5 +1,4 @@
 local M = {}
-local a = require("plenary.async")
 local parser = require("logseq.parser")
 local util = require("logseq.util")
 local config = require("logseq.config")
@@ -41,28 +40,29 @@ end
 
 function M.find_backlinks(page_name, exclude_file, on_complete)
   local vault = config.current.vault_path
-  if not vault then return on_complete({}) end
+  if not vault then return vim.schedule(function() on_complete({}) end) end
 
-  a.void(function()
-    a.util.scheduler()
-    local files = vim.iter(util.get_vault_files(vault)):filter(function(f) return util.normalize(f) ~= util.normalize(exclude_file) end):totable()
-    local results, batch_size = {}, 20
-    for i = 1, #files, batch_size do
-      local batch = vim.list_slice(files, i, math.min(i + batch_size - 1, #files))
-      local thunks = vim.iter(batch):map(function(f)
-        return function()
-          local content = vim.fn.readfile(f)
-          if not vim.iter(content):any(function(l) return l:lower():find(page_name:lower(), 1, true) end) then return end
-          local lines, parsed = M.get_parsed_file(f)
-          if parsed then return { file = f, source_page = M.page_name_from_file(f) } end
-        end
-      end):totable()
-      vim.iter(a.util.join(thunks)):filter(function(r) return r ~= nil end):each(function(r) table.insert(results, r) end)
-      a.util.sleep(5)
+  local files = vim.iter(util.get_vault_files(vault)):filter(function(f)
+    return util.normalize(f) ~= util.normalize(exclude_file)
+  end):totable()
+
+  local results = {}
+  local i, BATCH = 0, 20
+
+  local function step()
+    for _ = 1, BATCH do
+      i = i + 1
+      if i > #files then on_complete(results); return end
+      local f = files[i]
+      local content = vim.fn.readfile(f)
+      if vim.iter(content):any(function(l) return l:lower():find(page_name:lower(), 1, true) end) then
+        local _, parsed = M.get_parsed_file(f)
+        if parsed then table.insert(results, { file = f, source_page = M.page_name_from_file(f) }) end
+      end
     end
-    a.util.scheduler()
-    on_complete(results)
-  end)()
+    vim.schedule(step)
+  end
+  vim.schedule(step)
 end
 
 -- Extract the first ISO scheduled/deadline date referenced by a block.
@@ -110,49 +110,50 @@ end
 
 function M.find_scheduled_blocks(today_iso, on_complete)
   local vault = config.current.vault_path
-  if not vault or vault == "" then return on_complete({ overdue = {}, upcoming = {} }) end
+  if not vault or vault == "" then
+    return vim.schedule(function() on_complete({ overdue = {}, upcoming = {} }) end)
+  end
 
-  a.void(function()
-    a.util.scheduler()
-    local files = util.get_vault_files(vault)
-    local overdue, upcoming, batch_size = {}, {}, 20
+  local files = util.get_vault_files(vault)
+  local overdue, upcoming = {}, {}
+  local i, BATCH = 0, 20
 
-    for i = 1, #files, batch_size do
-      local batch = vim.list_slice(files, i, math.min(i + batch_size - 1, #files))
-      local thunks = vim.iter(batch):map(function(fpath)
-        return function()
-          local _, parsed = M.get_parsed_file(fpath)
-          if not parsed then return end
-          local source_page = M.page_name_from_file(fpath) or vim.fn.fnamemodify(fpath, ":t:r")
-          for _, block in ipairs(parser.flatten(parsed.blocks)) do
-            if block.is_scheduled then
-              local date = block_scheduled_date(block)
-              if date then
-                local entry = {
-                  source_page    = source_page,
-                  source_file    = fpath,
-                  todo_state     = block_todo_state(block.content),
-                  tags           = block.tags or {},
-                  date           = date,
-                  context_blocks = build_context_blocks(block),
-                }
-                if date < today_iso then table.insert(overdue, entry)
-                else table.insert(upcoming, entry) end
-              end
+  local function step()
+    for _ = 1, BATCH do
+      i = i + 1
+      if i > #files then
+        local by_date = function(x, y) return x.date < y.date end
+        table.sort(overdue, by_date)
+        table.sort(upcoming, by_date)
+        on_complete({ overdue = overdue, upcoming = upcoming })
+        return
+      end
+      local fpath = files[i]
+      local _, parsed = M.get_parsed_file(fpath)
+      if parsed then
+        local source_page = M.page_name_from_file(fpath) or vim.fn.fnamemodify(fpath, ":t:r")
+        for _, block in ipairs(parser.flatten(parsed.blocks)) do
+          if block.is_scheduled then
+            local date = block_scheduled_date(block)
+            if date then
+              local entry = {
+                source_page    = source_page,
+                source_file    = fpath,
+                todo_state     = block_todo_state(block.content),
+                tags           = block.tags or {},
+                date           = date,
+                context_blocks = build_context_blocks(block),
+              }
+              if date < today_iso then table.insert(overdue, entry)
+              else table.insert(upcoming, entry) end
             end
           end
         end
-      end):totable()
-      a.util.join(thunks)
-      a.util.sleep(5)
+      end
     end
-
-    a.util.scheduler()
-    local by_date = function(x, y) return x.date < y.date end
-    table.sort(overdue, by_date)
-    table.sort(upcoming, by_date)
-    on_complete({ overdue = overdue, upcoming = upcoming })
-  end)()
+    vim.schedule(step)
+  end
+  vim.schedule(step)
 end
 
 return M

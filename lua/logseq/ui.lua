@@ -387,46 +387,40 @@ end
 --- vault. Files are processed in batches so the UI stays responsive throughout.
 --- on_done(total_updated) is called when the scan is complete.
 local function rewrite_links_async(vault, rewrites, on_done)
-  local a = require("plenary.async")
   local uv = vim.uv
+  local files = require("logseq.util").get_vault_files(vault)
+  local patterns = vim.iter(rewrites):map(function(r)
+    return { pat = "%[%[" .. escape_lua_pattern(r[1]) .. "%]%]", link = "[[" .. r[2] .. "]]" }
+  end):totable()
 
-  a.void(function()
-    a.util.scheduler()
-    local files = require("logseq.util").get_vault_files(vault)
-    local patterns = vim.iter(rewrites):map(function(r)
-      return { pat = "%[%[" .. escape_lua_pattern(r[1]) .. "%]%]", link = "[[" .. r[2] .. "]]" }
-    end):totable()
+  local updated = 0
+  local i, BATCH = 0, 20
 
-    local updated, batch_size = 0, 20
-    for i = 1, #files, batch_size do
-      local batch = vim.list_slice(files, i, math.min(i + batch_size - 1, #files))
-      local thunks = vim.iter(batch):map(function(fpath)
-        return function()
-          local fd = a.wrap(uv.fs_open, 4)(fpath, "r", 438)
-          if not fd then return 0 end
-          local _, stat = a.wrap(uv.fs_fstat, 2)(fd)
-          local _, content = a.wrap(uv.fs_read, 4)(fd, stat.size, 0)
+  local function step()
+    for _ = 1, BATCH do
+      i = i + 1
+      if i > #files then on_done(updated); return end
+      local fpath = files[i]
+      local stat = uv.fs_stat(fpath)
+      if stat then
+        local fd = uv.fs_open(fpath, "r", 438)
+        if fd then
+          local content = uv.fs_read(fd, stat.size, 0)
           uv.fs_close(fd)
-          if not content then return 0 end
-
-          local new_content = content
-          for _, p in ipairs(patterns) do new_content = new_content:gsub(p.pat, p.link) end
-
-          if new_content ~= content then
-            local wfd = a.wrap(uv.fs_open, 4)(fpath, "w", 438)
-            if wfd then a.wrap(uv.fs_write, 4)(wfd, new_content, 0); uv.fs_close(wfd); return 1 end
+          if content then
+            local new_content = content
+            for _, p in ipairs(patterns) do new_content = new_content:gsub(p.pat, p.link) end
+            if new_content ~= content then
+              local wfd = uv.fs_open(fpath, "w", 438)
+              if wfd then uv.fs_write(wfd, new_content, 0); uv.fs_close(wfd); updated = updated + 1 end
+            end
           end
-          return 0
         end
-      end):totable()
-
-      local results = a.util.join(thunks)
-      for _, changed in ipairs(results) do updated = updated + (changed or 0) end
-      a.util.sleep(5)
+      end
     end
-    a.util.scheduler()
-    on_done(updated)
-  end)()
+    vim.schedule(step)
+  end
+  vim.schedule(step)
 end
 
 --- Switch to dest_path immediately so the user sees it at once, then in the next
@@ -446,7 +440,7 @@ local function finish(bufnr, dest_path, extra_path, to_delete, vault, rewrites, 
         while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
         vim.list_extend(lines, { "", "---", "" })
         vim.list_extend(lines, vim.split(src:gsub("%s+$", ""), "\n", { plain = true }))
-        lines = (require("logseq").dedup_lines(lines))
+        lines = require("logseq.dedup").dedup_lines(lines)
         vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
         vim.cmd("silent write")
       end
