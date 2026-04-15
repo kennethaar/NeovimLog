@@ -176,6 +176,11 @@ function M.setup_buf(bufnr)
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "InsertEnter" }, {
     group = group, buffer = bufnr,
     callback = function()
+      -- Skip checktime while the buffer has unsaved changes. Our atomic_write
+      -- updates the file mtime but Neovim's internal b_mtime_read stays at the
+      -- original open-time value, so checktime would always see a mismatch and
+      -- show W12. External changes are handled at write time by BufWriteCmd.
+      if vim.bo[bufnr].modified then return end
       local now = vim.uv.now()
       if vim.b[bufnr].last_checktime and (now - vim.b[bufnr].last_checktime <= 2000) then return end
       vim.b[bufnr].last_checktime = now
