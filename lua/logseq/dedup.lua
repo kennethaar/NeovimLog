@@ -48,22 +48,59 @@ local function flatten_blocks(blocks)
   return lines
 end
 
+--- Scan a block's body for its Logseq block id (id:: XXXX).
+--- Only looks in property lines — stops at the first child bullet.
+--- Returns the id string, or nil if not found.
+local function extract_block_id(body)
+  for _, l in ipairs(body) do
+    local s = l:match("^%s*(.-)%s*$")
+    local id = s:match("^id::%s*(%S+)$")
+    if id then return id end
+    if s:match("^%- ") or s:match("^%* ") then break end
+  end
+  return nil
+end
+
+--- Return only the property lines from a body (everything before the first
+--- child bullet). Used to strip repeated children from id-duplicate blocks.
+local function properties_only(body)
+  local result = {}
+  for _, l in ipairs(body) do
+    local s = l:match("^%s*(.-)%s*$")
+    if s:match("^%- ") or s:match("^%* ") then break end
+    result[#result + 1] = l
+  end
+  return result
+end
+
 --- Recursively dedup a list of lines at a given indent level.
---- Duplicate block headers have their bodies appended to the first occurrence.
---- The merged body is then recursively deduped at the next indent level.
+--- Two blocks are considered duplicates if they share the same header line OR
+--- the same Logseq block id (id:: XXXX in their property lines).
+--- - Same header: bodies are merged into the first occurrence.
+--- - Same id but different header: the duplicate keeps its header and
+---   properties but has its children stripped (they belong to the first block).
 local function dedup_block_list(lines, indent)
   local blocks = segment(lines, indent)
-  local order, seen = {}, {}
+  local order, seen_header, seen_id = {}, {}, {}
 
   for _, block in ipairs(blocks) do
     if block.always_keep then
       order[#order + 1] = block
-    elseif seen[block.line] then
-      vim.list_extend(seen[block.line].body, block.body)
     else
-      local entry = { line = block.line, body = block.body }
-      seen[block.line] = entry
-      order[#order + 1] = entry
+      local bid = extract_block_id(block.body)
+      if bid and seen_id[bid] then
+        -- Same Logseq block id, different header: keep header + properties,
+        -- drop the repeated child subtree.
+        order[#order + 1] = { line = block.line, body = properties_only(block.body) }
+      elseif seen_header[block.line] then
+        -- Identical header: merge bodies into the first occurrence.
+        vim.list_extend(seen_header[block.line].body, block.body)
+      else
+        local entry = { line = block.line, body = block.body }
+        if bid then seen_id[bid] = entry end
+        seen_header[block.line] = entry
+        order[#order + 1] = entry
+      end
     end
   end
 
