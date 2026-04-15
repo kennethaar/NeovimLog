@@ -61,24 +61,12 @@ local function extract_block_id(body)
   return nil
 end
 
---- Return only the property lines from a body (everything before the first
---- child bullet). Used to strip repeated children from id-duplicate blocks.
-local function properties_only(body)
-  local result = {}
-  for _, l in ipairs(body) do
-    local s = l:match("^%s*(.-)%s*$")
-    if s:match("^%- ") or s:match("^%* ") then break end
-    result[#result + 1] = l
-  end
-  return result
-end
-
 --- Recursively dedup a list of lines at a given indent level.
 --- Two blocks are considered duplicates if they share the same header line OR
 --- the same Logseq block id (id:: XXXX in their property lines).
 --- - Same header: bodies are merged into the first occurrence.
---- - Same id but different header: the duplicate keeps its header and
----   properties but has its children stripped (they belong to the first block).
+--- - Same id but different header: the entire duplicate is dropped (Logseq
+---   sync corruption — the block already exists under a different heading).
 local function dedup_block_list(lines, indent)
   local blocks = segment(lines, indent)
   local order, seen_header, seen_id = {}, {}, {}
@@ -88,13 +76,12 @@ local function dedup_block_list(lines, indent)
       order[#order + 1] = block
     else
       local bid = extract_block_id(block.body)
-      if bid and seen_id[bid] then
-        -- Same Logseq block id, different header: keep header + properties,
-        -- drop the repeated child subtree.
-        order[#order + 1] = { line = block.line, body = properties_only(block.body) }
-      elseif seen_header[block.line] then
+      if seen_header[block.line] then
         -- Identical header: merge bodies into the first occurrence.
         vim.list_extend(seen_header[block.line].body, block.body)
+      elseif bid and seen_id[bid] then
+        -- Same Logseq block id, different header: Logseq sync corruption.
+        -- Drop the entire duplicate block.
       else
         local entry = { line = block.line, body = block.body }
         if bid then seen_id[bid] = entry end
