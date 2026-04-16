@@ -1,90 +1,80 @@
 local M = {}
 
-local function update_mtime(bufnr)
+--- Get precise mtime (seconds + nanoseconds)
+local function get_precise_mtime(bufnr)
   local fp = vim.api.nvim_buf_get_name(bufnr)
   local st = vim.uv.fs_stat(fp)
-  if st then vim.b[bufnr].logseq_mtime = st.mtime.sec end
+  if st then 
+    return { sec = st.mtime.sec, nsec = st.mtime.nsec }
+  end
+  return nil
 end
 
 function M.setup_buf(bufnr)
-  local timer_id = nil
-
-  -- Record the file's mtime at buffer load so we can detect external changes
-  update_mtime(bufnr)
+  local timer = vim.uv.new_timer()
+  vim.b[bufnr].logseq_mtime = get_precise_mtime(bufnr)
 
   local function execute_save()
-    if not vim.api.nvim_buf_is_valid(bufnr) then return end
-    if not vim.bo[bufnr].modified then return end
-
+    if not vim.api.nvim_buf_is_valid(bufnr) or not vim.bo[bufnr].modified then return end
+    
     local filepath = vim.api.nvim_buf_get_name(bufnr)
     if filepath == "" then return end
 
     local stat = vim.uv.fs_stat(filepath)
-    local our_mtime = vim.b[bufnr].logseq_mtime
+    local last_mtime = vim.b[bufnr].logseq_mtime
 
-    -- File changed externally (Syncthing) — reload instead of overwriting
-    if stat and our_mtime and stat.mtime.sec > our_mtime then
-      vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(bufnr) then return end
-        vim.api.nvim_buf_call(bufnr, function() vim.cmd("edit!") end)
-        update_mtime(bufnr)
-        vim.notify("[logseq.nvim] Reloaded (changed on disk)", vim.log.levels.INFO)
-      end)
-      return
+    -- Check for external changes (Syncthing)
+    if stat and last_mtime then
+      local disk_newer = (stat.mtime.sec > last_mtime.sec) or 
+                         (stat.mtime.sec == last_mtime.sec and stat.mtime.nsec > last_mtime.nsec)
+      
+      if disk_newer then
+        -- SAFETY: Do not call edit! if buffer is modified. 
+        -- This prevents discarding your current unsaved session.
+        vim.schedule(function()
+          vim.notify("[logseq.nvim] External change detected. Save aborted. Use :edit! to discard or :diffupdate to merge.", vim.log.levels.WARN)
+        end)
+        return
+      end
     end
 
-    -- Safe to write (BufWritePost autocmd below updates mtime)
+    -- Perform the write
     vim.api.nvim_buf_call(bufnr, function()
-      pcall(function() vim.cmd("write") end)
+      pcall(function() vim.cmd("silent! write") end)
     end)
   end
 
-  -- The debounced timer
-  local function start_autosave_timer()
-    if timer_id then
-      vim.fn.timer_stop(timer_id)
-      timer_id = nil
-    end
-
-    timer_id = vim.fn.timer_start(10000, function()
-      timer_id = nil
-      execute_save()
-    end)
+  local function start_timer()
+    timer:stop()
+    timer:start(10000, 0, vim.schedule_wrap(execute_save))
   end
 
-  -- Trigger the 10-second countdown when typing
+  local group = vim.api.nvim_create_augroup("LogseqAutosave_" .. bufnr, { clear = true })
+
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    buffer = bufnr,
-    callback = start_autosave_timer,
+    group = group, buffer = bufnr, callback = start_timer,
   })
 
-  -- Force an IMMEDIATE save if you leave insert mode or leave the buffer
-  -- This prevents the E37 error if you try to :q before the 10 seconds are up!
   vim.api.nvim_create_autocmd({ "InsertLeave", "BufLeave", "FocusLost" }, {
+    group = group,
     buffer = bufnr,
     callback = function()
-      if timer_id then
-        vim.fn.timer_stop(timer_id)
-        timer_id = nil
-      end
+      timer:stop()
       execute_save()
     end
   })
 
-  -- Keep stored mtime in sync after any manual :w
   vim.api.nvim_create_autocmd("BufWritePost", {
+    group = group,
     buffer = bufnr,
-    callback = function() update_mtime(bufnr) end,
+    callback = function() vim.b[bufnr].logseq_mtime = get_precise_mtime(bufnr) end,
   })
 
-  -- Clean up timer when closing the buffer entirely
   vim.api.nvim_create_autocmd("BufUnload", {
+    group = group,
     buffer = bufnr,
     callback = function()
-      if timer_id then
-        vim.fn.timer_stop(timer_id)
-        timer_id = nil
-      end
+      if not timer:is_closing() then timer:close() end
     end
   })
 end
