@@ -196,7 +196,7 @@ local function collect_filter_items(results, scheduled_data)
 
   local todo_set, tag_set = {}, {}
   local function collect_from(list)
-    for _, r in ipairs(list) do
+    for _, r in ipairs(list or {}) do
       if r.todo_state then todo_set[r.todo_state] = true end
       for _, tag in ipairs(r.tags or {}) do tag_set["#" .. tag] = true end
     end
@@ -326,14 +326,14 @@ local function append_sched_section(label, hl_group, entries, display, smap, hl_
     local g   = groups[page]
     local cnt = 0
     for _, e in ipairs(g.items) do
-      for _, cb in ipairs(e.context_blocks) do
+      for _, cb in ipairs(e.context_blocks or {}) do
         if not cb.is_ancestor then cnt = cnt + 1 end
       end
     end
     display[#display+1] = string.format("- [[%s]]  ⋯ %d %s", page, cnt, cnt == 1 and "line" or "lines")
     smap[#display] = { file = g.source_file, line = 1 }
     for _, e in ipairs(g.items) do
-      for _, cb in ipairs(e.context_blocks) do
+      for _, cb in ipairs(e.context_blocks or {}) do
         local prefix = cb.is_ancestor and "▸ " or "- "
         display[#display+1] = string.rep(" ", cb.indent) .. prefix .. cb.text
         smap[#display] = { file = e.source_file, line = cb.source_line }
@@ -391,7 +391,7 @@ local function build_display(results, scheduled_data, filter, filter_items)
   -- ── Linked References ─────────────────────────────────────────────
   local total = 0
   for _, r in ipairs(results) do
-    for _, cb in ipairs(r.context_blocks) do
+    for _, cb in ipairs(r.context_blocks or {}) do
       if cb.is_match then total = total + 1 end
     end
   end
@@ -414,7 +414,7 @@ local function build_display(results, scheduled_data, filter, filter_items)
     local group = groups[page_name]
     local group_line_count = 0
     for _, entry in ipairs(group.entries) do
-      for _, cb in ipairs(entry.context_blocks) do
+      for _, cb in ipairs(entry.context_blocks or {}) do
         if not cb.is_ancestor then group_line_count = group_line_count + 1 end
       end
     end
@@ -423,7 +423,7 @@ local function build_display(results, scheduled_data, filter, filter_items)
     smap[#display] = { file = group.source_file, line = 1 }
 
     for _, entry in ipairs(group.entries) do
-      for _, cb in ipairs(entry.context_blocks) do
+      for _, cb in ipairs(entry.context_blocks or {}) do
         local prefix = cb.is_ancestor and "▸ " or "- "
         display[#display+1] = string.rep(" ", cb.indent) .. prefix .. cb.text
         smap[#display] = { file = entry.source_file, line = cb.source_line }

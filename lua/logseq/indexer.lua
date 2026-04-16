@@ -149,7 +149,7 @@ local function extract_context(block, lines)
       is_match = (b.line_start == block.line_start),
       is_ancestor = false,
     })
-    for _, child in ipairs(b.children) do
+    for _, child in ipairs(b.children or {}) do
       add_subtree(child, indent + 2)
     end
   end
