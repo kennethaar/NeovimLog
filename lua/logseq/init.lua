@@ -1,258 +1,410 @@
---- logseq.nvim dedup
---- Remove exact duplicate lines from pages and journals.
---- Empty lines and "---" dividers are always preserved.
---- Originals are backed up to vault/deduped/ before any modification.
+--- logseq.nvim entry point
+--- Plugin activation, command registration, and autocmd setup.
 
+local config = require("logseq.config")
+local util = require("logseq.util")
 local M = {}
 
---- Returns the number of leading spaces in a line.
-local function line_indent(line)
-  return #(line:match("^(%s*)"))
+local function is_vault_file(bufpath)
+  return util.is_vault_file(bufpath, config.current.vault_path)
 end
 
---- Segment a flat list of lines at a given indent level into blocks.
---- Each block = { line, body[], always_keep? }
---- Body collects all deeper-indented lines following the header, stopping
---- at the next empty line or a line at the same or lesser indent.
---- Empty lines and "---" dividers are always_keep blocks with no body.
-local function segment(lines, indent)
-  local blocks = {}
-  local i, n = 1, #lines
-  while i <= n do
-    local line = lines[i]
-    if line == "" or line == "---" then
-      blocks[#blocks + 1] = { line = line, body = {}, always_keep = true }
-      i = i + 1
-    else
-      local block = { line = line, body = {} }
-      i = i + 1
-      while i <= n do
-        local next = lines[i]
-        if next == "" or line_indent(next) <= indent then break end
-        block.body[#block.body + 1] = next
-        i = i + 1
+local function activate(bufnr)
+  -- Default to current buffer if bufnr is 0 or nil
+  bufnr = (bufnr == 0 or bufnr == nil) and vim.api.nvim_get_current_buf() or bufnr
+
+  if vim.b[bufnr].logseq_active then return end
+  vim.b[bufnr].logseq_active = true
+
+  local modules = {
+    "logseq.fold",
+    "logseq.motions",
+    "logseq.links",
+    "logseq.ui",
+    "logseq.editing",
+    "logseq.zoom",
+    "logseq.autosave",
+    "logseq.backlinks",
+    "logseq.embeds",
+    "logseq.namespace_tree",
+    "logseq.query_ui",
+    "logseq.prev_metrics",
+    "logseq.panels",   -- must be last: overrides panel keymaps and owns auto-render
+  }
+
+  for _, mod in ipairs(modules) do
+    local ok, m = pcall(require, mod)
+    if ok and m.setup_buf then
+      m.setup_buf(bufnr)
+    end
+  end
+
+  if config.current.enable_link_search then
+    pcall(function() require("logseq.page_search").setup_buf(bufnr) end)
+  end
+
+  local ok_sc, err_sc = pcall(function() require("logseq.slash_commands").setup_buf(bufnr) end)
+  if not ok_sc then
+    vim.notify("[logseq.nvim] slash_commands setup failed: " .. tostring(err_sc), vim.log.levels.ERROR)
+  end
+
+  -- Register keymaps with which-key if it is installed, so the user can
+  -- discover every binding via the popup without reading the source or help.
+  -- The pcall means this is a no-op on configs that don't have which-key.
+  local ok_wk, wk = pcall(require, "which-key")
+  if ok_wk then
+    local km = config.current.keymaps
+    wk.add({
+      -- Block navigation
+      { km.next_sibling,     desc = "Next sibling block",              buffer = bufnr, mode = "n" },
+      { km.prev_sibling,     desc = "Previous sibling block",          buffer = bufnr, mode = "n" },
+      { km.first_child,      desc = "First child block",               buffer = bufnr, mode = "n" },
+      { km.parent,           desc = "Parent block",                    buffer = bufnr, mode = "n" },
+      -- Block movement
+      { km.move_down,        desc = "Move block down (with subtree)",  buffer = bufnr, mode = "n" },
+      { km.move_up,          desc = "Move block up (with subtree)",    buffer = bufnr, mode = "n" },
+      { km.promote,          desc = "Outdent block (with subtree)",    buffer = bufnr, mode = "n" },
+      { km.demote,           desc = "Indent block (with subtree)",     buffer = bufnr, mode = "n" },
+      -- Editing
+      { km.new_sibling,      desc = "New sibling block below",         buffer = bufnr, mode = "n" },
+      { km.todo_cycle,       desc = "Cycle TODO state",                buffer = bufnr, mode = "n" },
+      -- Links and search
+      { km.follow_link,      desc = "Follow link / open page",         buffer = bufnr, mode = "n" },
+      { km.search_pages,     desc = "Search vault pages",              buffer = bufnr, mode = "n" },
+      -- Panels and UI
+      { km.toggle_backlinks, desc = "Toggle backlinks panel",          buffer = bufnr, mode = "n" },
+      { km.fold_toggle,      desc = "Toggle fold",                     buffer = bufnr, mode = "n" },
+      { km.zoom_block,       desc = "Zoom into block",                 buffer = bufnr, mode = "n" },
+      { km.help,             desc = "Open Logseq help",                buffer = bufnr, mode = "n" },
+      -- Fixed keymaps (not user-configurable but still worth showing)
+      { "O",                 desc = "New sibling block above",         buffer = bufnr, mode = "n" },
+      { "<Tab>",             desc = "Indent block",                    buffer = bufnr, mode = "n" },
+      { "<S-Tab>",           desc = "Outdent block",                   buffer = bufnr, mode = "n" },
+    })
+  end
+
+  -- Auto-move date-named files to journals
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    buffer = bufnr,
+    callback = function()
+      local filepath = vim.api.nvim_buf_get_name(bufnr)
+      if not filepath or filepath == "" then return end
+
+      local filename = vim.fn.fnamemodify(filepath, ":t")
+      local year, month, day = filename:match("^(%d%d%d%d)[-_](%d%d)[-_](%d%d)%.md$")
+      if not year then return end
+
+      local date_str = os.date("%Y_%m_%d", os.time{year=tonumber(year), month=tonumber(month), day=tonumber(day)})
+      local journal_dir = vim.fs.joinpath(config.current.vault_path, "journals")
+      local journal_path = vim.fs.joinpath(journal_dir, date_str .. ".md")
+
+      if util.normalize(filepath) == util.normalize(journal_path) then return end
+
+      -- Path 1: Journal file already exists -> Merge content
+      if vim.fn.filereadable(journal_path) == 1 then
+        local current_content = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        local journal_content = vim.fn.readfile(journal_path)
+
+        vim.list_extend(journal_content, {""})
+        vim.list_extend(journal_content, current_content)
+        vim.fn.writefile(journal_content, journal_path)
+        vim.fn.delete(filepath)
+        vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
+        return
       end
-      blocks[#blocks + 1] = block
-    end
-  end
-  return blocks
-end
 
---- Flatten a list of blocks back into a flat list of lines.
-local function flatten_blocks(blocks)
-  local lines = {}
-  for _, b in ipairs(blocks) do
-    lines[#lines + 1] = b.line
-    vim.list_extend(lines, b.body)
-  end
-  return lines
-end
-
---- Recursively dedup a list of lines at a given indent level.
---- Duplicate block headers have their bodies appended to the first occurrence.
---- The merged body is then recursively deduped at the next indent level.
-local function dedup_block_list(lines, indent)
-  local blocks = segment(lines, indent)
-  local order, seen = {}, {}
-
-  for _, block in ipairs(blocks) do
-    if block.always_keep then
-      order[#order + 1] = block
-    elseif seen[block.line] then
-      vim.list_extend(seen[block.line].body, block.body)
-    else
-      local entry = { line = block.line, body = block.body }
-      seen[block.line] = entry
-      order[#order + 1] = entry
-    end
-  end
-
-  for _, entry in ipairs(order) do
-    if #entry.body > 0 then
-      local child_indent = indent + 2
-      for _, l in ipairs(entry.body) do
-        if l ~= "" then child_indent = line_indent(l); break end
+      -- Path 2: Journal file does not exist -> Move file
+      if vim.fn.isdirectory(journal_dir) == 0 then
+        vim.fn.mkdir(journal_dir, "p")
       end
-      entry.body = flatten_blocks(dedup_block_list(entry.body, child_indent))
+
+      vim.fn.rename(filepath, journal_path)
+      vim.api.nvim_buf_set_name(bufnr, journal_path)
     end
-  end
-
-  return order
+  })
 end
 
---- Remove exact duplicate lines from a list of lines, block-tree-aware.
---- Empty lines ("") and "---" section dividers are always preserved.
---- When two blocks share the same header line, the duplicate is removed and
---- its entire child subtree is appended to the children of the kept copy.
---- Duplicate children within the merged subtree are also removed recursively.
---- Returns: cleaned lines (table), removed count (number)
-function M.dedup_lines(lines)
-  local result = flatten_blocks(dedup_block_list(lines, 0))
-  return result, #lines - #result
-end
+local function run_interactive_setup(opts, callback)
+  vim.notify("[logseq.nvim] Vault not configured. Starting setup...", vim.log.levels.INFO)
 
---- Read a file from disk. Returns content string or nil on any error.
-function M.read_file(path)
-  local f = io.open(path, "rb")
-  if not f then return nil end
-  local ok, content = pcall(function() return f:read("*a") end)
-  f:close()
-  return ok and content or nil
-end
+  vim.ui.input({ prompt = "Enter Logseq Vault Path: ", completion = "dir" }, function(vault_input)
+    if not vault_input or vault_input == "" then
+      vim.notify("[logseq.nvim] Setup aborted. Vault path is required.", vim.log.levels.WARN)
+      return
+    end
 
---- Copy content to vault/deduped/<stem>_<YYYY-MM-DD_HHMMSS>[_N].<ext>.
---- Appends _1, _2, ... if a file with that timestamp already exists.
---- Silently skips if the directory cannot be created or the file cannot be written.
-function M.backup_file(filepath, vault, content)
-  local backup_dir = vault .. "/deduped"
-  vim.fn.mkdir(backup_dir, "p")
+    -- Strip surrounding quotes that users sometimes paste from Windows paths
+    vault_input = vault_input:match('^["\'](.+)["\']$') or vault_input
 
-  local stem = vim.fn.fnamemodify(filepath, ":t:r")
-  local ext  = vim.fn.fnamemodify(filepath, ":e")
-  local ts   = os.date("%Y-%m-%d_%H%M%S")
-  local dest = backup_dir .. "/" .. stem .. "_" .. ts .. "." .. ext
-
-  local n = 1
-  while vim.fn.filereadable(dest) == 1 do
-    dest = backup_dir .. "/" .. stem .. "_" .. ts .. "_" .. n .. "." .. ext
-    n = n + 1
-  end
-
-  local f = io.open(dest, "wb")
-  if not f then return end
-  local write_ok = pcall(function() f:write(content) end)
-  f:close()
-  if not write_ok then os.remove(dest) end
-end
-
---- Dedup the given buffer in-place. Shows a notification with the result.
---- bufnr defaults to the current buffer.
---- Backs up the disk version of the file before applying changes, preserving
---- original line endings. Falls back to buffer reconstruction for unsaved files.
---- Note: the entire operation is one undo entry — pressing u restores all
---- removed lines at once.
-function M.dedup_buf(bufnr)
-  bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local new_lines, removed = M.dedup_lines(lines)
-
-  if removed == 0 then
-    vim.notify("[logseq.nvim] No duplicate lines found.", vim.log.levels.INFO)
-    return
-  end
-
-  local vault = require("logseq.config").current.vault_path
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-  if vault and vault ~= "" and filepath ~= "" then
-    local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-    M.backup_file(filepath, vault, content)
-  end
-
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
-  vim.notify(("[logseq.nvim] Removed %d duplicate line(s)."):format(removed), vim.log.levels.INFO)
-end
-
---- Dedup an open buffer silently, back up the disk version, and save.
---- Returns removed count, or nil on write error.
-local function dedup_open_buf(bufnr, vault)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local new_lines, removed = M.dedup_lines(lines)
-  if removed == 0 then return 0 end
-
-  local filepath = vim.api.nvim_buf_get_name(bufnr)
-  local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-  M.backup_file(filepath, vault, content)
-
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
-  local ok = pcall(function()
-    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent write") end)
+    opts.vault_path = vault_input
+    config.save_to_disk(vault_input, nil)
+    callback(opts)
   end)
-  if not ok then
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-    return nil
-  end
-  return removed
 end
 
---- Dedup a file on disk (not open in a buffer), backing up the original first.
---- Uses an atomic write (temp file + rename) to protect against partial writes.
---- Returns removed count, or nil on read/write error.
-local function dedup_file_on_disk(path, vault)
-  local content = M.read_file(path)
-  if not content then return nil end
+local function bootstrap(opts)
+  if not config.setup(opts) then return end
 
-  local lines = vim.split(content, "\n", { plain = true })
-  if lines[#lines] == "" then table.remove(lines) end
+  -- One-time global setup
+  pcall(function() require("logseq.backlinks").setup_global() end)
+  pcall(function() require("logseq.query_ui").setup_global() end)
 
-  local new_lines, removed = M.dedup_lines(lines)
-  if removed == 0 then return 0 end
+  local group = vim.api.nvim_create_augroup("logseq_nvim", { clear = true })
 
-  M.backup_file(path, vault, content)
+  -- ── Commands (Namespaced for Best Practices) ──────────────────────
 
-  local tmp = path .. ".dedup_tmp"
-  local wf = io.open(tmp, "wb")
-  if not wf then return nil end
-  local write_ok = pcall(function() wf:write(table.concat(new_lines, "\n") .. "\n") end)
-  wf:close()
-  if not write_ok then os.remove(tmp); return nil end
-  local renamed = vim.uv.fs_rename(tmp, path)
-  if not renamed then os.remove(tmp); return nil end
+  vim.api.nvim_create_user_command("LogseqConfig", function()
+    require("logseq.config_ui").open()
+  end, { desc = "Open Logseq shortcuts & UI config" })
 
-  return removed
-end
+  vim.api.nvim_create_user_command("LogseqCalSync", function()
+    local ok, cal = pcall(require, "logseq.calendar")
+    if ok then cal.sync(true) else vim.notify("Calendar module not found", vim.log.levels.ERROR) end
+  end, { desc = "Sync Logseq calendar" })
 
---- Dedup all .md files across the vault's pages/ and journals/ directories.
---- Files currently open in a buffer are deduped in-memory (and saved).
---- Files not open are deduped directly on disk.
---- Originals are backed up to vault/deduped/ before modification.
---- Processes files in batches to keep the UI responsive.
---- Shows a final summary notification when done.
-function M.dedup_vault(vault)
-  local files = {}
-  for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
-    if vim.fn.isdirectory(dir) == 1 then
-      vim.list_extend(files, vim.fn.glob(dir .. "/*.md", false, true))
-    end
-  end
+  vim.api.nvim_create_user_command("LogseqCalAdd", function()
+    local function ask_for_url(count)
+      local prompt_msg = count == 0
+        and "Paste Calendar ICS URL (empty to cancel): "
+        or string.format("Saved %d! Paste another URL (empty to finish): ", count)
 
-  local total_files, total_removed = 0, 0
-  local i = 0
-  local BATCH = 20
+      vim.ui.input({ prompt = prompt_msg }, function(input)
+        if not input or input == "" then
+          if count > 0 then
+            vim.notify(string.format("[logseq.nvim] %d calendars saved! Starting sync...", count), vim.log.levels.INFO)
+            require("logseq.calendar").sync(true)
+          end
+          return
+        end
 
-  local function step()
-    for _ = 1, BATCH do
-      i = i + 1
-      if i > #files then
-        if total_removed == 0 then
-          vim.notify("[logseq.nvim] Vault dedup: no duplicates found.", vim.log.levels.INFO)
+        if config.add_calendar_url(input) then
+          ask_for_url(count + 1)
         else
-          vim.notify(
-            ("[logseq.nvim] Vault dedup: removed %d duplicate line(s) from %d file(s).")
-              :format(total_removed, total_files),
-            vim.log.levels.INFO)
+          vim.notify("[logseq.nvim] URL already exists or failed to save.", vim.log.levels.WARN)
+          ask_for_url(count)
+        end
+      end)
+    end
+
+    ask_for_url(0)
+  end, { desc = "Add a new calendar ICS URL" })
+
+  vim.api.nvim_create_user_command("LogseqCalEdit", function()
+    local function show_menu()
+      local urls = config.current.calendar_urls or {}
+      local items = vim.deepcopy(urls)
+      table.insert(items, "[ + Add new URL ]")
+      table.insert(items, "[ Done ]")
+
+      vim.ui.select(items, { prompt = "Calendar URLs (select to remove):" }, function(choice)
+        if not choice or choice == "[ Done ]" then return end
+
+        if choice == "[ + Add new URL ]" then
+          vim.cmd("LogseqCalAdd")
+          return
+        end
+
+        -- Selected an existing URL — confirm removal
+        vim.ui.select({ "Remove this URL", "Cancel" }, { prompt = choice }, function(action)
+          if action == "Remove this URL" and config.remove_calendar_url(choice) then
+            vim.notify("[logseq.nvim] URL removed.", vim.log.levels.INFO)
+          end
+          show_menu()
+        end)
+      end)
+    end
+
+    show_menu()
+  end, { desc = "Edit/Remove existing calendar URLs" })
+
+  vim.api.nvim_create_user_command("LogseqCalRemind", function()
+    local current = config.current.reminder_minutes
+    local prompt_msg = current
+      and string.format("Reminder lead time (currently %d min, 0 to disable): ", current)
+      or "Minutes before meeting to remind (default: 3): "
+
+    vim.ui.input({ prompt = prompt_msg }, function(input)
+      if not input or input == "" then
+        if not current then
+          config.set_reminder_minutes(3)
+          vim.notify("[logseq.nvim] Reminders set to 3 minutes.", vim.log.levels.INFO)
         end
         return
       end
 
-      local fpath = files[i]
-      local bufnr = vim.fn.bufnr(fpath)
-      local removed
-      if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
-        removed = dedup_open_buf(bufnr, vault)
-      else
-        removed = dedup_file_on_disk(fpath, vault)
+      local mins = tonumber(input)
+      if not mins or mins < 0 then
+        vim.notify("[logseq.nvim] Invalid number.", vim.log.levels.WARN)
+        return
       end
 
-      if removed == nil then
-        vim.notify("[logseq.nvim] Dedup failed (write error): " .. fpath, vim.log.levels.WARN)
-      elseif removed > 0 then
-        total_files = total_files + 1
-        total_removed = total_removed + removed
+      config.set_reminder_minutes(mins)
+      if mins == 0 then
+        vim.notify("[logseq.nvim] Reminders disabled.", vim.log.levels.INFO)
+        pcall(function() require("logseq.reminders").cancel_all() end)
+      else
+        vim.notify(string.format("[logseq.nvim] Reminders set to %d minutes.", mins), vim.log.levels.INFO)
       end
+    end)
+  end, { desc = "Set calendar reminder lead time" })
+
+  vim.api.nvim_create_user_command("LogseqToday", function()
+    local dir = vim.fs.joinpath(config.current.vault_path, "journals")
+    if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
+
+    local filepath = vim.fs.joinpath(dir, os.date(config.current.journal_format) .. ".md")
+
+    if util.normalize(vim.api.nvim_buf_get_name(0)) == util.normalize(filepath) then return end
+    if vim.bo.modified then vim.cmd("write") end
+
+    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+    -- edit is synchronous; buffer is ready immediately. vim.schedule ensures we don't block.
+    vim.schedule(function() activate(0) end)
+  end, { desc = "Open today's Logseq journal" })
+
+  vim.api.nvim_create_user_command("LogseqNewPage", function(cmd_opts)
+    local function create_page(input)
+      if not input or input == "" then return end
+      local filename = util.encode_filename(input)
+      local filepath = vim.fs.joinpath(config.current.vault_path, "pages", filename)
+
+      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+      vim.schedule(function() activate(0) end)
     end
-    vim.schedule(step)
+
+    if not cmd_opts.args or cmd_opts.args == "" then
+      vim.ui.input({ prompt = "Page name: " }, create_page)
+    else
+      create_page(cmd_opts.args)
+    end
+  end, { nargs = "?", desc = "Create a new Logseq page" })
+
+  vim.api.nvim_create_user_command("LogseqDedup", function()
+    require("logseq.dedup").dedup_buf()
+  end, { desc = "Remove duplicate lines in the current buffer" })
+
+  vim.api.nvim_create_user_command("LogseqDedupVault", function()
+    local vault = config.current.vault_path
+    if not vault or vault == "" then
+      vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
+      return
+    end
+    require("logseq.dedup").dedup_vault(vault)
+  end, { desc = "Remove duplicate lines across the entire vault" })
+
+  vim.api.nvim_create_user_command("LogseqConflicts", function()
+    local vault = config.current.vault_path
+    if not vault or vault == "" then
+      vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
+      return
+    end
+    require("logseq.sync_conflicts").resolve_all(vault)
+  end, { desc = "Scan and auto-resolve Syncthing conflict files" })
+
+  -- ── Autocmds ──────────────────────────────────────────────────────
+
+  -- Detect external file changes (Syncthing, other editors, parallel sessions)
+  vim.opt.autoread = true
+  vim.opt.undofile = true   -- persist undo history so edit! reloads don't lose edits
+  vim.opt.swapfile = false  -- mtime guard + undofile replace swap's crash recovery and locking
+  vim.opt.updatetime = 2000 -- sets CursorHold trigger to 2s, driving autosave safety net
+
+  vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      if not is_vault_file(bufpath) then return end
+
+      activate(ev.buf)
+
+      if ev.event == "BufNewFile" then
+        vim.schedule(function()
+          local ok, templates = pcall(require, "logseq.templates")
+          if ok then templates.apply_template(ev.buf) end
+        end)
+      end
+    end,
+  })
+
+  -- Catch buffers re-entered that might have bypassed BufReadPost
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      if not is_vault_file(bufpath) then return end
+      activate(ev.buf)
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("BufUnload", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      pcall(function() require("logseq.parser").invalidate_cache(ev.buf) end)
+    end,
+  })
+
+  -- Check for external file changes (Syncthing, other editors, parallel sessions).
+  -- FocusGained: terminal/app regains focus (device switches, alt-tab).
+  -- WinEnter: moving between Neovim splits / tmux panes where the terminal
+  --           stays focused and FocusGained never fires.
+  vim.api.nvim_create_autocmd({ "FocusGained", "WinEnter" }, {
+    group = group,
+    callback = function()
+      pcall(function() vim.cmd("checktime") end)
+    end,
+  })
+
+  -- Update stored mtime after checktime reloads a file externally.
+  -- The merge notification is shown by autosave.lua; no separate message here.
+  vim.api.nvim_create_autocmd("FileChangedShellPost", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      if not is_vault_file(bufpath) then return end
+      local stat = vim.uv.fs_stat(bufpath)
+      if stat then
+        vim.b[ev.buf].logseq_mtime      = stat.mtime.sec
+        vim.b[ev.buf].logseq_mtime_nsec = stat.mtime.nsec or 0
+      end
+    end,
+  })
+
+  -- Auto-resolve Syncthing conflicts once on startup (deferred so UI isn't blocked).
+  -- Use :LogseqConflicts to trigger a manual scan at any time.
+  vim.defer_fn(function()
+    pcall(function()
+      require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
+    end)
+  end, 3000)
+
+  -- ── First-Run Logic ───────────────────────────────────────────────
+
+  -- Replaced intrusive popup with silent default + helpful notification
+  if config.current.reminder_minutes == nil then
+    config.set_reminder_minutes(3)
+    vim.schedule(function()
+      vim.notify("[logseq.nvim] Meeting reminders defaulted to 3 min. Use :LogseqCalRemind to change.", vim.log.levels.INFO)
+    end)
   end
-  vim.schedule(step)
+end
+
+function M.setup(opts)
+  opts = opts or {}
+  if not opts.vault_path or opts.vault_path == "" then
+    local saved = config.load_global_vault_path()
+    if saved and saved ~= "" then
+      opts.vault_path = saved
+      bootstrap(opts)
+    else
+      run_interactive_setup(opts, bootstrap)
+    end
+  else
+    bootstrap(opts)
+  end
 end
 
 return M
