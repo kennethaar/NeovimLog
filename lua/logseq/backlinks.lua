@@ -680,7 +680,15 @@ local function on_write_post(bufnr)
   state.had_backlinks = false
 
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then M.render_section(bufnr) end
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    -- Saving this page doesn't change which other pages link to it, so cached
+    -- results are still valid. Repaint instantly from cache instead of doing a
+    -- full 10–20 s vault rescan.
+    if state.cached_results then
+      apply_and_render(bufnr)
+    else
+      M.render_section(bufnr)
+    end
   end)
 end
 
