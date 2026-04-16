@@ -231,9 +231,16 @@ local function filter_scheduled(scheduled_data, filter)
       if v == false then has_exclude = true end
     end
   end
-  if not has_include and not has_exclude then return scheduled_data end
+  
+  local vna = filter["very_next_actions"]
+  -- Don't return early if the VNA filter is set
+  if not has_include and not has_exclude and vna == nil then return scheduled_data end
 
   local function keep(e)
+    -- Evaluate Very Next Actions rules
+    if vna == true and (not e.todo_state or e.has_todo_children) then return false end
+    if vna == false and (e.todo_state and not e.has_todo_children) then return false end
+
     if has_exclude then
       if e.todo_state and filter[e.todo_state] == false then return false end
       for _, tag in ipairs(e.tags or {}) do
@@ -261,6 +268,9 @@ end
 local function passes_filter(r, filter, vna, has_include, has_exclude)
   -- VNA: must have a TODO keyword and no TODO children (leaf task).
   if vna and (not r.todo_state or r.has_todo_children) then return false end
+  
+  -- Exclude VNA: fail if it IS a leaf task.
+  if filter["very_next_actions"] == false and (r.todo_state and not r.has_todo_children) then return false end
 
   -- Exclude: fail if any excluded attribute matches.
   if has_exclude then
