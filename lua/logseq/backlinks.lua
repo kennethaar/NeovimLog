@@ -231,9 +231,16 @@ local function filter_scheduled(scheduled_data, filter)
       if v == false then has_exclude = true end
     end
   end
-  if not has_include and not has_exclude then return scheduled_data end
+  
+  local vna = filter["very_next_actions"]
+  -- Don't return early if the VNA filter is set
+  if not has_include and not has_exclude and vna == nil then return scheduled_data end
 
   local function keep(e)
+    -- Evaluate Very Next Actions rules
+    if vna == true and (not e.todo_state or e.has_todo_children) then return false end
+    if vna == false and (e.todo_state and not e.has_todo_children) then return false end
+
     if has_exclude then
       if e.todo_state and filter[e.todo_state] == false then return false end
       for _, tag in ipairs(e.tags or {}) do
@@ -261,6 +268,9 @@ end
 local function passes_filter(r, filter, vna, has_include, has_exclude)
   -- VNA: must have a TODO keyword and no TODO children (leaf task).
   if vna and (not r.todo_state or r.has_todo_children) then return false end
+  
+  -- Exclude VNA: fail if it IS a leaf task.
+  if filter["very_next_actions"] == false and (r.todo_state and not r.has_todo_children) then return false end
 
   -- Exclude: fail if any excluded attribute matches.
   if has_exclude then
@@ -526,6 +536,7 @@ function M.render_section(bufnr)
   state.region  = { start_line = section_start, end_line = section_start + 1 }
   state.visible = true
   vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
+  vim.cmd("redraw")
 
   -- Each render_section invocation gets a unique token.  Callbacks check this
   -- token before acting; stale callbacks from a previous invocation discard
@@ -569,9 +580,11 @@ function M.render_section(bufnr)
       if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible or not state.region then return end
       local bar  = util.make_progress_bar(current, total, 20)
       local text = string.format("── Loading Linked References... %s ──", bar)
-      local text_line_0 = state.region.start_line
+      -- start_line is 1-indexed but equals the 0-indexed loading-text line by construction
+      -- (separator = 0-indexed start_line-1, loading text = 0-indexed start_line)
+      local loading_line_0 = state.region.start_line
       with_modifiable(bufnr, function()
-        pcall(vim.api.nvim_buf_set_lines, bufnr, text_line_0, text_line_0 + 1, false, { text })
+        pcall(vim.api.nvim_buf_set_lines, bufnr, loading_line_0, loading_line_0 + 1, false, { text })
       end)
       local now = uv.hrtime()
       if now - last_redraw_ns >= 80e6 then
@@ -680,7 +693,15 @@ local function on_write_post(bufnr)
   state.had_backlinks = false
 
   vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then M.render_section(bufnr) end
+    if not vim.api.nvim_buf_is_valid(bufnr) then return end
+    -- Saving this page doesn't change which other pages link to it, so cached
+    -- results are still valid. Repaint instantly from cache instead of doing a
+    -- full 10–20 s vault rescan.
+    if state.cached_results then
+      apply_and_render(bufnr)
+    else
+      M.render_section(bufnr)
+    end
   end)
 end
 
