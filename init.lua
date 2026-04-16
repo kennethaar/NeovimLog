@@ -65,13 +65,21 @@ pcall(function() require("which-key").setup({}) end)
 -- 4. Plugin Initialization
 -- ============================================================================
 local ok_logseq, logseq = pcall(require, "logseq")
-if ok_logseq then
+if ok_logseq and type(logseq) == "table" and type(logseq.setup) == "function" then
   logseq.setup({
     vault_path = vault_path,
   })
+elseif ok_logseq then
+  vim.notify(
+    "[logseq.nvim] loaded but setup() is missing — plugin file may be misconfigured.",
+    vim.log.levels.ERROR
+  )
 else
-  -- Warn gracefully instead of crashing the startup
-  vim.notify("Logseq plugin not found or failed to load.", vim.log.levels.WARN)
+  -- logseq holds the error string when ok_logseq is false
+  vim.notify(
+    "[logseq.nvim] failed to load: " .. tostring(logseq),
+    vim.log.levels.WARN
+  )
 end
 
 -- ============================================================================
