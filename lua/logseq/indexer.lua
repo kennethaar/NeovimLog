@@ -38,33 +38,6 @@ function M.get_parsed_file(filepath)
   return lines, parsed
 end
 
-function M.find_backlinks(page_name, exclude_file, on_complete)
-  local vault = config.current.vault_path
-  if not vault then return vim.schedule(function() on_complete({}) end) end
-
-  local files = vim.iter(util.get_vault_files(vault)):filter(function(f)
-    return util.normalize(f) ~= util.normalize(exclude_file)
-  end):totable()
-
-  local results = {}
-  local i, BATCH = 0, 20
-
-  local function step()
-    for _ = 1, BATCH do
-      i = i + 1
-      if i > #files then on_complete(results); return end
-      local f = files[i]
-      local content = vim.fn.readfile(f)
-      if vim.iter(content):any(function(l) return l:lower():find(page_name:lower(), 1, true) end) then
-        local _, parsed = M.get_parsed_file(f)
-        if parsed then table.insert(results, { file = f, source_page = M.page_name_from_file(f) }) end
-      end
-    end
-    vim.schedule(step)
-  end
-  vim.schedule(step)
-end
-
 -- Extract the first ISO scheduled/deadline date referenced by a block.
 -- The parser already appends `<YYYY-MM-DD …>` org-dates into block.links for
 -- both the bullet content and every property/continuation line, so the whole
@@ -106,6 +79,66 @@ local function build_context_blocks(block)
     source_line = block.line_start,
   }
   return ctx
+end
+
+function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
+  local vault = config.current.vault_path
+  if not vault then return vim.schedule(function() on_complete({}) end) end
+
+  local files = vim.iter(util.get_vault_files(vault)):filter(function(f)
+    return util.normalize(f) ~= util.normalize(exclude_file)
+  end):totable()
+
+  local results = {}
+  local i, BATCH = 0, 20
+  local page_lower = page_name:lower()
+
+  local function step()
+    for _ = 1, BATCH do
+      i = i + 1
+      if i > #files then
+        if on_progress then on_progress(#files, #files) end
+        on_complete(results)
+        return
+      end
+      local f = files[i]
+      local raw_lines = vim.fn.readfile(f)
+      -- Quick pre-filter: skip files that don't mention the page at all.
+      local mentions = false
+      for _, l in ipairs(raw_lines) do
+        if l:lower():find(page_lower, 1, true) then mentions = true; break end
+      end
+      if mentions then
+        local _, parsed = M.get_parsed_file(f)
+        if parsed then
+          local source_page = M.page_name_from_file(f)
+          for _, block in ipairs(parser.flatten(parsed.blocks)) do
+            local linked = false
+            for _, link in ipairs(block.links or {}) do
+              if link:lower() == page_lower then linked = true; break end
+            end
+            if linked then
+              local ctx = build_context_blocks(block)
+              -- Mark the leaf (the matching block itself) as the match
+              if ctx[#ctx] then ctx[#ctx].is_match = true end
+              table.insert(results, {
+                source_page       = source_page,
+                source_file       = f,
+                context_blocks    = ctx,
+                todo_state        = block_todo_state(block.content),
+                tags              = block.tags or {},
+                is_scheduled      = block.is_scheduled or false,
+                has_todo_children = false,
+              })
+            end
+          end
+        end
+      end
+      if on_progress then on_progress(i, #files) end
+    end
+    vim.schedule(step)
+  end
+  vim.schedule(step)
 end
 
 function M.find_scheduled_blocks(today_iso, on_complete)
