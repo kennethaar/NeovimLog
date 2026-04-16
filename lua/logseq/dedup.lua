@@ -48,22 +48,46 @@ local function flatten_blocks(blocks)
   return lines
 end
 
+--- Scan a block's body for its Logseq block id (id:: XXXX).
+--- Only looks in property lines — stops at the first child bullet.
+--- Returns the id string, or nil if not found.
+local function extract_block_id(body)
+  for _, l in ipairs(body) do
+    local s = l:match("^%s*(.-)%s*$")
+    local id = s:match("^id::%s*(%S+)$")
+    if id then return id end
+    if s:match("^%- ") or s:match("^%* ") then break end
+  end
+  return nil
+end
+
 --- Recursively dedup a list of lines at a given indent level.
---- Duplicate block headers have their bodies appended to the first occurrence.
---- The merged body is then recursively deduped at the next indent level.
+--- Two blocks are considered duplicates if they share the same header line OR
+--- the same Logseq block id (id:: XXXX in their property lines).
+--- - Same header: bodies are merged into the first occurrence.
+--- - Same id but different header: the entire duplicate is dropped (Logseq
+---   sync corruption — the block already exists under a different heading).
 local function dedup_block_list(lines, indent)
   local blocks = segment(lines, indent)
-  local order, seen = {}, {}
+  local order, seen_header, seen_id = {}, {}, {}
 
   for _, block in ipairs(blocks) do
     if block.always_keep then
       order[#order + 1] = block
-    elseif seen[block.line] then
-      vim.list_extend(seen[block.line].body, block.body)
     else
-      local entry = { line = block.line, body = block.body }
-      seen[block.line] = entry
-      order[#order + 1] = entry
+      local bid = extract_block_id(block.body)
+      if seen_header[block.line] then
+        -- Identical header: merge bodies into the first occurrence.
+        vim.list_extend(seen_header[block.line].body, block.body)
+      elseif bid and seen_id[bid] then
+        -- Same Logseq block id, different header: Logseq sync corruption.
+        -- Drop the entire duplicate block.
+      else
+        local entry = { line = block.line, body = block.body }
+        if bid then seen_id[bid] = entry end
+        seen_header[block.line] = entry
+        order[#order + 1] = entry
+      end
     end
   end
 
@@ -92,7 +116,7 @@ function M.dedup_lines(lines)
 end
 
 --- Read a file from disk. Returns content string or nil on any error.
-local function read_file(path)
+function M.read_file(path)
   local f = io.open(path, "rb")
   if not f then return nil end
   local ok, content = pcall(function() return f:read("*a") end)
@@ -103,7 +127,7 @@ end
 --- Copy content to vault/deduped/<stem>_<YYYY-MM-DD_HHMMSS>[_N].<ext>.
 --- Appends _1, _2, ... if a file with that timestamp already exists.
 --- Silently skips if the directory cannot be created or the file cannot be written.
-local function backup_file(filepath, vault, content)
+function M.backup_file(filepath, vault, content)
   local backup_dir = vault .. "/deduped"
   vim.fn.mkdir(backup_dir, "p")
 
@@ -127,10 +151,8 @@ end
 
 --- Dedup the given buffer in-place. Shows a notification with the result.
 --- bufnr defaults to the current buffer.
---- Backs up the disk version of the file before applying changes, preserving
---- original line endings. Falls back to buffer reconstruction for unsaved files.
---- Note: the entire operation is one undo entry — pressing u restores all
---- removed lines at once.
+--- Backs up the disk version of the file before applying changes.
+--- The entire operation is one undo entry — pressing u restores all removed lines at once.
 function M.dedup_buf(bufnr)
   bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -144,8 +166,8 @@ function M.dedup_buf(bufnr)
   local vault = require("logseq.config").current.vault_path
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if vault and vault ~= "" and filepath ~= "" then
-    local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-    backup_file(filepath, vault, content)
+    local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
+    M.backup_file(filepath, vault, content)
   end
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
@@ -160,8 +182,8 @@ local function dedup_open_buf(bufnr, vault)
   if removed == 0 then return 0 end
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
-  local content = read_file(filepath) or (table.concat(lines, "\n") .. "\n")
-  backup_file(filepath, vault, content)
+  local content = M.read_file(filepath) or (table.concat(lines, "\n") .. "\n")
+  M.backup_file(filepath, vault, content)
 
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
   local ok = pcall(function()
@@ -178,7 +200,7 @@ end
 --- Uses an atomic write (temp file + rename) to protect against partial writes.
 --- Returns removed count, or nil on read/write error.
 local function dedup_file_on_disk(path, vault)
-  local content = read_file(path)
+  local content = M.read_file(path)
   if not content then return nil end
 
   local lines = vim.split(content, "\n", { plain = true })
@@ -188,7 +210,7 @@ local function dedup_file_on_disk(path, vault)
   local new_lines, removed = M.dedup_lines(lines)
   if removed == 0 then return 0 end
 
-  backup_file(path, vault, content)
+  M.backup_file(path, vault, content)
 
   local tmp = path .. ".dedup_tmp"
   local wf = io.open(tmp, "wb")
@@ -206,7 +228,7 @@ end
 --- Files currently open in a buffer are deduped in-memory (and saved).
 --- Files not open are deduped directly on disk.
 --- Originals are backed up to vault/deduped/ before modification.
---- Processes files in batches to keep the UI responsive.
+--- Processes files in batches via vim.schedule to keep the UI responsive.
 --- Shows a final summary notification when done.
 function M.dedup_vault(vault)
   local files = {}

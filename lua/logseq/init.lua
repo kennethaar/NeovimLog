@@ -89,34 +89,37 @@ local function activate(bufnr)
     callback = function()
       local filepath = vim.api.nvim_buf_get_name(bufnr)
       if not filepath or filepath == "" then return end
+
       local filename = vim.fn.fnamemodify(filepath, ":t")
       local year, month, day = filename:match("^(%d%d%d%d)[-_](%d%d)[-_](%d%d)%.md$")
       if not year then return end
+
       local date_str = os.date("%Y_%m_%d", os.time{year=tonumber(year), month=tonumber(month), day=tonumber(day)})
       local journal_dir = vim.fs.joinpath(config.current.vault_path, "journals")
       local journal_path = vim.fs.joinpath(journal_dir, date_str .. ".md")
+
       if util.normalize(filepath) == util.normalize(journal_path) then return end
-      -- Check if journal_path exists
+
+      -- Path 1: Journal file already exists -> Merge content
       if vim.fn.filereadable(journal_path) == 1 then
-        -- Merge: append the content
         local current_content = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
         local journal_content = vim.fn.readfile(journal_path)
-        -- Append current content to journal content
-        vim.list_extend(journal_content, {""}) -- add empty line
+
+        vim.list_extend(journal_content, {""})
         vim.list_extend(journal_content, current_content)
-        -- Write back to journal_path
         vim.fn.writefile(journal_content, journal_path)
-        -- Delete the old file
         vim.fn.delete(filepath)
-        -- Update buffer to point to journal_path
         vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
-      else
-        -- Move the file
-        if vim.fn.isdirectory(journal_dir) == 0 then vim.fn.mkdir(journal_dir, "p") end
-        vim.fn.rename(filepath, journal_path)
-        -- Update buffer name
-        vim.api.nvim_buf_set_name(bufnr, journal_path)
+        return
       end
+
+      -- Path 2: Journal file does not exist -> Move file
+      if vim.fn.isdirectory(journal_dir) == 0 then
+        vim.fn.mkdir(journal_dir, "p")
+      end
+
+      vim.fn.rename(filepath, journal_path)
+      vim.api.nvim_buf_set_name(bufnr, journal_path)
     end
   })
 end
@@ -228,13 +231,13 @@ local function bootstrap(opts)
         end
         return
       end
-      
+
       local mins = tonumber(input)
       if not mins or mins < 0 then
         vim.notify("[logseq.nvim] Invalid number.", vim.log.levels.WARN)
         return
       end
-      
+
       config.set_reminder_minutes(mins)
       if mins == 0 then
         vim.notify("[logseq.nvim] Reminders disabled.", vim.log.levels.INFO)
@@ -248,7 +251,7 @@ local function bootstrap(opts)
   vim.api.nvim_create_user_command("LogseqToday", function()
     local dir = vim.fs.joinpath(config.current.vault_path, "journals")
     if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
-    
+
     local filepath = vim.fs.joinpath(dir, os.date(config.current.journal_format) .. ".md")
 
     if util.normalize(vim.api.nvim_buf_get_name(0)) == util.normalize(filepath) then return end
@@ -264,7 +267,7 @@ local function bootstrap(opts)
       if not input or input == "" then return end
       local filename = util.encode_filename(input)
       local filepath = vim.fs.joinpath(config.current.vault_path, "pages", filename)
-      
+
       vim.cmd("edit " .. vim.fn.fnameescape(filepath))
       vim.schedule(function() activate(0) end)
     end
@@ -289,7 +292,22 @@ local function bootstrap(opts)
     require("logseq.dedup").dedup_vault(vault)
   end, { desc = "Remove duplicate lines across the entire vault" })
 
+  vim.api.nvim_create_user_command("LogseqConflicts", function()
+    local vault = config.current.vault_path
+    if not vault or vault == "" then
+      vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
+      return
+    end
+    require("logseq.sync_conflicts").resolve_all(vault)
+  end, { desc = "Scan and auto-resolve Syncthing conflict files" })
+
   -- ── Autocmds ──────────────────────────────────────────────────────
+
+  -- Detect external file changes (Syncthing, other editors, parallel sessions)
+  vim.opt.autoread = true
+  vim.opt.undofile = true   -- persist undo history so edit! reloads don't lose edits
+  vim.opt.swapfile = false  -- mtime guard + undofile replace swap's crash recovery and locking
+  vim.opt.updatetime = 2000 -- sets CursorHold trigger to 2s, driving autosave safety net
 
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
@@ -333,8 +351,48 @@ local function bootstrap(opts)
     end,
   })
 
+  -- Check for external file changes.
+  -- FocusGained: terminal/app regains focus (device switches, alt-tab).
+  -- WinEnter: moving between Neovim splits / tmux panes where the terminal
+  --           stays focused and FocusGained never fires.
+  vim.api.nvim_create_autocmd({ "FocusGained", "WinEnter" }, {
+    group = group,
+    callback = function()
+      pcall(function() vim.cmd("checktime") end)
+      -- Auto-resolve Syncthing conflicts on focus return (e.g. switching devices)
+      vim.defer_fn(function()
+        pcall(function()
+          require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
+        end)
+      end, 1000)
+    end,
+  })
+
+  -- Update stored mtime after checktime reloads a file externally.
+  -- The merge notification is shown by autosave.lua; no separate message here.
+  vim.api.nvim_create_autocmd("FileChangedShellPost", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufpath = vim.api.nvim_buf_get_name(ev.buf)
+      if not is_vault_file(bufpath) then return end
+      local stat = vim.uv.fs_stat(bufpath)
+      if stat then
+        vim.b[ev.buf].logseq_mtime      = stat.mtime.sec
+        vim.b[ev.buf].logseq_mtime_nsec = stat.mtime.nsec or 0
+      end
+    end,
+  })
+
+  -- Auto-resolve Syncthing conflicts on startup (deferred so UI isn't blocked)
+  vim.defer_fn(function()
+    pcall(function()
+      require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
+    end)
+  end, 3000)
+
   -- ── First-Run Logic ───────────────────────────────────────────────
-  
+
   -- Replaced intrusive popup with silent default + helpful notification
   if config.current.reminder_minutes == nil then
     config.set_reminder_minutes(3)
@@ -360,4 +418,3 @@ function M.setup(opts)
 end
 
 return M
-
