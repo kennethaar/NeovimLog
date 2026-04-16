@@ -1,114 +1,61 @@
---- logseq.nvim parser
---- Parses a Logseq .md buffer into page properties + a block tree.
---- Pure Lua, no dependencies. Called on-demand by motions, editing, and link following.
----
----@class LogseqBlock
----@field line_start  integer
----@field line_end    integer
----@field indent      integer
----@field content     string
----@field properties  table<string,string>
----@field links       string[]
----@field tags        string[]
----@field children    LogseqBlock[]
----@field parent      LogseqBlock|nil
----
----@class ParseResult
----@field page_properties  table<string,string>
----@field blocks           LogseqBlock[]
-
 local M = {}
+local _cache = {}
 
--- ── Buffer-level parse cache (audit #18) ──────────────────────────────
--- Invalidated on TextChanged/TextChangedI. Most motions happen between
--- edits, so the cache has a high hit rate.
+function M.invalidate_cache(bufnr) _cache[bufnr] = nil end
 
-local _cache = {} -- bufnr → { changedtick, result }
-
---- Get the parse result for a buffer, using cache when possible.
----@param bufnr integer|nil  defaults to current buffer
----@return ParseResult
----@return string[]  lines
 function M.parse_buf(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local tick = vim.api.nvim_buf_get_changedtick(bufnr)
   local cached = _cache[bufnr]
-
-  if cached and cached.tick == tick then
-    return cached.result, cached.lines
-  end
-
+  if cached and cached.tick == tick then return cached.result, cached.lines end
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local result = M.parse(lines)
   _cache[bufnr] = { tick = tick, result = result, lines = lines }
   return result, lines
 end
 
---- Invalidate cache for a buffer (called on BufUnload).
----@param bufnr integer
-function M.invalidate_cache(bufnr)
-  _cache[bufnr] = nil
-end
+-- ── Line classifiers ───────────────────────────────────────────────────
 
--- ── Line classifiers ──────────────────────────────────────────────────
-
----@param line string
----@return integer|nil indent
----@return string|nil content
 local function match_bullet(line)
-  local spaces, content = line:match("^(%s*)%- (.+)$")
-  if spaces then return #spaces, content end
-  spaces = line:match("^(%s*)%- $")
-  if spaces then return #spaces, "" end
-  return nil, nil
+  local sp, content = line:match("^(%s*)%- (.+)$")
+  if sp then return #sp, content end
+  sp = line:match("^(%s*)%- $")
+  if sp then return #sp, "" end
+  sp = line:match("^(%s*)%-$")
+  if sp then return #sp, "" end
+  return nil
 end
 
----@param line string
----@return integer|nil indent
----@return string|nil key
----@return string|nil value
 local function match_property(line)
-  local spaces, key, value = line:match("^(%s*)([%w_%-]+):: (.*)$")
-  if spaces then return #spaces, key, value end
-  spaces, key = line:match("^(%s*)([%w_%-]+)::$")
-  if spaces then return #spaces, key, "" end
-  return nil, nil, nil
+  local sp, k, v = line:match("^(%s*)([%w_%-]+):: (.*)$")
+  if sp then return #sp, k, v end
+  sp, k = line:match("^(%s*)([%w_%-]+)::$")
+  if sp then return #sp, k, "" end
+  return nil
 end
 
----@param line string
----@return integer
 local function leading_spaces(line)
   local s = line:match("^(%s*)")
   return s and #s or 0
 end
 
--- ── Extractors ────────────────────────────────────────────────────────
+-- ── Extractors (vim.iter pipelines where natural) ──────────────────────
 
----@param text string
----@return string[]
 local function extract_links(text)
-  local links = {}
-  for link in text:gmatch("%[%[(.-)%]%]") do
-    -- Strip pipe alias: [[Page|Alias]] → "Page"
-    links[#links + 1] = link:match("^(.-)%|") or link
-  end
-  return links
+  return vim.iter(text:gmatch("%[%[(.-)%]%]"))
+    :map(function(l) return l:match("^(.-)%|") or l end)
+    :totable()
 end
 
----@param text string
----@return string[]
 local function extract_tags(text)
-  local tags = {}
+  -- Strip wiki-links first so `[[foo #bar]]` doesn't yield `bar`
   local clean = text:gsub("%[%[.-%]%]", "")
-  for tag in clean:gmatch("#([%w_%-/]+)") do
-    tags[#tags + 1] = tag
-  end
-  return tags
+  return vim.iter(clean:gmatch("#([%w_%-/]+)")):totable()
 end
 
----@param text string
----@return string[]  ISO dates "YYYY-MM-DD" from Org/Logseq angle-bracket timestamps
 local function extract_org_dates(text)
+  -- gmatch returns multi-captures; build explicitly (vim.iter + multi-capture
+  -- gmatch is fragile across nvim versions).
   local dates = {}
   for y, m, d in text:gmatch("<(%d%d%d%d)-(%d%d)-(%d%d)[^>]*>") do
     dates[#dates + 1] = y .. "-" .. m .. "-" .. d
@@ -116,10 +63,13 @@ local function extract_org_dates(text)
   return dates
 end
 
--- ── Main parser ───────────────────────────────────────────────────────
+local function has_schedule_keyword(line)
+  local ll = line:lower()
+  return ll:find("scheduled:", 1, true) ~= nil or ll:find("deadline:", 1, true) ~= nil
+end
 
----@param lines string[]
----@return ParseResult
+-- ── Main parser ────────────────────────────────────────────────────────
+
 function M.parse(lines)
   local page_props = {}
   local i = 1
@@ -132,72 +82,51 @@ function M.parse(lines)
     elseif match_bullet(line) then
       break
     else
-      local pi, key, value = match_property(line)
-      if key and pi == 0 then page_props[key] = value end
+      local pi, k, v = match_property(line)
+      if k and pi == 0 then page_props[k] = v end
       i = i + 1
     end
   end
 
-  -- Pass 2: parse blocks into a flat ordered list
-  local flat = {} ---@type LogseqBlock[]
-
+  -- Pass 2: flat block list with properties + continuation lines
+  local flat = {}
   while i <= #lines do
     local indent, content = match_bullet(lines[i])
-
     if indent then
+      local links = extract_links(content)
+      for _, d in ipairs(extract_org_dates(content)) do links[#links + 1] = d end
       local block = {
         line_start   = i,
         line_end     = i,
         indent       = indent,
         content      = content,
         properties   = {},
-        links        = extract_links(content),
+        links        = links,
         tags         = extract_tags(content),
-        is_scheduled = false,
+        is_scheduled = has_schedule_keyword(content),
         children     = {},
         parent       = nil,
       }
-      -- Org-mode timestamps inline on the bullet line: SCHEDULED:: <2026-04-01 Wed>
-      for _, d in ipairs(extract_org_dates(content)) do
-        block.links[#block.links + 1] = d
-      end
-      local lc = content:lower()
-      if lc:find("scheduled:", 1, true) or lc:find("deadline:", 1, true) then
-        block.is_scheduled = true
-      end
 
       local j = i + 1
       while j <= #lines do
         local line = lines[j]
-
         if match_bullet(line) then break end
         if line:match("^%s*$") then break end
 
-        local pi, pkey, pvalue = match_property(line)
-        -- Accept properties at indent+2 (standard Logseq) OR at the same indent
-        -- as the block (Logseq also writes SCHEDULED/DEADLINE at the block's own level).
-        if pkey and (pi == indent + 2 or pi == indent) then
-          block.properties[pkey] = pvalue
-          local pk = pkey:lower()
-          if pk == "scheduled" or pk == "deadline" then block.is_scheduled = true end
-          for _, link in ipairs(extract_links(pvalue)) do
-            block.links[#block.links + 1] = link
-          end
-          for _, d in ipairs(extract_org_dates(pvalue)) do
-            block.links[#block.links + 1] = d
-          end
+        local pi, pk, pv = match_property(line)
+        if pk and (pi == indent + 2 or pi == indent) then
+          block.properties[pk] = pv
+          local pl = pk:lower()
+          if pl == "scheduled" or pl == "deadline" then block.is_scheduled = true end
+          for _, l in ipairs(extract_links(pv)) do block.links[#block.links + 1] = l end
+          for _, d in ipairs(extract_org_dates(pv)) do block.links[#block.links + 1] = d end
           block.line_end = j
           j = j + 1
         elseif leading_spaces(line) >= indent then
-          -- Continuation line (timestamp, wrapped text, single-colon SCHEDULED, etc.).
-          -- Accept any non-bullet, non-blank line at the block's own indent or deeper.
-          for _, d in ipairs(extract_org_dates(line)) do
-            block.links[#block.links + 1] = d
-          end
-          local ll = line:lower()
-          if ll:find("scheduled:", 1, true) or ll:find("deadline:", 1, true) then
-            block.is_scheduled = true
-          end
+          -- Continuation line (wrapped text, bare timestamp, single-colon SCHEDULED, …)
+          for _, d in ipairs(extract_org_dates(line)) do block.links[#block.links + 1] = d end
+          if has_schedule_keyword(line) then block.is_scheduled = true end
           block.line_end = j
           j = j + 1
         else
@@ -212,47 +141,34 @@ function M.parse(lines)
     end
   end
 
-  -- Pass 3: build tree using indent-based stack
-  local roots = {} ---@type LogseqBlock[]
-  local stack = {} ---@type LogseqBlock[]
-
+  -- Pass 3: build tree with an indent-stack
+  local roots, stack = {}, {}
   for _, block in ipairs(flat) do
-    while #stack > 0 and stack[#stack].indent >= block.indent do
-      table.remove(stack)
-    end
-
+    while #stack > 0 and stack[#stack].indent >= block.indent do table.remove(stack) end
     if #stack > 0 then
-      local parent = stack[#stack]
-      block.parent = parent
-      parent.children[#parent.children + 1] = block
+      block.parent = stack[#stack]
+      local siblings = stack[#stack].children
+      siblings[#siblings + 1] = block
     else
       roots[#roots + 1] = block
     end
-
     stack[#stack + 1] = block
   end
 
-  -- Pass 4: propagate line_end upward
-  local function propagate_line_end(block)
-    for _, child in ipairs(block.children) do
-      propagate_line_end(child)
-      if child.line_end > block.line_end then
-        block.line_end = child.line_end
-      end
+  -- Pass 4: propagate line_end upward so a block's range spans its subtree
+  local function propagate(b)
+    for _, c in ipairs(b.children) do
+      propagate(c)
+      if c.line_end > b.line_end then b.line_end = c.line_end end
     end
   end
-  for _, root in ipairs(roots) do
-    propagate_line_end(root)
-  end
+  for _, r in ipairs(roots) do propagate(r) end
 
   return { page_properties = page_props, blocks = roots }
 end
 
--- ── Tree helpers ──────────────────────────────────────────────────────
+-- ── Tree helpers ───────────────────────────────────────────────────────
 
---- Depth-first flatten of a block tree.
----@param blocks LogseqBlock[]
----@return LogseqBlock[]
 function M.flatten(blocks)
   local result = {}
   local function walk(list)
@@ -265,63 +181,35 @@ function M.flatten(blocks)
   return result
 end
 
---- Find the deepest block whose range contains lnum.
---- Uses recursive descent instead of flatten+scan (audit #19).
----@param blocks LogseqBlock[]
----@param lnum integer
----@return LogseqBlock|nil
 function M.block_at_line(blocks, lnum)
   for _, b in ipairs(blocks) do
     if lnum < b.line_start then return nil end
     if lnum <= b.line_end then
-      -- Check children first for a tighter match
-      local child_match = M.block_at_line(b.children, lnum)
-      if child_match then return child_match end
-      -- lnum is within this block's own range (bullet + properties + continuations)
-      return b
+      local child = M.block_at_line(b.children, lnum)
+      return child or b
     end
   end
   return nil
 end
 
---- Extract all [[links]] and #tags from page-level property values.
---- Returns a set (table keyed by string → true).
---- Applies ISO-date underscore→dash normalization to match norm_link in indexer.
----@param page_properties table<string,string>
----@return table<string,boolean>
+-- Extract all [[links]], #tags, and <YYYY-MM-DD> dates from page-property values.
+-- Returns a set keyed by lowercased ref. Journal-style YYYY_MM_DD is normalized
+-- to YYYY-MM-DD to align with the indexer's norm_link conventions.
 function M.page_property_refs(page_properties)
   local refs = {}
   local function add(s)
     refs[s:gsub("^(%d%d%d%d)_(%d%d)_(%d%d)$", "%1-%2-%3"):lower()] = true
   end
-  for _, value in pairs(page_properties) do
-    for link in value:gmatch("%[%[(.-)%]%]") do
-      add(link:match("^(.-)%|") or link)
-    end
-    local clean = value:gsub("%[%[.-%]%]", "")
-    for tag in clean:gmatch("#([%w_%-/]+)") do
-      add(tag)
-    end
-    for y, m, d in value:gmatch("<(%d%d%d%d)-(%d%d)-(%d%d)[^>]*>") do
-      add(y .. "-" .. m .. "-" .. d)
-    end
+  for _, v in pairs(page_properties) do
+    for _, l in ipairs(extract_links(v)) do add(l) end
+    for _, t in ipairs(extract_tags(v)) do add(t) end
+    for _, d in ipairs(extract_org_dates(v)) do add(d) end
   end
   return refs
 end
 
---- Get the sibling list a block belongs to.
----@param block LogseqBlock
----@param roots LogseqBlock[]
----@return LogseqBlock[]
-function M.siblings(block, roots)
-  if block.parent then return block.parent.children end
-  return roots
-end
+function M.siblings(block, roots) return block.parent and block.parent.children or roots end
 
---- Find a block's index within its sibling list.
----@param block LogseqBlock
----@param sibling_list LogseqBlock[]
----@return integer|nil
 function M.sibling_index(block, sibling_list)
   for idx, sib in ipairs(sibling_list) do
     if sib.line_start == block.line_start then return idx end

@@ -359,15 +359,17 @@ end
 local function find_similar_page(pages_dir, new_name, old_name, util)
   local target_leaf  = leaf_name(new_name)
   local target_words = word_set(target_leaf)
-  local n = 0
-  for _ in pairs(target_words) do n = n + 1 end
+  local n = vim.tbl_count(target_words)
   if n < 2 then return nil end
 
-  for _, file in ipairs(vim.fn.glob(pages_dir .. "/*.md", false, true)) do
-    local decoded = util.decode_filename(vim.fn.fnamemodify(file, ":t"))
-    if decoded ~= new_name and decoded ~= old_name then
-      if jaccard(target_words, word_set(leaf_name(decoded))) >= 0.8 then
-        return decoded, file
+  local md_files = require("logseq.util").get_vault_files(pages_dir:gsub("/pages$", ""))
+  for _, file in ipairs(md_files) do
+    if file:match("/pages/") then
+      local decoded = util.decode_filename(vim.fn.fnamemodify(file, ":t"))
+      if decoded ~= new_name and decoded ~= old_name then
+        if jaccard(target_words, word_set(leaf_name(decoded))) >= 0.8 then
+          return decoded, file
+        end
       end
     end
   end
@@ -385,37 +387,34 @@ end
 --- vault. Files are processed in batches so the UI stays responsive throughout.
 --- on_done(total_updated) is called when the scan is complete.
 local function rewrite_links_async(vault, rewrites, on_done)
-  local files = {}
-  for _, dir in ipairs({ vault .. "/pages", vault .. "/journals" }) do
-    if vim.fn.isdirectory(dir) == 1 then
-      vim.list_extend(files, vim.fn.glob(dir .. "/*.md", false, true))
-    end
-  end
+  local uv = vim.uv
+  local files = require("logseq.util").get_vault_files(vault)
+  local patterns = vim.iter(rewrites):map(function(r)
+    return { pat = "%[%[" .. escape_lua_pattern(r[1]) .. "%]%]", link = "[[" .. r[2] .. "]]" }
+  end):totable()
 
-  local patterns = {}
-  for _, r in ipairs(rewrites) do
-    patterns[#patterns + 1] = {
-      pat  = "%[%[" .. escape_lua_pattern(r[1]) .. "%]%]",
-      link = "[[" .. r[2] .. "]]",
-    }
-  end
-
-  local updated, i = 0, 0
-  local BATCH = 10
+  local updated = 0
+  local i, BATCH = 0, 20
 
   local function step()
     for _ = 1, BATCH do
       i = i + 1
       if i > #files then on_done(updated); return end
-      local content = read_file(files[i])
-      if content then
-        local new_content = content
-        for _, p in ipairs(patterns) do
-          new_content = new_content:gsub(p.pat, p.link)
-        end
-        if new_content ~= content then
-          local wf = io.open(files[i], "w")
-          if wf then wf:write(new_content); wf:close(); updated = updated + 1 end
+      local fpath = files[i]
+      local stat = uv.fs_stat(fpath)
+      if stat then
+        local fd = uv.fs_open(fpath, "r", 438)
+        if fd then
+          local content = uv.fs_read(fd, stat.size, 0)
+          uv.fs_close(fd)
+          if content then
+            local new_content = content
+            for _, p in ipairs(patterns) do new_content = new_content:gsub(p.pat, p.link) end
+            if new_content ~= content then
+              local wfd = uv.fs_open(fpath, "w", 438)
+              if wfd then uv.fs_write(wfd, new_content, 0); uv.fs_close(wfd); updated = updated + 1 end
+            end
+          end
         end
       end
     end
@@ -441,7 +440,7 @@ local function finish(bufnr, dest_path, extra_path, to_delete, vault, rewrites, 
         while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
         vim.list_extend(lines, { "", "---", "" })
         vim.list_extend(lines, vim.split(src:gsub("%s+$", ""), "\n", { plain = true }))
-        lines = (require("logseq.dedup").dedup_lines(lines))
+        lines = require("logseq.dedup").dedup_lines(lines)
         vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
         vim.cmd("silent write")
       end
