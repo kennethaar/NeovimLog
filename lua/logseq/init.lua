@@ -45,7 +45,7 @@ local function activate(bufnr)
 
   local ok_sc, err_sc = pcall(function() require("logseq.slash_commands").setup_buf(bufnr) end)
   if not ok_sc then
-    vim.notify("[logseq.nvim] slash_commands setup failed: " .. tostring(err_sc), vim.log.levels.ERROR)
+    vim.notify("[logseq.nvim] slash_commands setup failed: ".. tostring(err_sc), vim.log.levels.ERROR)
   end
 
   -- Register keymaps with which-key if it is installed, so the user can
@@ -56,30 +56,30 @@ local function activate(bufnr)
     local km = config.current.keymaps
     wk.add({
       -- Block navigation
-      { km.next_sibling,     desc = "Next sibling block",              buffer = bufnr, mode = "n" },
-      { km.prev_sibling,     desc = "Previous sibling block",          buffer = bufnr, mode = "n" },
-      { km.first_child,      desc = "First child block",               buffer = bufnr, mode = "n" },
-      { km.parent,           desc = "Parent block",                    buffer = bufnr, mode = "n" },
+      { km.next_sibling,     desc = "Next sibling block",             buffer = bufnr, mode = "n" },
+      { km.prev_sibling,     desc = "Previous sibling block",         buffer = bufnr, mode = "n" },
+      { km.first_child,      desc = "First child block",              buffer = bufnr, mode = "n" },
+      { km.parent,           desc = "Parent block",                   buffer = bufnr, mode = "n" },
       -- Block movement
-      { km.move_down,        desc = "Move block down (with subtree)",  buffer = bufnr, mode = "n" },
-      { km.move_up,          desc = "Move block up (with subtree)",    buffer = bufnr, mode = "n" },
-      { km.promote,          desc = "Outdent block (with subtree)",    buffer = bufnr, mode = "n" },
-      { km.demote,           desc = "Indent block (with subtree)",     buffer = bufnr, mode = "n" },
+      { km.move_down,        desc = "Move block down (with subtree)", buffer = bufnr, mode = "n" },
+      { km.move_up,          desc = "Move block up (with subtree)",   buffer = bufnr, mode = "n" },
+      { km.promote,          desc = "Outdent block (with subtree)",   buffer = bufnr, mode = "n" },
+      { km.demote,           desc = "Indent block (with subtree)",    buffer = bufnr, mode = "n" },
       -- Editing
-      { km.new_sibling,      desc = "New sibling block below",         buffer = bufnr, mode = "n" },
-      { km.todo_cycle,       desc = "Cycle TODO state",                buffer = bufnr, mode = "n" },
+      { km.new_sibling,      desc = "New sibling block below",        buffer = bufnr, mode = "n" },
+      { km.todo_cycle,       desc = "Cycle TODO state",               buffer = bufnr, mode = "n" },
       -- Links and search
-      { km.follow_link,      desc = "Follow link / open page",         buffer = bufnr, mode = "n" },
-      { km.search_pages,     desc = "Search vault pages",              buffer = bufnr, mode = "n" },
+      { km.follow_link,      desc = "Follow link / open page",        buffer = bufnr, mode = "n" },
+      { km.search_pages,     desc = "Search vault pages",             buffer = bufnr, mode = "n" },
       -- Panels and UI
-      { km.toggle_backlinks, desc = "Toggle backlinks panel",          buffer = bufnr, mode = "n" },
-      { km.fold_toggle,      desc = "Toggle fold",                     buffer = bufnr, mode = "n" },
-      { km.zoom_block,       desc = "Zoom into block",                 buffer = bufnr, mode = "n" },
-      { km.help,             desc = "Open Logseq help",                buffer = bufnr, mode = "n" },
+      { km.toggle_backlinks, desc = "Toggle backlinks panel",         buffer = bufnr, mode = "n" },
+      { km.fold_toggle,      desc = "Toggle fold",                    buffer = bufnr, mode = "n" },
+      { km.zoom_block,       desc = "Zoom into block",                buffer = bufnr, mode = "n" },
+      { km.help,             desc = "Open Logseq help",               buffer = bufnr, mode = "n" },
       -- Fixed keymaps (not user-configurable but still worth showing)
-      { "O",                 desc = "New sibling block above",         buffer = bufnr, mode = "n" },
-      { "<Tab>",             desc = "Indent block",                    buffer = bufnr, mode = "n" },
-      { "<S-Tab>",           desc = "Outdent block",                   buffer = bufnr, mode = "n" },
+      { "O",                 desc = "New sibling block above",        buffer = bufnr, mode = "n" },
+      { "<Tab>",             desc = "Indent block",                   buffer = bufnr, mode = "n" },
+      { "<S-Tab>",           desc = "Outdent block",                  buffer = bufnr, mode = "n" },
     })
   end
 
@@ -96,7 +96,7 @@ local function activate(bufnr)
 
       local date_str = os.date("%Y_%m_%d", os.time{year=tonumber(year), month=tonumber(month), day=tonumber(day)})
       local journal_dir = vim.fs.joinpath(config.current.vault_path, "journals")
-      local journal_path = vim.fs.joinpath(journal_dir, date_str .. ".md")
+      local journal_path = vim.fs.joinpath(journal_dir, date_str.. ".md")
 
       if util.normalize(filepath) == util.normalize(journal_path) then return end
 
@@ -109,7 +109,7 @@ local function activate(bufnr)
         vim.list_extend(journal_content, current_content)
         vim.fn.writefile(journal_content, journal_path)
         vim.fn.delete(filepath)
-        vim.cmd("edit " .. vim.fn.fnameescape(journal_path))
+        vim.cmd("edit ".. vim.fn.fnameescape(journal_path))
         return
       end
 
@@ -193,13 +193,13 @@ local function bootstrap(opts)
     local function show_menu()
       local urls = config.current.calendar_urls or {}
       local items = vim.deepcopy(urls)
-      table.insert(items, "[ + Add new URL ]")
-      table.insert(items, "[ Done ]")
+      table.insert(items, "")
+      table.insert(items, "")
 
       vim.ui.select(items, { prompt = "Calendar URLs (select to remove):" }, function(choice)
-        if not choice or choice == "[ Done ]" then return end
+        if not choice or choice == "" then return end
 
-        if choice == "[ + Add new URL ]" then
+        if choice == "" then
           vim.cmd("LogseqCalAdd")
           return
         end
@@ -252,12 +252,12 @@ local function bootstrap(opts)
     local dir = vim.fs.joinpath(config.current.vault_path, "journals")
     if vim.fn.isdirectory(dir) == 0 then vim.fn.mkdir(dir, "p") end
 
-    local filepath = vim.fs.joinpath(dir, os.date(config.current.journal_format) .. ".md")
+    local filepath = vim.fs.joinpath(dir, os.date(config.current.journal_format).. ".md")
 
     if util.normalize(vim.api.nvim_buf_get_name(0)) == util.normalize(filepath) then return end
     if vim.bo.modified then vim.cmd("write") end
 
-    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+    vim.cmd("edit ".. vim.fn.fnameescape(filepath))
     -- edit is synchronous; buffer is ready immediately. vim.schedule ensures we don't block.
     vim.schedule(function() activate(0) end)
   end, { desc = "Open today's Logseq journal" })
@@ -268,7 +268,7 @@ local function bootstrap(opts)
       local filename = util.encode_filename(input)
       local filepath = vim.fs.joinpath(config.current.vault_path, "pages", filename)
 
-      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+      vim.cmd("edit ".. vim.fn.fnameescape(filepath))
       vim.schedule(function() activate(0) end)
     end
 
@@ -298,8 +298,25 @@ local function bootstrap(opts)
       vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
       return
     end
+    vim.notify("Skanner etter Syncthing-konflikter i " .. vault .. "...", vim.log.levels.INFO)
     require("logseq.sync_conflicts").resolve_all(vault)
   end, { desc = "Scan and auto-resolve Syncthing conflict files" })
+
+  -- NY KOMMANDO: Hjelper deg å finne tapte data i .stversions!
+  vim.api.nvim_create_user_command("LogseqRecover", function()
+    local vault = config.current.vault_path
+    if not vault or vault == "" then
+      vim.notify("[logseq.nvim] No vault configured.", vim.log.levels.WARN)
+      return
+    end
+    local stversions = vim.fs.joinpath(vault, ".stversions")
+    if vim.fn.isdirectory(stversions) == 1 then
+      vim.notify("Åpner Syncthing filhistorikk (.stversions)...", vim.log.levels.INFO)
+      vim.cmd("edit " .. vim.fn.fnameescape(stversions))
+    else
+      vim.notify("Fant ingen .stversions mappe i vaultet. Syncthing versjonering er kanskje avslått?", vim.log.levels.WARN)
+    end
+  end, { desc = "Åpne Syncthing .stversions for å redde tapte data" })
 
   -- ── Autocmds ──────────────────────────────────────────────────────
 
@@ -309,6 +326,7 @@ local function bootstrap(opts)
   vim.opt.swapfile = false  -- mtime guard + undofile replace swap's crash recovery and locking
   vim.opt.updatetime = 2000 -- sets CursorHold trigger to 2s, driving autosave safety net
 
+  local cal_timer = nil
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {
     group = group,
     pattern = "*.md",
@@ -325,10 +343,15 @@ local function bootstrap(opts)
         end)
       end
 
-      -- WARNING: If cal.sync() is blocking, this will lag your editor every time you open a file.
-      vim.schedule(function()
+      -- Debounced calendar sync
+      if cal_timer then
+        cal_timer:stop()
+        if not cal_timer:is_closing() then cal_timer:close() end
+      end
+      cal_timer = vim.uv.new_timer()
+      cal_timer:start(500, 0, vim.schedule_wrap(function()
         pcall(function() require("logseq.calendar").sync() end)
-      end)
+      end))
     end,
   })
 
@@ -351,20 +374,24 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Check for external file changes.
-  -- FocusGained: terminal/app regains focus (device switches, alt-tab).
-  -- WinEnter: moving between Neovim splits / tmux panes where the terminal
-  --           stays focused and FocusGained never fires.
+  -- Debounced Sync Conflict scanning
+  local conflict_timer = nil
   vim.api.nvim_create_autocmd({ "FocusGained", "WinEnter" }, {
     group = group,
     callback = function()
       pcall(function() vim.cmd("checktime") end)
-      -- Auto-resolve Syncthing conflicts on focus return (e.g. switching devices)
-      vim.defer_fn(function()
+
+      if conflict_timer then
+        conflict_timer:stop()
+        if not conflict_timer:is_closing() then conflict_timer:close() end
+      end
+      
+      conflict_timer = vim.uv.new_timer()
+      conflict_timer:start(1500, 0, vim.schedule_wrap(function()
         pcall(function()
           require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
         end)
-      end, 1000)
+      end))
     end,
   })
 
