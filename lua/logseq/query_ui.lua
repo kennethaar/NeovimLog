@@ -18,7 +18,7 @@
 ---   c     toggle column picker (table mode only)
 
 local config      = require("logseq.config")
-local indexer     = require("logseq.indexer")
+-- FIX: Removed 'local indexer = require("logseq.indexer")' from here to prevent circular dependencies
 local qparser     = require("logseq.query_parser")
 local engine      = require("logseq.query_engine")
 
@@ -332,7 +332,22 @@ end
 -- ── Query scanning ─────────────────────────────────────────────────────
 
 local function current_page_name(bufnr)
-  return indexer.page_name_from_file(vim.api.nvim_buf_get_name(bufnr))
+  -- FIX: Added robust safety checks and lazy-loading
+  if not vim.api.nvim_buf_is_valid(bufnr) then return "" end
+  
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  if filepath == "" then return "" end
+
+  -- Lazy require bypasses the module loop
+  local ok, idx = pcall(require, "logseq.indexer")
+  if ok and type(idx.page_name_from_file) == "function" then
+    return idx.page_name_from_file(filepath)
+  end
+
+  -- Fallback: Use util.lua if indexer is unavailable during a race condition
+  local util = require("logseq.util")
+  local basename = vim.fn.fnamemodify(filepath, ":t")
+  return util.decode_filename(basename)
 end
 
 local function scan_queries(bufnr)

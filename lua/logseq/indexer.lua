@@ -1,249 +1,209 @@
 local M = {}
-local parser = require("logseq.parser")
 local util = require("logseq.util")
+local parser = require("logseq.parser")
 local config = require("logseq.config")
-
 M._cache = {}
-function M.invalidate(filepath) M._cache[util.normalize(filepath)] = nil end
-function M.invalidate_all() M._cache = {} end
+local is_indexing = false
 
--- Safe fallback for getting vault files
-local function get_vault_files_safe(vault_path)
-  if type(util.get_vault_files) == "function" then
-    return util.get_vault_files(vault_path)
-  end
-  local files = {}
-  for _, dir in ipairs({ "pages", "journals" }) do
-    local dir_path = vault_path .. "/" .. dir
-    if vim.fn.isdirectory(dir_path) == 1 then
-      local globbed = vim.fn.glob(dir_path .. "/*.md", false, true)
-      if type(globbed) == "table" then
-        vim.list_extend(files, globbed)
-      end
-    end
-  end
-  return files
-end
-
-function M.page_name_from_file(filepath)
-  local vault = config.current.vault_path
-  if not vault or vault == "" then return nil end
-  local norm_vault, norm_file = util.normalize(vault), util.normalize(filepath)
-  if norm_file:sub(1, #norm_vault + 1) ~= norm_vault .. "/" then return nil end
-  local rel = norm_file:sub(#norm_vault + 2)
-  local journal_name = rel:match("^journals/(.+)%.md$")
-  if journal_name then return util.format_journal_date(journal_name, vault) or journal_name end
-  local page_name = rel:match("^pages/(.+)%.md$")
-  return page_name and util.decode_filename(page_name) or nil
-end
-
-function M.get_parsed_file(filepath)
-  local uv = vim.uv or vim.loop
-  local norm = util.normalize(filepath)
-  local stat = uv.fs_stat(filepath)
-  if not stat then return nil, nil end
-  local cached = M._cache[norm]
-  if cached and cached.mtime == stat.mtime.sec then return cached.lines, cached.parsed end
-  local fd = uv.fs_open(filepath, "r", 438)
-  if not fd then return nil, nil end
-  local content = uv.fs_read(fd, stat.size, 0)
-  uv.fs_close(fd)
-  if not content then return nil, nil end
-  local lines = vim.split(content, "\n", { plain = true })
-  if #lines > 0 and lines[#lines] == "" then table.remove(lines) end
-  local parsed = parser.parse(lines)
-  M._cache[norm] = { mtime = stat.mtime.sec, parsed = parsed, lines = lines, content = content }
-  return lines, parsed
-end
-
-local function block_scheduled_date(block)
-  for _, link in ipairs(block.links or {}) do
-    if link:match("^%d%d%d%d%-%d%d%-%d%d$") then return link end
-  end
-end
-
-local function block_todo_state(content)
-  if not content then return nil end
-  for _, s in ipairs(util.todo_states) do
-    if content:sub(1, #s + 1) == s .. " " or content == s then return s end
-  end
-end
-
---- Recursive check to see if a block has any descendants that are also TODOs.
---- This is the core logic for the "Very Next Action" (VNA) filter.
-local function has_todo_descendant(block)
-  for _, child in ipairs(block.children or {}) do
-    if block_todo_state(child.content) then
-      return true
-    end
-    if has_todo_descendant(child) then
-      return true
-    end
-  end
-  return false
-end
-
-local function build_context_blocks(block)
-  local chain = {}
-  local cur = block.parent
-  while cur do
-    table.insert(chain, 1, cur)
-    cur = cur.parent
-  end
-  local ctx = {}
-  for _, anc in ipairs(chain) do
-    ctx[#ctx + 1] = {
-      is_ancestor = true,
-      indent      = anc.indent,
-      text        = anc.content,
-      source_line = anc.line_start,
-    }
-  end
-  ctx[#ctx + 1] = {
-    is_ancestor = false,
-    indent      = block.indent,
-    text        = block.content,
-    source_line = block.line_start,
-  }
-  return ctx
-end
-
---- Processes a list of files in batches to keep UI responsive.
+-- ── Hjelpefunksjon: Batched prosessering ─────────────────────────────
 local function process_file_list_batched(files, on_file, on_complete, on_progress)
-  local i, BATCH = 0, 20
+  local i = 0
+  local BATCH = 20
   local function step()
-    for _ = 1, BATCH do
-      i = i + 1
-      if i > #files then
-        if on_progress then on_progress(#files, #files) end
-        on_complete()
-        return
-      end
-      on_file(files[i], i)
+    local active = 0
+    local to_process = math.min(BATCH, #files - i)
+    if to_process == 0 then
+      if on_progress then on_progress(#files, #files) end
+      return on_complete()
     end
-    if on_progress then on_progress(i, #files) end
-    vim.schedule(step)
+    for _ = 1, to_process do
+      i = i + 1
+      active = active + 1
+      on_file(files[i], i, function()
+        active = active - 1
+        if active == 0 then
+          if on_progress then on_progress(i, #files) end
+          vim.schedule(step)
+        end
+      end)
+    end
   end
   vim.schedule(step)
 end
 
-function M.find_backlinks(page_name, exclude_file, on_complete, on_progress)
-  local vault = config.current.vault_path
-  if not vault then return vim.schedule(function() on_complete({}) end) end
-
-  local page_lower = page_name:lower()
-  local results = {}
-
-  local function process_file(f)
-    local _, parsed = M.get_parsed_file(f)
-    if not parsed then return end
-    local source_page = M.page_name_from_file(f)
-    for _, block in ipairs(parser.flatten(parsed.blocks)) do
-      local linked = false
-      for _, link in ipairs(block.links or {}) do
-        if link:lower() == page_lower then linked = true; break end
-      end
-      if linked then
-        local ctx = build_context_blocks(block)
-        if ctx[#ctx] then ctx[#ctx].is_match = true end
-        table.insert(results, {
-          source_page       = source_page,
-          source_file       = f,
-          context_blocks    = ctx,
-          todo_state        = block_todo_state(block.content),
-          tags              = block.tags or {},
-          is_scheduled      = block.is_scheduled or false,
-          has_todo_children = has_todo_descendant(block),
-        })
-      end
-    end
-  end
-
-  if vim.fn.executable("rg") == 1 then
-    local rg_cmd = {
-      "rg", "-l", "-i", "--fixed-strings", page_name,
-      vault .. "/pages", vault .. "/journals"
-    }
-
-    vim.system(rg_cmd, { text = true }, function(obj)
-      local matched_files = {}
-      if obj.code == 0 and obj.stdout then
-        for s in obj.stdout:gmatch("[^\r\n]+") do
-          if util.normalize(s) ~= util.normalize(exclude_file) then
-            table.insert(matched_files, s)
-          end
-        end
-      end
-      vim.schedule(function()
-        process_file_list_batched(matched_files, process_file, function() on_complete(results) end, on_progress)
-      end)
-    end)
-    return
-  end
-
-  -- Fallback
-  local all_files = get_vault_files_safe(vault)
-  local files = vim.tbl_filter(function(f) return util.normalize(f) ~= util.normalize(exclude_file) end, all_files)
-  process_file_list_batched(files, process_file, function() on_complete(results) end, on_progress)
+-- ── State Management ────────────────────────────────────────────────
+function M.invalidate(filepath)
+  M._cache[util.normalize(filepath)] = nil
 end
 
-function M.find_scheduled_blocks(today_iso, on_complete)
+function M.get_parsed_file_async(filepath, callback)
+  local uv = vim.uv or vim.loop
+  local norm = util.normalize(filepath)
+  uv.fs_stat(filepath, function(err, stat)
+    if err or not stat then return callback(nil, nil) end
+    
+    local cached = M._cache[norm]
+    if cached and cached.mtime == stat.mtime.sec then 
+      return callback(cached.lines, cached.parsed) 
+    end
+    
+    uv.fs_open(filepath, "r", 438, function(open_err, fd)
+      if open_err then return callback(nil, nil) end
+      uv.fs_read(fd, stat.size, 0, function(read_err, content)
+        uv.fs_close(fd)
+        if read_err or not content then return callback(nil, nil) end
+        vim.schedule(function()
+          local lines = vim.split(content, "\n", { plain = true })
+          local parsed = parser.parse(lines)
+          M._cache[norm] = { mtime = stat.mtime.sec, parsed = parsed, lines = lines }
+          callback(lines, parsed)
+        end)
+      end)
+    end)
+  end)
+end
+
+-- ── Backlinks-logikk (Flattet ut) ───────────────────────────────────
+function M.find_backlinks(page_name, exclude_file, on_complete, on_progress, iso_alias)
+  if is_indexing then return end
   local vault = config.current.vault_path
-  if not vault or vault == "" then
-    return vim.schedule(function() on_complete({ overdue = {}, upcoming = {} }) end)
-  end
+  if not vault then return on_complete({}) end
+  
+  is_indexing = true
+  local results = {}
+  local norm_exclude = util.normalize(exclude_file)
+  
+  -- Vi søker etter råstrenger i Ripgrep (tryggere)
+  local search_terms = { page_name:lower() }
+  if iso_alias then table.insert(search_terms, iso_alias:lower()) end
 
-  local overdue, upcoming = {}, {}
+  local function process_file(f, index, on_file_done)
+    M.get_parsed_file_async(f, function(_, parsed)
+      if not parsed then return on_file_done() end
+      
+      local basename = vim.fn.fnamemodify(f, ":t")
+      local page_title = util.format_journal_date(basename, vault) or util.decode_filename(basename)
+      local all_blocks = parser.flatten(parsed.blocks)
 
-  local function process_file(fpath)
-    local _, parsed = M.get_parsed_file(fpath)
-    if not parsed then return end
-    local source_page = M.page_name_from_file(fpath) or vim.fn.fnamemodify(fpath, ":t:r")
-    for _, block in ipairs(parser.flatten(parsed.blocks)) do
-      if block.is_scheduled then
-        local date = block_scheduled_date(block)
-        if date then
-          local entry = {
-            source_page       = source_page,
-            source_file       = fpath,
-            todo_state        = block_todo_state(block.content),
-            tags              = block.tags or {},
-            date              = date,
-            context_blocks    = build_context_blocks(block),
-            has_todo_children = has_todo_descendant(block),
-          }
-          if date < today_iso then table.insert(overdue, entry)
-          else table.insert(upcoming, entry) end
+      for i, block in ipairs(all_blocks) do
+        local content = block.content or ""
+        local content_lower = content:lower()
+        
+        -- Sjekk om blokka inneholder noen av søketermene
+        local is_match = false
+        for _, term in ipairs(search_terms) do
+          if content_lower:find(term, 1, true) then is_match = true; break end
+        end
+
+        if is_match then
+          local display_text = content
+          -- Hvis dette er en ren metadata-linje, "stjel" teksten fra forelderen
+          if content:match("^SCHEDULED:") or content:match("^DEADLINE:") then
+            if i > 1 then display_text = all_blocks[i-1].content .. "\n" .. content end
+          end
+
+          table.insert(results, {
+            source_file = f,
+            source_page = page_title,
+            todo_state = block.todo or (i > 1 and all_blocks[i-1].todo),
+            tags = block.tags or {},
+            context_blocks = {{ text = display_text, indent = block.indent or 0, source_line = block.line_start or 1, is_match = true }}
+          })
         end
       end
-    end
+      on_file_done()
+    end)
   end
 
-  local function finalize()
-    local by_date = function(x, y) return x.date < y.date end
-    table.sort(overdue, by_date)
-    table.sort(upcoming, by_date)
-    on_complete({ overdue = overdue, upcoming = upcoming })
+  -- Ripgrep uten braketter for å unngå regex-feil
+  local args = {"rg", "-l", "-i", "--fixed-strings"}
+  for _, t in ipairs(search_terms) do table.insert(args, "-e"); table.insert(args, t) end
+  table.insert(args, vault)
+
+  vim.system(args, {text=true}, function(obj)
+    vim.schedule(function()
+      local matched = {}
+      if obj.code == 0 and obj.stdout then
+        for s in obj.stdout:gmatch("[^\r\n]+") do 
+          if util.normalize(s) ~= norm_exclude then table.insert(matched, s) end
+        end
+      end
+      process_file_list_batched(matched, process_file, function() 
+        is_indexing = false
+        on_complete(results) 
+      end, on_progress)
+    end)
+  end)
+end
+
+-- ── Scheduled/Overdue-logikk (Flattet ut) ───────────────────────────
+function M.find_scheduled_blocks(today_iso, on_complete)
+  local vault = config.current.vault_path
+  if not vault then return on_complete({ overdue = {}, upcoming = {} }) end
+  
+  local results = { overdue = {}, upcoming = {} }
+
+  local function process_file(f, index, on_file_done)
+    M.get_parsed_file_async(f, function(_, parsed)
+      if not parsed then return on_file_done() end
+      
+      local basename = vim.fn.fnamemodify(f, ":t")
+      local page_title = util.format_journal_date(basename, vault) or util.decode_filename(basename)
+      local all_blocks = parser.flatten(parsed.blocks)
+      
+      for i, block in ipairs(all_blocks) do
+        local content = block.content or ""
+        
+        -- Dato-ekstraksjon (Escaped hyphens for Lua)
+        local logseq_date = content:match("SCHEDULED: <%s*(%d%d%d%d%-%d%d%-%d%d)") 
+                         or content:match("DEADLINE: <%s*(%d%d%d%d%-%d%d%-%d%d)")
+        local wiki_date = content:match("%[%[(%d%d%d%d%-%d%d%-%d%d)%]%]")
+        local sched_date = logseq_date or wiki_date or block.scheduled or block.deadline
+        
+        -- Guard Clause: Hvis ingen dato, hopp over
+        if not sched_date then goto next_block end
+
+        -- Finn TODO-status (sjekk blokka eller blokka over)
+        local todo = block.todo or (i > 1 and all_blocks[i-1].todo)
+        
+        -- Vi vil kun ha aktive oppgaver
+        if todo and todo ~= "DONE" and todo ~= "CANCELLED" then
+          local display_text = content
+          if logseq_date and i > 1 then 
+            display_text = all_blocks[i-1].content .. " " .. content 
+          end
+
+          local entry = {
+            source_file = f,
+            source_page = page_title,
+            todo_state = todo,
+            tags = block.tags or {},
+            context_blocks = {{ text = display_text, indent = block.indent or 0, source_line = block.line_start or 1 }}
+          }
+          
+          if sched_date <= today_iso then
+            table.insert(results.overdue, entry)
+          else
+            table.insert(results.upcoming, entry)
+          end
+        end
+        
+        ::next_block::
+      end
+      on_file_done()
+    end)
   end
 
-  -- Optimized Search for Scheduled Blocks
-  if vim.fn.executable("rg") == 1 then
-    local rg_cmd = {
-      "rg", "-l", "-e", "SCHEDULED:", "-e", "DEADLINE:",
-      vault .. "/pages", vault .. "/journals"
-    }
-    vim.system(rg_cmd, { text = true }, function(obj)
+  local date_regex = "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+  vim.system({"rg", "-l", "-e", "SCHEDULED:", "-e", "DEADLINE:", "-e", date_regex, vault}, {text=true}, function(obj)
+    vim.schedule(function()
       local matched = {}
       if obj.code == 0 and obj.stdout then
         for s in obj.stdout:gmatch("[^\r\n]+") do table.insert(matched, s) end
       end
-      vim.schedule(function() process_file_list_batched(matched, process_file, finalize) end)
+      process_file_list_batched(matched, process_file, function() on_complete(results) end)
     end)
-    return
-  end
-
-  local files = get_vault_files_safe(vault)
-  process_file_list_batched(files, process_file, finalize)
+  end)
 end
 
 return M
