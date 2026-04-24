@@ -70,15 +70,43 @@ local function journal_date(filepath)
   return y and (y .. "-" .. m .. "-" .. d) or nil
 end
 
-local function process_file(filepath, ast, opts, results)
-  local _lines, parsed = indexer.get_parsed_file(filepath)
-  if not parsed then return end
-  local source_page = indexer.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
-  local jdate = journal_date(filepath)
-  for _, block in ipairs(parser.flatten(parsed.blocks)) do
-    local ctx = { todo_state = effective_todo(block), tags = effective_tags(block), journal_date = jdate, page_props = parsed.page_properties, current_page = opts.current_page }
-    if eval(ast, block, ctx) then table.insert(results, { source_page = source_page, source_file = filepath, content = block.content, line_start = block.line_start, todo_state = ctx.todo_state, tags = ctx.tags, date = jdate, properties = block.properties }) end
-  end
+-- NEW ASYNC process_file
+local function process_file_async(filepath, ast, opts, results, on_done)
+  indexer.get_parsed_file_async(filepath, function(_lines, parsed)
+    -- Guard clause if file read fails or fails to parse
+    if not parsed then 
+      return on_done() 
+    end
+
+    local source_page = indexer.page_name_from_file and indexer.page_name_from_file(filepath) or vim.fn.fnamemodify(filepath, ":t:r")
+    local jdate = journal_date(filepath)
+    
+    for _, block in ipairs(parser.flatten(parsed.blocks)) do
+      local ctx = { 
+        todo_state = effective_todo(block), 
+        tags = effective_tags(block), 
+        journal_date = jdate, 
+        page_props = parsed.page_properties, 
+        current_page = opts.current_page 
+      }
+      
+      if eval(ast, block, ctx) then 
+        table.insert(results, { 
+          source_page = source_page, 
+          source_file = filepath, 
+          content = block.content, 
+          line_start = block.line_start, 
+          todo_state = ctx.todo_state, 
+          tags = ctx.tags, 
+          date = jdate, 
+          properties = block.properties 
+        }) 
+      end
+    end
+    
+    -- Always call on_done() to signal the batch processor to continue
+    on_done()
+  end)
 end
 
 function M.run(ast, opts, on_complete)
@@ -89,24 +117,23 @@ function M.run(ast, opts, on_complete)
   if #all_files == 0 then return vim.schedule(function() on_complete({}) end) end
 
   local results = {}
-  local i, BATCH = 0, 20
 
-  local function step()
-    for _ = 1, BATCH do
-      i = i + 1
-      if i > #all_files then
-        table.sort(results, function(x, y)
-          if x.source_page ~= y.source_page then return x.source_page < y.source_page end
-          return x.line_start < y.line_start
-        end)
-        on_complete(results)
-        return
-      end
-      process_file(all_files[i], ast, opts, results)
+  -- Use the robust async batcher exported from indexer.lua
+  indexer.process_file_list_batched(
+    all_files,
+    -- The file processor callback
+    function(filepath, _, on_file_done)
+      process_file_async(filepath, ast, opts, results, on_file_done)
+    end,
+    -- The on_complete callback when all files are done
+    function()
+      table.sort(results, function(x, y)
+        if x.source_page ~= y.source_page then return x.source_page < y.source_page end
+        return x.line_start < y.line_start
+      end)
+      on_complete(results)
     end
-    vim.schedule(step)
-  end
-  vim.schedule(step)
+  )
 end
 
 return M

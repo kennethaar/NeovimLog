@@ -6,7 +6,8 @@ M._cache = {}
 local is_indexing = false
 
 -- ── Hjelpefunksjon: Batched prosessering ─────────────────────────────
-local function process_file_list_batched(files, on_file, on_complete, on_progress)
+-- Exported so query_engine.lua can also use it
+function M.process_file_list_batched(files, on_file, on_complete, on_progress)
   local i = 0
   local BATCH = 20
   local function step()
@@ -128,7 +129,7 @@ function M.find_backlinks(page_name, exclude_file, on_complete, on_progress, iso
           if util.normalize(s) ~= norm_exclude then table.insert(matched, s) end
         end
       end
-      process_file_list_batched(matched, process_file, function() 
+      M.process_file_list_batched(matched, process_file, function() 
         is_indexing = false
         on_complete(results) 
       end, on_progress)
@@ -201,7 +202,7 @@ function M.find_scheduled_blocks(today_iso, on_complete)
       if obj.code == 0 and obj.stdout then
         for s in obj.stdout:gmatch("[^\r\n]+") do table.insert(matched, s) end
       end
-      process_file_list_batched(matched, process_file, function() on_complete(results) end)
+      M.process_file_list_batched(matched, process_file, function() on_complete(results) end)
     end)
   end)
 end

@@ -6,6 +6,9 @@ local util   = require("logseq.util")
 
 local M = {}
 
+-- ONE global augroup for the entire plugin (prevents memory leaks)
+local augroup = vim.api.nvim_create_augroup("LogseqUI", { clear = false })
+
 local MOBILE_WIDTH = 50
 local NEXT_APPT_MAX_COLS = 15
 
@@ -23,17 +26,10 @@ local BLOCK_NS   = vim.api.nvim_create_namespace("logseq_block_ui")
 local SCHED_NS   = vim.api.nvim_create_namespace("logseq_scheduled")
 local TODO_HL_NS = vim.api.nvim_create_namespace("logseq_todo_hl")
 
--- Per-buffer pending flag: ensures at most one deferred virt-line update is
--- queued per buffer at any time, coalescing bursts of TextChanged events
--- (e.g. during the write lifecycle when sections are removed).
-local _vl_pending = {}
-
--- Shared helpers for compact time formatting used by winbar and tabline.
 local function format_time(time_str)
   return time_str:gsub("<1 hr", "0h"):gsub(" hr", "h"):gsub(" min", "m")
 end
 
--- Strip event name, return only the duration portion for mobile display.
 local function mobile_event_time(text)
   local first = text:match("^(.-) │") or text
   local dur = first:match(" in (.+)$")
@@ -57,33 +53,26 @@ local function truncate_display_width(text, max_cols)
   return out
 end
 
--- ── Helpers ───────────────────────────────────────────────────────────
-
---- Safely escapes magic characters for Lua's string.gsub pattern matching
 local function escape_lua_pattern(str)
   return str:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
 end
 
 -- ── Global Shims for Winbar/Statusline Click Targets ──────────────────
--- (statusline %@ function names must be simple Lua global references)
 
 _G.logseq_rename_page  = function(...) M.rename_page(...) end
 _G.logseq_close_win    = function(...) M.close_win(...) end
 _G.logseq_toggle_query_render = function() require("logseq.query_ui").toggle_render() end
 
--- Winbar buttons (file/nav)
 _G.logseq_sl_search    = function() require("logseq.file_search").open() end
 _G.logseq_sl_calsync   = function() require("logseq.calendar").sync() end
 
--- Journal day navigation
 local function _open_journal_day(offset)
-  vim.cmd("stopinsert")  -- ensure Normal mode before navigating
+  vim.cmd("stopinsert")  
   local config = require("logseq.config").current
   local vault  = config.vault_path or ""
   local fmt    = config.journal_format or "%Y_%m_%d"
   local dir    = vim.fs.joinpath(vault, "journals")
 
-  -- Try to parse current buffer's date; fall back to today
   local filepath = vim.api.nvim_buf_get_name(0)
   local stem     = vim.fn.fnamemodify(filepath, ":t"):gsub("%.md$", "")
   local y, mo, d = stem:match("^(%d%d%d%d)[_%-](%d%d)[_%-](%d%d)")
@@ -107,7 +96,6 @@ _G.logseq_sl_prev_day = function() _open_journal_day(-1) end
 _G.logseq_sl_today    = function() vim.cmd("stopinsert") vim.cmd("LogseqToday") end
 _G.logseq_sl_next_day = function() _open_journal_day(1) end
 
--- Dynamic label for the follow/back button: 🔗 when on a link, 🔙 otherwise.
 _G.logseq_sl_follow_label = function()
   local ok, links = pcall(require, "logseq.links")
   local on_link = ok and links.link_under_cursor() ~= nil
@@ -118,7 +106,6 @@ _G.logseq_sl_follow_label = function()
   end
 end
 
--- Statusline buttons (editing/cursor)
 _G.logseq_sl_follow = function()
   require("logseq.links").follow(function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "n", false)
@@ -133,9 +120,6 @@ _G.logseq_sl_unindent  = function() vim.cmd("normal! <<") end
 _G.logseq_sl_moveup    = function() require("logseq.motions").move_up() end
 _G.logseq_sl_movedown  = function() require("logseq.motions").move_down() end
 
--- Forward declaration: get_breadcrumb is defined later in this file but
--- referenced by M.winbar(). Declaring the upvalue here keeps M.winbar()
--- from falling through to the (nil) global of the same name.
 local get_breadcrumb
 
 -- ── UI Components ─────────────────────────────────────────────────────
@@ -156,16 +140,13 @@ function M.winbar()
   local norm_path   = util.normalize(filepath)
   local is_journal  = norm_path:find(util.normalize(vault .. "/journals"), 1, true) ~= nil
 
-  -- Responsive behavior based on current window width
   local ok_w, win_width = pcall(vim.api.nvim_win_get_width, winid)
   if not ok_w or not win_width then
     win_width = vim.api.nvim_win_get_width(0)
   end
 
-  -- Build nav buttons differently for mobile vs wider windows
   local nav_parts = {}
   if win_width < MOBILE_WIDTH then
-    -- All buttons evenly spaced across the full window width.
     local all_parts = {
       "%@v:lua.logseq_sl_prev_day@◀️%X",
       "%@v:lua.logseq_sl_today@📅%X",
@@ -205,7 +186,7 @@ function M.winbar()
     local close_btn = ""
 
     if M._state.saved_buffers[bufnr] then
-      return " " .. WINBAR_LEFT .. nav_btns .. "%<   ✓ Saved"
+      return " " .. WINBAR_LEFT .. nav_btns .. "%<  ✓ Saved"
     end
 
     local ok, reminders = pcall(require, "logseq.reminders")
@@ -229,7 +210,6 @@ end
 
 -- ── Page/Journal Tabline (above winbar) ──────────────────────────────
 
---- Build the tabline string shown above the winbar.
 function M.tabline()
   local bufnr = vim.api.nvim_get_current_buf()
   if not vim.b[bufnr].logseq_active then return "" end
@@ -258,8 +238,7 @@ function M.tabline()
 
   if is_mobile then
     local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@📝%X%#TabLine#"
-    local close_btn  = "%#Comment#%@v:lua.logseq_close_win@❌%X%#TabLine#"
-    -- Show meeting duration (e.g. "(70m)") right before ❌ when there's an event.
+    local close_btn  = "%#Comment#%@v:lua.logseq_close_win@ ❌%X%#TabLine#"
     local dur_str = ""
     local ok, reminders = pcall(require, "logseq.reminders")
     if ok then
@@ -269,19 +248,17 @@ function M.tabline()
         if dur ~= "" then dur_str = "%#Comment#(" .. dur .. ")%#TabLine#" end
       end
     end
-    -- %< is the truncation point: label shrinks, buttons are never cut.
     return rename_btn .. " %#TabLineSel#%<" .. safe_label
          .. "%#TabLine#%=" .. dur_str .. close_btn
   else
     local rename_btn = "%#Comment#%@v:lua.logseq_rename_page@ 📝 rn %X%#TabLine#"
     local toggle_btn = "%#Comment#%@v:lua.logseq_toggle_query_render@ 🪄 %X%#TabLine#"
-    local close_btn  = "%#Comment#%@v:lua.logseq_close_win@ :wq ❌ %X%#TabLine#"
+    local close_btn  = "%#Comment#%@v:lua.logseq_close_win@ ❌ %X%#TabLine#"
     return " " .. rename_btn .. toggle_btn .. " %#TabLineSel#%<" .. safe_label
          .. "%#TabLine#%=" .. close_btn .. " "
   end
 end
 
---- Activate the custom tabline (called when entering a logseq buffer).
 function M.enable_tabline()
   if M._state.tabline_active then return end
   M._state.tabline_active  = true
@@ -291,7 +268,6 @@ function M.enable_tabline()
   vim.opt.tabline     = "%{%v:lua.require('logseq.ui').tabline()%}"
 end
 
---- Restore the original tabline (called when leaving all logseq buffers).
 function M.disable_tabline()
   if not M._state.tabline_active then return end
   M._state.tabline_active = false
@@ -314,32 +290,24 @@ end
 function M.close_win(_minwid, _clicks, _button, _mods)
   local bufnr = vim.api.nvim_get_current_buf()
   pcall(function() require("logseq.panels").close_all(bufnr) end)
-  local name = vim.api.nvim_buf_get_name(bufnr)
-  if name ~= "" then
-    pcall(vim.cmd, "write")
-  end
-  -- Explicitly clear modified so quit never hits E37 regardless of any
-  -- deferred callback that re-dirtied the buffer after the write.
-  pcall(function() vim.bo[bufnr].modified = false end)
-  vim.cmd("quit")
+  
+  -- Safely write and close ONLY the current window/buffer
+  vim.cmd("silent! write")
+  pcall(vim.api.nvim_win_close, 0, false)
 end
 
 -- ── Page Renaming ─────────────────────────────────────────────────────
 
---- Extract the leaf segment of a (possibly namespaced) page name.
---- "Math/Calculus" → "Calculus",  "Foo Bar" → "Foo Bar"
 local function leaf_name(name)
   return name:match("[^/]+$") or name
 end
 
---- Build a set of lowercase words from a string.
 local function word_set(str)
   local s = {}
   for w in str:lower():gmatch("%S+") do s[w] = true end
   return s
 end
 
---- Jaccard similarity between two word sets (0.0–1.0).
 local function jaccard(a, b)
   local inter, union = 0, 0
   for w in pairs(a) do
@@ -352,10 +320,6 @@ local function jaccard(a, b)
   return union == 0 and 1.0 or (inter / union)
 end
 
---- Scan pages_dir for a page whose leaf name is ≥80% word-Jaccard similar
---- to new_name's leaf. Requires ≥2 words to avoid single-word false positives.
---- Excludes new_name itself and the current page (old_name) from candidates.
---- Returns (decoded_name, filepath) of the first match, or nil.
 local function find_similar_page(pages_dir, new_name, old_name, util)
   local target_leaf  = leaf_name(new_name)
   local target_words = word_set(target_leaf)
@@ -375,7 +339,6 @@ local function find_similar_page(pages_dir, new_name, old_name, util)
   end
 end
 
---- Read a file's full content from disk. Returns the string, or nil on error.
 local function read_file(path)
   local f = io.open(path, "r")
   if not f then return nil end
@@ -383,9 +346,6 @@ local function read_file(path)
   return c
 end
 
---- Rewrite [[old]] → [[new]] for each {old,new} pair across all .md files in
---- vault. Files are processed in batches so the UI stays responsive throughout.
---- on_done(total_updated) is called when the scan is complete.
 local function rewrite_links_async(vault, rewrites, on_done)
   local uv = vim.uv
   local files = require("logseq.util").get_vault_files(vault)
@@ -423,11 +383,6 @@ local function rewrite_links_async(vault, rewrites, on_done)
   vim.schedule(step)
 end
 
---- Switch to dest_path immediately so the user sees it at once, then in the next
---- tick: append extra_path content below a --- divider (when merging), write the
---- buffer, delete any listed paths, and rewrite vault references asynchronously.
---- rewrites  = list of { old_name, new_name } pairs
---- notify_fn = function(n_updated) called when the ref scan is complete
 local function finish(bufnr, dest_path, extra_path, to_delete, vault, rewrites, notify_fn)
   vim.cmd("silent edit " .. vim.fn.fnameescape(dest_path))
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -451,7 +406,6 @@ local function finish(bufnr, dest_path, extra_path, to_delete, vault, rewrites, 
   end)
 end
 
---- Core rename/merge logic. Runs inside a vim.schedule after vim.ui.input closes.
 local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, util)
   local new_filepath = pages_dir .. "/" .. util.encode_filename(new_name)
 
@@ -459,7 +413,6 @@ local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, 
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("write") end)
   end
 
-  -- Case 1: target already exists → offer to merge current below it
   if vim.fn.filereadable(new_filepath) == 1 then
     vim.ui.select(
       { "Merge '" .. old_name .. "' below '" .. new_name .. "'", "Cancel" },
@@ -475,7 +428,6 @@ local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, 
     return
   end
 
-  -- Case 2: similar page found → choose which name to keep
   local sim_name, sim_path = find_similar_page(pages_dir, new_name, old_name, util)
   if sim_name then
     vim.ui.select(
@@ -488,7 +440,6 @@ local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, 
       function(_, idx)
         if not idx or idx == 3 then return end
         if idx == 1 then
-          -- new_name wins: rename source to new_name, then append sim below
           local ok, err = os.rename(filepath, new_filepath)
           if not ok then
             vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
@@ -501,7 +452,6 @@ local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, 
                 :format(new_name, sim_name, n), vim.log.levels.INFO)
             end)
         else
-          -- sim_name wins: open sim, append current source below it
           finish(bufnr, sim_path, filepath, { filepath }, vault,
             { { old_name, sim_name } },
             function(n)
@@ -512,7 +462,6 @@ local function do_rename(bufnr, filepath, old_name, new_name, vault, pages_dir, 
     return
   end
 
-  -- Case 3: no conflict → plain rename
   local ok, err = os.rename(filepath, new_filepath)
   if not ok then
     vim.notify("Rename failed: " .. (err or "unknown"), vim.log.levels.ERROR)
@@ -672,7 +621,6 @@ end
 
 -- ── Block Display ─────────────────────────────────────────────────────
 
---- Refresh virtual empty lines above every root-level block (indent = 0).
 local function update_block_virt_lines(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
   vim.api.nvim_buf_clear_namespace(bufnr, BLOCK_NS, 0, -1)
@@ -688,65 +636,29 @@ local function update_block_virt_lines(bufnr)
   end
 end
 
---- Schedule a deferred virt-line update.  If one is already pending for this
---- buffer, the new request is dropped — the existing scheduled call will run
---- after the current event burst (write lifecycle, rapid typing, etc.) settles.
-local function schedule_virt_update(bufnr)
-  if _vl_pending[bufnr] then return end
-  _vl_pending[bufnr] = true
-  vim.schedule(function()
-    _vl_pending[bufnr] = nil
-    update_block_virt_lines(bufnr)
-  end)
-end
-
 local function setup_syntax(bufnr)
   vim.api.nvim_buf_call(bufnr, function()
-    -- Hide id:: property lines entirely
     pcall(vim.cmd, [[syntax match LogseqUID /^\s*id::.*$/ conceal]])
-
-    -- Conceal leading '-' and render as a centered bullet •
     pcall(vim.cmd, [[syntax match LogseqDash /^\s*\zs-\ze\s/ conceal cchar=•]])
-
-    -- Dim all property lines like "key:: value" by linking to Comment
     pcall(vim.cmd, [[syntax match LogseqAllProperties /^\s*[a-zA-Z0-9_-]\+::.*/ contains=LogseqMdLink,LogseqLink,LogseqBlockRef,LogseqTag]])
     pcall(vim.cmd, [[highlight default link LogseqAllProperties Comment]])
-
-    -- Calendar time slots
     pcall(vim.fn.matchadd, "LogseqTime", [[\d\{2}:\d\{2}-\d\{2}:\d\{2}]])
     pcall(vim.fn.matchadd, "LogseqTime", [[(Heldags)]])
-
-    -- Conceal [[wikilinks]]
     pcall(vim.cmd, [[syntax region LogseqLink matchgroup=LogseqLinkDelim start=/\[\[/ end=/\]\]/ concealends contains=LogseqLinkNS oneline]])
     pcall(vim.cmd, "syntax match LogseqLinkNS /\\%(\\[\\[\\)\\@<=\\zs[^\\]]*\\// contained conceal")
-
-    -- Conceal [text](url) markdown links (single [ only, not [[)
     pcall(vim.cmd, [[syntax region LogseqMdLink matchgroup=LogseqMdLinkDelim start=/\[\[\@!/ end=/\](.\{-})/ concealends oneline]])
-
-    -- Conceal ((block-refs))
     pcall(vim.cmd, [[syntax region LogseqBlockRef matchgroup=LogseqBlockRefDelim start=/((\ze[^(]/ end=/))/ concealends oneline]])
-
-    -- Conceal #tags
     pcall(vim.cmd, [[syntax match LogseqTagHash /#\ze[[:alnum:]_\-\/]/ conceal]])
     pcall(vim.cmd, [[syntax match LogseqTag /#[[:alnum:]_\-\/]\+/ contains=LogseqTagHash]])
-
-    -- Inline formatting (order matters: __ before _ so double-underscore wins)
     pcall(vim.cmd, [[syntax region LogseqBold      matchgroup=LogseqBoldDelim      start=/\*\*\ze\S/ end=/\S\zs\*\*/ concealends oneline]])
     pcall(vim.cmd, [[syntax region LogseqUnderline matchgroup=LogseqUnderlineDelim start=/__\ze\S/   end=/\S\zs__/   concealends oneline]])
     pcall(vim.cmd, [[syntax region LogseqItalic    matchgroup=LogseqItalicDelim    start=/_\ze\S/    end=/\S\zs_/    concealends oneline]])
     pcall(vim.cmd, [[syntax region LogseqCode      matchgroup=LogseqCodeDelim      start=/`/         end=/`/         concealends oneline]])
     pcall(vim.cmd, [[syntax region LogseqHighlight matchgroup=LogseqHighlightDelim start=/\^\^\ze\S/ end=/\S\zs\^\^/ concealends oneline]])
-
-    -- Strikethrough for ~~cancelled~~ text
     pcall(vim.cmd, [[syntax region LogseqStrike matchgroup=LogseqStrikeDelim start=/\~\~/ end=/\~\~/ concealends oneline]])
-
-    -- TODO state keywords (matched at start of bullet content)
-    pcall(vim.cmd, [[syntax match LogseqTodoKw   /\v(^\s*- )\zs(TODO|WAITING|DOING)\ze(\s|$)/]])
-    pcall(vim.cmd, [[syntax match LogseqDoneKw   /\v(^\s*- )\zsDONE\ze(\s|$)/]])
+    pcall(vim.cmd, [[syntax match LogseqTodoKw    /\v(^\s*- )\zs(TODO|WAITING|DOING)\ze(\s|$)/]])
+    pcall(vim.cmd, [[syntax match LogseqDoneKw    /\v(^\s*- )\zsDONE\ze(\s|$)/]])
     pcall(vim.cmd, [[syntax match LogseqCancelKw /\v(^\s*- )\zsCANCELLED\ze(\s|$)/]])
-
-    -- Block-level formatting: root=bold, level2=italic, level3+=normal
-    -- contains=ALL lets nested items (links, tags) still apply their own highlight
     pcall(vim.cmd, [[syntax match LogseqLevel2Block /^\t- .*$/ contains=ALLBUT,LogseqLinkNS]])
     pcall(vim.cmd, [[syntax match LogseqRootBlock /^- .*$/ contains=ALLBUT,LogseqLinkNS]])
   end)
@@ -761,18 +673,18 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "LogseqMdLinkDelim",  { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqBlockRef",     { fg = "#a9b665", italic = true, ctermfg = 142, cterm = { italic = true } })
   vim.api.nvim_set_hl(0, "LogseqTag",          { fg = "#d3869b", ctermfg = 175 })
-  vim.api.nvim_set_hl(0, "LogseqBold",           { bold = true })
-  vim.api.nvim_set_hl(0, "LogseqBoldDelim",      { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqItalic",         { italic = true })
-  vim.api.nvim_set_hl(0, "LogseqItalicDelim",    { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqUnderline",      { })
+  vim.api.nvim_set_hl(0, "LogseqBold",         { bold = true })
+  vim.api.nvim_set_hl(0, "LogseqBoldDelim",    { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqItalic",       { italic = true })
+  vim.api.nvim_set_hl(0, "LogseqItalicDelim",  { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqUnderline",    { })
   vim.api.nvim_set_hl(0, "LogseqUnderlineDelim", { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqCode",           { fg = "#d8a657", bg = "#32302f", ctermfg = 214, ctermbg = 236 })
-  vim.api.nvim_set_hl(0, "LogseqCodeDelim",      { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqHighlight",      { bg = "#b57614", fg = "#1d2021", ctermbg = 136, ctermfg = 234 })
+  vim.api.nvim_set_hl(0, "LogseqCode",         { fg = "#d8a657", bg = "#32302f", ctermfg = 214, ctermbg = 236 })
+  vim.api.nvim_set_hl(0, "LogseqCodeDelim",    { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqHighlight",    { bg = "#b57614", fg = "#1d2021", ctermbg = 136, ctermfg = 234 })
   vim.api.nvim_set_hl(0, "LogseqHighlightDelim", { link = "Conceal" })
-  vim.api.nvim_set_hl(0, "LogseqStrike",         { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
-  vim.api.nvim_set_hl(0, "LogseqStrikeDelim",    { link = "Conceal" })
+  vim.api.nvim_set_hl(0, "LogseqStrike",       { strikethrough = true, fg = "#928374", ctermfg = 245, cterm = { strikethrough = true } })
+  vim.api.nvim_set_hl(0, "LogseqStrikeDelim",  { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqLinkDelim",    { link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqBlockRefDelim",{ link = "Conceal" })
   vim.api.nvim_set_hl(0, "LogseqRootBlock",    { bold = true })
@@ -797,8 +709,6 @@ local function setup_highlights()
   end
 end
 
---- Build the statusline string respecting bottombar_buttons visibility config.
----@return string
 function M.build_statusline()
   local bb = (require("logseq.config").current.bottombar_buttons) or {}
   local is_mobile = vim.o.columns < MOBILE_WIDTH
@@ -843,11 +753,6 @@ function M.build_statusline()
   return table.concat(parts, "")
 end
 
--- ── Scheduled / Deadline virtual text ────────────────────────────────
-
---- Render SCHEDULED:: / DEADLINE:: dates as eol virtual text on the bullet line.
---- Uses util.prop_ci for case-insensitive property lookup and util.match_ci
---- instead of [Ss][Cc][Hh]… character classes.
 local function update_scheduled_virt(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
   vim.api.nvim_buf_clear_namespace(bufnr, SCHED_NS, 0, -1)
@@ -860,7 +765,6 @@ local function update_scheduled_virt(bufnr)
       local sched    = util.prop_ci(block.properties, "scheduled")
       local deadline = util.prop_ci(block.properties, "deadline")
 
-      -- Fall back to scanning the bullet content for inline SCHEDULED:: / DEADLINE::
       if not sched    then sched    = util.match_ci(block.content, "scheduled::%s*(<[^>]+>)") end
       if not deadline then deadline = util.match_ci(block.content, "deadline::%s*(<[^>]+>)") end
 
@@ -884,10 +788,6 @@ local function update_scheduled_virt(bufnr)
   end
 end
 
--- ── Overdue TODO highlight ────────────────────────────────────────────
-
---- Highlight active TODO keywords in red when the block is overdue.
---- "Overdue" means: has SCHEDULED or DEADLINE date strictly before today.
 local function update_todo_hl(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then return end
   vim.api.nvim_buf_clear_namespace(bufnr, TODO_HL_NS, 0, -1)
@@ -901,7 +801,6 @@ local function update_todo_hl(bufnr)
   local active = { TODO = true, WAITING = true, DOING = true }
 
   for _, block in ipairs(parser.flatten(result.blocks)) do
-    -- Detect active TODO state at start of content
     local state
     for _, s in ipairs({ "TODO", "WAITING", "DOING" }) do
       if block.content:match("^" .. s .. "%s") or block.content == s then
@@ -911,7 +810,6 @@ local function update_todo_hl(bufnr)
     end
     if not state then goto continue end
 
-    -- Look for SCHEDULED / DEADLINE dates
     local sched    = util.prop_ci(block.properties, "scheduled")
     local deadline = util.prop_ci(block.properties, "deadline")
     if not sched    then sched    = util.match_ci(block.content, "scheduled::%s*(<[^>]+>)") end
@@ -943,17 +841,7 @@ local function update_todo_hl(bufnr)
   end
 end
 
--- ── Breadcrumb helper ─────────────────────────────────────────────────
-
---- Return an abbreviated ancestor chain for the block at the cursor in `winid`.
---- Accepts the window id so it queries the correct cursor position even when
---- the winbar is evaluated for a non-focused window.
---- Format: "Grandparent › Parent › Current"
----@param winid integer
----@param bufnr integer
----@return string
 get_breadcrumb = function(winid, bufnr)
-  -- ── Zoom mode: fixed breadcrumb showing page › [parent] › 🔍 zoomed ──
   local zoom_ok, zoom = pcall(require, "logseq.zoom")
   if zoom_ok and zoom.is_zoomed(bufnr) then
     local zblock = zoom.get_zoom_block(bufnr)
@@ -965,14 +853,12 @@ get_breadcrumb = function(winid, bufnr)
 
       local crumbs = { page_name }
 
-      -- Immediate parent of the zoomed block (per spec: "last parent")
       if zblock.parent then
         local pt = vim.trim(zblock.parent.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""))
         if #pt > 22 then pt = pt:sub(1, 20) .. "…" end
         crumbs[#crumbs + 1] = pt ~= "" and pt or "…"
       end
 
-      -- The zoomed block itself with indicator
       local zt = vim.trim(zblock.content:gsub("%[%[(.-)%]%]", "%1"):gsub("#", ""))
       if #zt > 22 then zt = zt:sub(1, 20) .. "…" end
       crumbs[#crumbs + 1] = "🔍 " .. (zt ~= "" and zt or "…")
@@ -981,14 +867,12 @@ get_breadcrumb = function(winid, bufnr)
     end
   end
 
-  -- ── Normal mode: cursor-position ancestor chain ───────────────────────
   local ok, result = pcall(parser.parse_buf, bufnr)
   if not ok then return "" end
 
   local block = parser.block_at_line(result.blocks, vim.api.nvim_win_get_cursor(winid)[1])
   if not block or not block.parent then return "" end
 
-  -- Collect in root→leaf order (O(n) appends) then reverse in place.
   local crumbs = {}
   local b = block
   while b do
@@ -998,7 +882,6 @@ get_breadcrumb = function(winid, bufnr)
     b = b.parent
   end
 
-  -- In-place reverse so result reads root › … › leaf.
   local n = #crumbs
   for i = 1, math.floor(n / 2) do
     crumbs[i], crumbs[n - i + 1] = crumbs[n - i + 1], crumbs[i]
@@ -1008,7 +891,28 @@ get_breadcrumb = function(winid, bufnr)
   return table.concat(crumbs, " › ")
 end
 
--- ── Buffer Setup ─────────────────────────────────────────────────────
+-- ── Debouncer Logic & Buffer Setup ────────────────────────────────────
+
+local update_timers = {}
+
+local function process_buffer_updates(bufnr)
+  update_block_virt_lines(bufnr)
+  update_scheduled_virt(bufnr)
+  update_todo_hl(bufnr)
+end
+
+local function debounced_update(bufnr, delay)
+  if not update_timers[bufnr] then
+    update_timers[bufnr] = vim.uv.new_timer()
+  end
+
+  update_timers[bufnr]:stop()
+  update_timers[bufnr]:start(delay, 0, vim.schedule_wrap(function()
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      process_buffer_updates(bufnr)
+    end
+  end))
+end
 
 function M.setup_buf(bufnr)
   vim.opt_local.winbar = "%{%v:lua.require('logseq.ui').winbar()%}"
@@ -1027,44 +931,35 @@ function M.setup_buf(bufnr)
     vim.keymap.set("n", km.rename_page, M.rename_page, { buffer = bufnr, desc = "Logseq Rename Page" })
   end
 
-  -- Save indicator
-  local grp = vim.api.nvim_create_augroup("LogseqUI_" .. bufnr, { clear = true })
-  vim.api.nvim_create_autocmd("BufWritePost", {
-    group = grp,
-    buffer = bufnr,
-    callback = function(ev) M.trigger_save_indicator(ev.buf) end,
-  })
-
+  -- Initial loads that only need to run once
   vim.opt_local.conceallevel = 2
   vim.opt_local.concealcursor = "c"
   setup_syntax(bufnr)
   setup_highlights()
+  process_buffer_updates(bufnr)
 
-  -- Re-apply syntax rules after any filetype/syntax reload (e.g. markdown
-  -- resourcing its syntax file would wipe our custom match/region rules).
+  -- Use single global augroup
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group = augroup,
+    buffer = bufnr,
+    callback = function(ev) M.trigger_save_indicator(ev.buf) end,
+  })
+
   vim.api.nvim_create_autocmd("Syntax", {
-    group = grp,
+    group = augroup,
     buffer = bufnr,
     callback = function() setup_syntax(bufnr) end,
   })
-  update_block_virt_lines(bufnr)
-  update_scheduled_virt(bufnr)
-  update_todo_hl(bufnr)
 
-  -- Refresh virtual spacing, scheduled virt text, and overdue highlights after edits
-  vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" }, {
-    group = grp,
+  -- Attach the unified debouncer to text change events
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = augroup,
     buffer = bufnr,
-    callback = function()
-      update_block_virt_lines(bufnr)
-      update_scheduled_virt(bufnr)
-      update_todo_hl(bufnr)
-    end,
+    callback = function() debounced_update(bufnr, 300) end,
   })
 
-  -- Active-event highlight + tabline on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
-    group = grp,
+    group = augroup,
     buffer = bufnr,
     callback = function()
       M.enable_tabline()
@@ -1072,9 +967,8 @@ function M.setup_buf(bufnr)
     end,
   })
 
-  -- Restore tabline when leaving this buffer if no other logseq buffer is visible
   vim.api.nvim_create_autocmd("BufLeave", {
-    group = grp,
+    group = augroup,
     buffer = bufnr,
     callback = function()
       vim.schedule(function()
@@ -1085,7 +979,21 @@ function M.setup_buf(bufnr)
       end)
     end,
   })
+
+  -- Cleanup handles on wipeout to prevent memory leaks
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = augroup,
+    buffer = bufnr,
+    callback = function()
+      if update_timers[bufnr] then
+        update_timers[bufnr]:stop()
+        if not update_timers[bufnr]:is_closing() then
+          update_timers[bufnr]:close()
+        end
+        update_timers[bufnr] = nil
+      end
+    end,
+  })
 end
 
 return M
-
