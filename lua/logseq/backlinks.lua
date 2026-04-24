@@ -4,12 +4,26 @@ local indexer = require("logseq.indexer")
 local util    = require("logseq.util")
 
 local M = {}
--- ── Constants ─────────────────────────────────────────────────────────
+
+-- ── Constants & Global State ──────────────────────────────────────────
 local SECTION_HDR_PAT = "^── %d+ .-──$"
 local LOADING_PAT     = "^── Loading Linked References"
 local FILTER_HDR      = "── Filters ──"
 local SEPARATOR = ""
 local NS = vim.api.nvim_create_namespace("logseq_backlinks")
+
+-- RUNBOOK: Single global augroup to prevent memory leaks
+local global_augroup = vim.api.nvim_create_augroup("LogseqBacklinks", { clear = false })
+
+-- RUNBOOK: High-performance libuv timer pool for debouncing
+local timers = {}
+local function debounce(bufnr, delay, fn)
+  if not timers[bufnr] then timers[bufnr] = vim.uv.new_timer() end
+  timers[bufnr]:stop()
+  timers[bufnr]:start(delay, 0, vim.schedule_wrap(function()
+    if vim.api.nvim_buf_is_valid(bufnr) then fn(bufnr) end
+  end))
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────
 local function with_modifiable(bufnr, fn)
@@ -234,7 +248,7 @@ local function append_sched_section(label, hl_group, entries, display, smap, hl_
 end
 
 local function build_display(results, scheduled_data, filter, filter_items)
-  local display, smap, match_lines, hl_lines = {}, {}, {}, {}
+  local display, smap, match_lines, hl_lines = {}, {}, {}
   local all_f = { "very_next_actions" }
   vim.list_extend(all_f, filter_items or {})
   table.insert(display, FILTER_HDR)
@@ -387,25 +401,82 @@ end
 function M.setup_buf(bufnr)
   local toggle_key = (config.current.keymaps or {}).toggle_backlinks or "<leader>b"
   vim.keymap.set("n", toggle_key, M.toggle, { buffer = bufnr, silent = true })
-  local g = vim.api.nvim_create_augroup("LogseqBacklinks_" .. bufnr, { clear = true })
-  vim.api.nvim_create_autocmd("BufWritePre", { group = g, buffer = bufnr, callback = function() get_state(bufnr).had_backlinks = get_state(bufnr).visible M.remove_section(bufnr) end })
-  vim.api.nvim_create_autocmd("BufWritePost", { group = g, buffer = bufnr, callback = function() 
-    if vim.api.nvim_buf_get_name(bufnr) ~= "" and indexer.invalidate then indexer.invalidate(vim.api.nvim_buf_get_name(bufnr)) end
-    if get_state(bufnr).had_backlinks then vim.schedule(function() if get_state(bufnr).cached_results then apply_and_render(bufnr) else M.render_section(bufnr) end end) end
-  end })
-  vim.api.nvim_create_autocmd("InsertEnter", { group = g, buffer = bufnr, callback = function() if M.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then vim.cmd("stopinsert") vim.notify("[logseq.nvim] Backlinks are read-only.") end end })
-  vim.api.nvim_create_autocmd({"TextChanged", "TextChangedI"}, { group = g, buffer = bufnr, callback = function() if get_state(bufnr).visible then recalculate_region(bufnr) end end })
+
+  -- RUNBOOK: Attach to the single global augroup with buffer = bufnr
+  vim.api.nvim_create_autocmd("BufWritePre", { 
+    group = global_augroup, 
+    buffer = bufnr, 
+    callback = function() 
+      get_state(bufnr).had_backlinks = get_state(bufnr).visible 
+      M.remove_section(bufnr) 
+    end 
+  })
+
+  vim.api.nvim_create_autocmd("BufWritePost", { 
+    group = global_augroup, 
+    buffer = bufnr, 
+    callback = function() 
+      if vim.api.nvim_buf_get_name(bufnr) ~= "" and indexer.invalidate then 
+        indexer.invalidate(vim.api.nvim_buf_get_name(bufnr)) 
+      end
+      if get_state(bufnr).had_backlinks then 
+        vim.schedule(function() 
+          if get_state(bufnr).cached_results then apply_and_render(bufnr) else M.render_section(bufnr) end 
+        end) 
+      end
+    end 
+  })
+
+  vim.api.nvim_create_autocmd("InsertEnter", { 
+    group = global_augroup, 
+    buffer = bufnr, 
+    callback = function() 
+      if M.in_region(bufnr, vim.api.nvim_win_get_cursor(0)[1]) then 
+        vim.cmd("stopinsert") 
+        vim.notify("[logseq.nvim] Backlinks are read-only.") 
+      end 
+    end 
+  })
+
+  -- RUNBOOK: High-Performance Debouncing for TextChanged events
+  vim.api.nvim_create_autocmd({"TextChanged", "TextChangedI"}, { 
+    group = global_augroup, 
+    buffer = bufnr, 
+    callback = function() 
+      if get_state(bufnr).visible then 
+        debounce(bufnr, 150, recalculate_region) 
+      end 
+    end 
+  })
+
+  -- RUNBOOK: Cleanup to prevent C-level memory leaks
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = global_augroup, 
+    buffer = bufnr,
+    callback = function()
+      if timers[bufnr] then
+        timers[bufnr]:stop()
+        if not timers[bufnr]:is_closing() then timers[bufnr]:close() end
+        timers[bufnr] = nil
+      end
+    end,
+  })
 end
 
 function M.setup_global()
   vim.api.nvim_create_autocmd("BufWritePost", {
-    group = vim.api.nvim_create_augroup("LogseqBacklinksGlobal", { clear = true }),
+    group = global_augroup, -- RUNBOOK: Share the global group
     pattern = "*.md",
     callback = function(ev)
       if not util.is_vault_file(ev.file, config.current.vault_path) then return end
       for bufnr, state in pairs(M._state) do
         if bufnr ~= ev.buf and state.visible and vim.api.nvim_buf_is_valid(bufnr) then
-          vim.schedule(function() if vim.api.nvim_buf_is_valid(bufnr) then M.remove_section(bufnr) M.render_section(bufnr) end end)
+          vim.schedule(function() 
+            if vim.api.nvim_buf_is_valid(bufnr) then 
+              M.remove_section(bufnr) 
+              M.render_section(bufnr) 
+            end 
+          end)
         end
       end
     end,
