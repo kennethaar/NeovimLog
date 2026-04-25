@@ -183,7 +183,6 @@ function M.winbar()
     if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ n 🌳 %X") end
 
     local nav_btns  = "  %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
-    local close_btn = ""
 
     if M._state.saved_buffers[bufnr] then
       return " " .. WINBAR_LEFT .. nav_btns .. "%<  ✓ Saved"
@@ -201,10 +200,10 @@ function M.winbar()
     local crumb = get_breadcrumb(winid, bufnr)
     if crumb ~= "" then
       local safe = crumb:gsub("%%", "%%%%")
-      return " " .. WINBAR_LEFT .. nav_btns .. "  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
+      return " " .. WINBAR_LEFT .. nav_btns .. "%<  %#LogseqBreadcrumb#" .. safe .. "%#Normal#"
     end
 
-    return " " .. WINBAR_LEFT .. nav_btns .. close_btn
+    return " " .. WINBAR_LEFT .. nav_btns .. "%<"
   end
 end
 
@@ -894,6 +893,7 @@ end
 -- ── Debouncer Logic & Buffer Setup ────────────────────────────────────
 
 local update_timers = {}
+local _resize_handler_registered = false
 
 local function process_buffer_updates(bufnr)
   update_block_virt_lines(bufnr)
@@ -919,6 +919,26 @@ function M.setup_buf(bufnr)
   vim.opt_local.statusline = M.build_statusline()
   vim.opt_local.winhl = "StatusLine:LogseqStatusLine"
   M.enable_tabline()
+
+  -- Rebuild the statusline string whenever the terminal is resized (font zoom on Termux
+  -- changes vim.o.columns, which drives the mobile/desktop layout switch).
+  if not _resize_handler_registered then
+    _resize_handler_registered = true
+    vim.api.nvim_create_autocmd("VimResized", {
+      group = augroup,
+      callback = function()
+        for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+          if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].logseq_active then
+            for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+              vim.api.nvim_win_call(win, function()
+                vim.opt_local.statusline = M.build_statusline()
+              end)
+            end
+          end
+        end
+      end,
+    })
+  end
 
   local km = require("logseq.config").current.keymaps
   vim.keymap.set("n", km.help or "hh", M.open_help, { buffer = bufnr, desc = "Logseq Help" })

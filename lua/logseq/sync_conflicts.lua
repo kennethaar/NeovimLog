@@ -104,10 +104,7 @@ function M.resolve_all(vault)
   if not vault or vault == "" then return end
   
   M.scan_conflicts_async(vault, function(conflicts)
-    if #conflicts == 0 then 
-      vim.schedule(function() print("No conflicts found.") end)
-      return 
-    end
+    if #conflicts == 0 then return end
     
     local manual_found = false
     local function next_conflict(index)
