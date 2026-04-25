@@ -182,8 +182,7 @@ function M.winbar()
     if wb.calsync   ~= false and is_journal  then table.insert(nav_parts, "%@v:lua.logseq_sl_calsync@ c 🗓️ %X") end
     if wb.ns_tree   ~= false and not is_journal then table.insert(nav_parts, "%@v:lua.logseq_sl_nstree@ n 🌳 %X") end
 
-    local nav_btns  = "  %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
-    local close_btn = ""
+    local nav_btns = "  %#Comment#" .. table.concat(nav_parts, "") .. "%#Normal#"
 
     if M._state.saved_buffers[bufnr] then
       return " " .. WINBAR_LEFT .. nav_btns .. "%<  ✓ Saved"
@@ -201,10 +200,10 @@ function M.winbar()
     local crumb = get_breadcrumb(winid, bufnr)
     if crumb ~= "" then
       local safe = crumb:gsub("%%", "%%%%")
-      return " " .. WINBAR_LEFT .. nav_btns .. "%<  %#LogseqBreadcrumb#" .. safe .. "%#Normal#" .. close_btn
+      return " " .. WINBAR_LEFT .. nav_btns .. "%<  %#LogseqBreadcrumb#" .. safe .. "%#Normal#"
     end
 
-    return " " .. WINBAR_LEFT .. nav_btns .. "%<" .. close_btn
+    return " " .. WINBAR_LEFT .. nav_btns .. "%<"
   end
 end
 
@@ -929,7 +928,7 @@ function M.setup_buf(bufnr)
       group = augroup,
       callback = function()
         for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-          if vim.api.nvim_buf_is_valid(buf) and vim.b[buf] and vim.b[buf].logseq_active then
+          if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].logseq_active then
             for _, win in ipairs(vim.fn.win_findbuf(buf)) do
               vim.api.nvim_win_call(win, function()
                 vim.opt_local.statusline = M.build_statusline()
