@@ -893,6 +893,7 @@ end
 -- ── Debouncer Logic & Buffer Setup ────────────────────────────────────
 
 local update_timers = {}
+local _resize_timer = nil
 local _resize_handler_registered = false
 
 local function process_buffer_updates(bufnr)
@@ -922,20 +923,29 @@ function M.setup_buf(bufnr)
 
   -- Rebuild the statusline string whenever the terminal is resized (font zoom on Termux
   -- changes vim.o.columns, which drives the mobile/desktop layout switch).
+  -- Debounced: pinch-zoom sends SIGWINCH continuously; processing every event
+  -- synchronously blocks the event loop and prevents Neovim from repainting.
   if not _resize_handler_registered then
     _resize_handler_registered = true
     vim.api.nvim_create_autocmd("VimResized", {
       group = augroup,
       callback = function()
-        for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-          if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].logseq_active then
-            for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-              vim.api.nvim_win_call(win, function()
-                vim.opt_local.statusline = M.build_statusline()
-              end)
+        if not _resize_timer then
+          _resize_timer = vim.uv.new_timer()
+        else
+          _resize_timer:stop()
+        end
+        _resize_timer:start(120, 0, vim.schedule_wrap(function()
+          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].logseq_active then
+              for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+                vim.api.nvim_win_call(win, function()
+                  vim.opt_local.statusline = M.build_statusline()
+                end)
+              end
             end
           end
-        end
+        end))
       end,
     })
   end
