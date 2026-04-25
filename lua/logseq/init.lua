@@ -374,19 +374,26 @@ local function bootstrap(opts)
     end,
   })
 
-  -- Debounced Sync Conflict scanning
+  -- checktime on focus only: statting every open buffer on every WinEnter is expensive
+  -- on Termux (slow Android filesystem) and causes visible freezes.
+  vim.api.nvim_create_autocmd("FocusGained", {
+    group = group,
+    callback = function()
+      pcall(function() vim.cmd("checktime") end)
+    end,
+  })
+
+  -- Debounced Sync Conflict scanning: reuse a single timer handle (stop+start)
+  -- instead of closing and creating a new uv timer on every window switch.
   local conflict_timer = nil
   vim.api.nvim_create_autocmd({ "FocusGained", "WinEnter" }, {
     group = group,
     callback = function()
-      pcall(function() vim.cmd("checktime") end)
-
-      if conflict_timer then
+      if not conflict_timer then
+        conflict_timer = vim.uv.new_timer()
+      else
         conflict_timer:stop()
-        if not conflict_timer:is_closing() then conflict_timer:close() end
       end
-      
-      conflict_timer = vim.uv.new_timer()
       conflict_timer:start(1500, 0, vim.schedule_wrap(function()
         pcall(function()
           require("logseq.sync_conflicts").resolve_all(config.current.vault_path)
