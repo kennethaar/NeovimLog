@@ -248,7 +248,7 @@ local function append_sched_section(label, hl_group, entries, display, smap, hl_
 end
 
 local function build_display(results, scheduled_data, filter, filter_items)
-  local display, smap, match_lines, hl_lines = {}, {}, {}
+  local display, smap, match_lines, hl_lines = {}, {}, {}, {}
   local all_f = { "very_next_actions" }
   vim.list_extend(all_f, filter_items or {})
   table.insert(display, FILTER_HDR)
@@ -352,14 +352,30 @@ function M.render_section(bufnr)
     apply_and_render(bufnr)
   end
 
-  indexer.find_backlinks(page_name, filepath, function(r) b_res = r pending = pending - 1 if pending == 0 then do_render() end end, 
-  function(curr, tot)
-    if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible or not state.region then return end
-    with_modifiable(bufnr, function() pcall(vim.api.nvim_buf_set_lines, bufnr, state.region.start_line, state.region.start_line+1, false, { "── Loading Linked References... "..util.make_progress_bar(curr, tot, 20).." ──" }) end)
-    vim.cmd("redraw")
-  end, iso_date)
+  -- RUNBOOK: Wrap the callbacks in vim.schedule_wrap to prevent "fast event context" (E5560) errors
+  indexer.find_backlinks(page_name, filepath, 
+    vim.schedule_wrap(function(r) 
+      b_res = r 
+      pending = pending - 1 
+      if pending == 0 then do_render() end 
+    end), 
+    vim.schedule_wrap(function(curr, tot)
+      if not vim.api.nvim_buf_is_valid(bufnr) or not state.visible or not state.region then return end
+      with_modifiable(bufnr, function() pcall(vim.api.nvim_buf_set_lines, bufnr, state.region.start_line, state.region.start_line+1, false, { "── Loading Linked References... "..util.make_progress_bar(curr, tot, 20).." ──" }) end)
+      vim.cmd("redraw")
+    end), 
+    iso_date
+  )
 
-  if is_j then indexer.find_scheduled_blocks(os.date("%Y-%m-%d"), function(d) s_data = d pending = pending - 1 if pending == 0 then do_render() end end) end
+  if is_j then 
+    indexer.find_scheduled_blocks(os.date("%Y-%m-%d"), 
+      vim.schedule_wrap(function(d) 
+        s_data = d 
+        pending = pending - 1 
+        if pending == 0 then do_render() end 
+      end)
+    ) 
+  end
 end
 
 function M.remove_section(bufnr)
