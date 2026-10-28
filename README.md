@@ -1,5 +1,11 @@
 # NeovimLog
 
+> [!WARNING]
+> **Project Moved / Deprecated**
+> Development of this project has moved to [**kennethaar/GroupTodo**](https://github.com/kennethaar/GroupTodo) — *A shared to-do list, built on GTD (Getting Things Done), that keeps everything as plain markdown files in a folder you already have. No install, no account, no server.*
+>
+> This repository is archived and no longer maintained.
+
 **Your Logseq vault, at Neovim speed.**
 
 [Logseq](https://logseq.com/) is a powerful knowledge graph built on Markdown. But its Electron desktop app is slow to start, heavy on memory, and far from the terminal. NeovimLog gives you everything Logseq's outliner is built on — block navigation, backlinks, calendar sync, wikilinks, folding, and TODO states — inside Neovim, opening instantly, reading the exact same `.md` files your Logseq app writes.
